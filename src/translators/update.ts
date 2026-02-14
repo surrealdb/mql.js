@@ -76,13 +76,91 @@ function handleFunctionOp(fn: string): OperatorHandler {
 	};
 }
 
-/** $push: { k: v } → SET k += [$p] */
+/**
+ * Check if a $push value is a modifier object (has $each key).
+ */
+function isPushModifier(value: unknown): boolean {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		!Array.isArray(value) &&
+		"$each" in (value as Record<string, unknown>)
+	);
+}
+
+/**
+ * $push handler – supports both simple values and modifier objects.
+ *
+ * Simple:    { $push: { tags: "new" } }     → SET tags += [$p]
+ * Modifier:  { $push: { scores: { $each: [1,2], $sort: 1, $slice: 5 } } }
+ *            → SET scores = array::slice(array::sort::asc(array::concat(scores, $p)), 0, 5)
+ */
 function handlePush(entries: [string, unknown][], ctx: Context): void {
 	for (const [field, value] of entries) {
-		const p = nextParam(ctx);
-		ctx.bindings[p] = value;
-		ctx.parts.push(`${escapeField(field)} += [$${p}]`);
+		if (isPushModifier(value)) {
+			handlePushWithModifiers(field, value as Record<string, unknown>, ctx);
+		} else {
+			const p = nextParam(ctx);
+			ctx.bindings[p] = value;
+			ctx.parts.push(`${escapeField(field)} += [$${p}]`);
+		}
 	}
+}
+
+/**
+ * Handle $push with $each and optional $sort, $slice, $position modifiers.
+ */
+function handlePushWithModifiers(
+	field: string,
+	mods: Record<string, unknown>,
+	ctx: Context,
+): void {
+	const f = escapeField(field);
+	const eachParam = nextParam(ctx);
+	ctx.bindings[eachParam] = mods.$each;
+
+	// Step 1: build the concat expression
+	let expr: string;
+	if (mods.$position !== undefined) {
+		const pos = mods.$position as number;
+		const posParam = nextParam(ctx);
+		ctx.bindings[posParam] = pos;
+		// Insert at position: concat(slice(0, pos), $each, slice(pos))
+		expr = `array::concat(array::concat(array::slice(${f}, 0, $${posParam}), $${eachParam}), array::slice(${f}, $${posParam}))`;
+	} else {
+		expr = `array::concat(${f}, $${eachParam})`;
+	}
+
+	// Step 2: apply $sort if present
+	if (mods.$sort !== undefined) {
+		const sortVal = mods.$sort;
+		if (typeof sortVal === "number") {
+			expr =
+				sortVal === -1
+					? `array::sort::desc(${expr})`
+					: `array::sort::asc(${expr})`;
+		} else {
+			// Sort by sub-field: use array::sort::asc/desc (limited support)
+			expr = `array::sort::asc(${expr})`;
+		}
+	}
+
+	// Step 3: apply $slice if present
+	if (mods.$slice !== undefined) {
+		const sliceVal = mods.$slice as number;
+		const sliceParam = nextParam(ctx);
+		if (sliceVal < 0) {
+			// Keep last N elements
+			ctx.bindings[sliceParam] = sliceVal;
+			expr = `array::slice(${expr}, $${sliceParam})`;
+		} else {
+			// Keep first N elements
+			ctx.bindings[sliceParam] = sliceVal;
+			expr = `array::slice(${expr}, 0, $${sliceParam})`;
+		}
+	}
+
+	ctx.parts.push(`${f} = ${expr}`);
 }
 
 /** $pull: { k: v } → SET k -= [$p] */
@@ -122,6 +200,31 @@ function handleCurrentDate(entries: [string, unknown][], ctx: Context): void {
 	}
 }
 
+/** $pop: { k: 1 } (remove last) or { k: -1 } (remove first) */
+function handlePop(entries: [string, unknown][], ctx: Context): void {
+	for (const [field, value] of entries) {
+		const f = escapeField(field);
+		if (value === -1) {
+			// Remove first element
+			ctx.parts.push(`${f} = array::slice(${f}, 1)`);
+		} else {
+			// Remove last element
+			ctx.parts.push(`${f} = array::slice(${f}, 0, array::len(${f}) - 1)`);
+		}
+	}
+}
+
+/** $pullAll: { k: [v1, v2] } → SET k = array::complement(k, $p) */
+function handlePullAll(entries: [string, unknown][], ctx: Context): void {
+	for (const [field, value] of entries) {
+		const p = nextParam(ctx);
+		ctx.bindings[p] = value;
+		ctx.parts.push(
+			`${escapeField(field)} = array::complement(${escapeField(field)}, $${p})`,
+		);
+	}
+}
+
 /** Map of operator names to their handler functions. */
 const OPERATOR_HANDLERS: Record<string, OperatorHandler> = {
 	$set: handleSet,
@@ -135,6 +238,8 @@ const OPERATOR_HANDLERS: Record<string, OperatorHandler> = {
 	$addToSet: handleAddToSet,
 	$rename: handleRename,
 	$currentDate: handleCurrentDate,
+	$pop: handlePop,
+	$pullAll: handlePullAll,
 };
 
 // ---------------------------------------------------------------------------

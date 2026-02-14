@@ -254,6 +254,62 @@ describe("translateFilter", () => {
 	});
 
 	// -----------------------------------------------------------------
+	// Array operators
+	// -----------------------------------------------------------------
+	test("$all", () => {
+		const { clause, bindings } = translateFilter({
+			tags: { $all: ["a", "b"] },
+		});
+		expect(clause).toBe("tags CONTAINSALL $p0");
+		expect(bindings).toEqual({ p0: ["a", "b"] });
+	});
+
+	test("$size", () => {
+		const { clause, bindings } = translateFilter({
+			items: { $size: 3 },
+		});
+		expect(clause).toBe("array::len(items) = $p0");
+		expect(bindings).toEqual({ p0: 3 });
+	});
+
+	test("$size zero", () => {
+		const { clause, bindings } = translateFilter({
+			items: { $size: 0 },
+		});
+		expect(clause).toBe("array::len(items) = $p0");
+		expect(bindings).toEqual({ p0: 0 });
+	});
+
+	test("$elemMatch simple equality", () => {
+		const { clause, bindings } = translateFilter({
+			results: { $elemMatch: { product: "abc", score: 8 } },
+		});
+		expect(clause).toBe("results CONTAINS $p0");
+		expect(bindings).toEqual({ p0: { product: "abc", score: 8 } });
+	});
+
+	test("$elemMatch with operators", () => {
+		const { clause, bindings } = translateFilter({
+			results: { $elemMatch: { score: { $gt: 80 }, grade: "A" } },
+		});
+		expect(clause).toBe(
+			"array::len(results[WHERE score > $p0 AND grade = $p1]) > 0",
+		);
+		expect(bindings).toEqual({ p0: 80, p1: "A" });
+	});
+
+	test("$elemMatch with only operators", () => {
+		const { clause, bindings } = translateFilter({
+			scores: { $elemMatch: { $gte: 80, $lt: 90 } },
+		});
+		// Top-level operators apply to the element itself via $this
+		expect(clause).toBe(
+			"array::len(scores[WHERE $this >= $p0 AND $this < $p1]) > 0",
+		);
+		expect(bindings).toEqual({ p0: 80, p1: 90 });
+	});
+
+	// -----------------------------------------------------------------
 	// Error handling
 	// -----------------------------------------------------------------
 	test("throws on unsupported operator", () => {

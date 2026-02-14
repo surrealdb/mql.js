@@ -166,6 +166,109 @@ describe("translateUpdate", () => {
 	});
 
 	// -----------------------------------------------------------------
+	// $push with $each modifier
+	// -----------------------------------------------------------------
+	test("$push with $each", () => {
+		const { clause, bindings } = translateUpdate({
+			$push: { scores: { $each: [85, 90] } },
+		});
+		expect(clause).toBe("SET scores = array::concat(scores, $p0)");
+		expect(bindings).toEqual({ p0: [85, 90] });
+	});
+
+	test("$push with $each and $sort ascending", () => {
+		const { clause, bindings } = translateUpdate({
+			$push: { scores: { $each: [85], $sort: 1 } },
+		});
+		expect(clause).toBe(
+			"SET scores = array::sort::asc(array::concat(scores, $p0))",
+		);
+		expect(bindings).toEqual({ p0: [85] });
+	});
+
+	test("$push with $each and $sort descending", () => {
+		const { clause, bindings } = translateUpdate({
+			$push: { scores: { $each: [85], $sort: -1 } },
+		});
+		expect(clause).toBe(
+			"SET scores = array::sort::desc(array::concat(scores, $p0))",
+		);
+		expect(bindings).toEqual({ p0: [85] });
+	});
+
+	test("$push with $each and $slice positive", () => {
+		const { clause, bindings } = translateUpdate({
+			$push: { scores: { $each: [85, 90], $slice: 5 } },
+		});
+		expect(clause).toBe(
+			"SET scores = array::slice(array::concat(scores, $p0), 0, $p1)",
+		);
+		expect(bindings).toEqual({ p0: [85, 90], p1: 5 });
+	});
+
+	test("$push with $each and $slice negative", () => {
+		const { clause, bindings } = translateUpdate({
+			$push: { scores: { $each: [85, 90], $slice: -3 } },
+		});
+		expect(clause).toBe(
+			"SET scores = array::slice(array::concat(scores, $p0), $p1)",
+		);
+		expect(bindings).toEqual({ p0: [85, 90], p1: -3 });
+	});
+
+	test("$push with $each and $position", () => {
+		const { clause, bindings } = translateUpdate({
+			$push: { scores: { $each: [85], $position: 0 } },
+		});
+		expect(clause).toBe(
+			"SET scores = array::concat(array::concat(array::slice(scores, 0, $p1), $p0), array::slice(scores, $p1))",
+		);
+		expect(bindings).toEqual({ p0: [85], p1: 0 });
+	});
+
+	test("$push with $each + $sort + $slice combined", () => {
+		const { clause, bindings } = translateUpdate({
+			$push: { scores: { $each: [85, 90], $sort: 1, $slice: 5 } },
+		});
+		expect(clause).toBe(
+			"SET scores = array::slice(array::sort::asc(array::concat(scores, $p0)), 0, $p1)",
+		);
+		expect(bindings).toEqual({ p0: [85, 90], p1: 5 });
+	});
+
+	// -----------------------------------------------------------------
+	// $pop
+	// -----------------------------------------------------------------
+	test("$pop removes last element", () => {
+		const { clause, bindings } = translateUpdate({
+			$pop: { tags: 1 },
+		});
+		expect(clause).toBe(
+			"SET tags = array::slice(tags, 0, array::len(tags) - 1)",
+		);
+		expect(bindings).toEqual({});
+	});
+
+	test("$pop removes first element", () => {
+		const { clause, bindings } = translateUpdate({
+			$pop: { tags: -1 },
+		});
+		expect(clause).toBe("SET tags = array::slice(tags, 1)");
+		expect(bindings).toEqual({});
+	});
+
+	// -----------------------------------------------------------------
+	// $pullAll
+	// -----------------------------------------------------------------
+	test("$pullAll removes all matching values", () => {
+		const { clause, bindings } = translateUpdate({
+			$pullAll: { tags: ["a", "b"] },
+		});
+		expect(clause).toBe("SET tags = array::complement(tags, $p0)");
+		expect(bindings).toEqual({ p0: ["a", "b"] });
+	});
+
+	// -----------------------------------------------------------------
 	// Empty
 	// -----------------------------------------------------------------
 	test("empty update produces empty clause", () => {

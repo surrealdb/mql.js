@@ -15,6 +15,7 @@ export { MongoClient } from "./mongo-client.ts";
 export { ObjectId } from "./object-id.ts";
 export type {
 	BulkWriteResult,
+	CollectionInfo,
 	CountDocumentsOptions,
 	DeleteResult,
 	Document,

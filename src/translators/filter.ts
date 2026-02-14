@@ -237,6 +237,24 @@ function translateOperators(
 				break;
 			}
 
+			// Array operators
+			case "$all": {
+				const p = nextParam(ctx);
+				bindings[p] = val;
+				parts.push(`${field} CONTAINSALL $${p}`);
+				break;
+			}
+			case "$size": {
+				const p = nextParam(ctx);
+				bindings[p] = val;
+				parts.push(`array::len(${field}) = $${p}`);
+				break;
+			}
+			case "$elemMatch": {
+				parts.push(translateElemMatch(field, val as Document, ctx, bindings));
+				break;
+			}
+
 			// Negation wrapper
 			case "$not": {
 				const inner = translateOperators(field, val as Document, ctx, bindings);
@@ -250,4 +268,72 @@ function translateOperators(
 	}
 
 	return parts.join(" AND ");
+}
+
+/**
+ * Translate $elemMatch for a specific field.
+ *
+ * Strategy:
+ * - For a simple equality object `{ k: v }`, use `field CONTAINS $p`
+ * - For operator-based conditions, use the `field[WHERE cond]` syntax
+ *   and check that at least one element matched.
+ */
+function translateElemMatch(
+	field: string,
+	conditions: Document,
+	ctx: Context,
+	bindings: Record<string, unknown>,
+): string {
+	const isAllEquality = Object.keys(conditions).every(
+		(k) => !k.startsWith("$") && !isOperatorObject(conditions[k]),
+	);
+
+	if (isAllEquality) {
+		// Simple equality: { $elemMatch: { k: v, k2: v2 } }
+		// → field CONTAINS { k: v, k2: v2 }
+		const p = nextParam(ctx);
+		bindings[p] = conditions;
+		return `${field} CONTAINS $${p}`;
+	}
+
+	// Check if all keys are operators (apply to the element itself)
+	const isAllOperators = Object.keys(conditions).every((k) =>
+		k.startsWith("$"),
+	);
+
+	if (isAllOperators) {
+		// { $elemMatch: { $gte: 80, $lt: 90 } }
+		// Operators apply to each element value directly
+		// → array::len(field[WHERE $this >= $p0 AND $this < $p1]) > 0
+		const subParts: string[] = [];
+		for (const [op, val] of Object.entries(conditions)) {
+			subParts.push(
+				...translateOperators(
+					"$this",
+					{ [op]: val } as Document,
+					ctx,
+					bindings,
+				).split(" AND "),
+			);
+		}
+		const whereClause = subParts.join(" AND ");
+		return `array::len(${field}[WHERE ${whereClause}]) > 0`;
+	}
+
+	// Mixed: field conditions with possible operators on sub-fields
+	// { $elemMatch: { score: { $gt: 80 }, grade: "A" } }
+	// → array::len(field[WHERE score > $p0 AND grade = $p1]) > 0
+	const subParts: string[] = [];
+	for (const [key, value] of Object.entries(conditions)) {
+		if (isOperatorObject(value)) {
+			subParts.push(translateOperators(key, value as Document, ctx, bindings));
+		} else {
+			const p = nextParam(ctx);
+			bindings[p] = value;
+			subParts.push(`${key} = $${p}`);
+		}
+	}
+
+	const whereClause = subParts.join(" AND ");
+	return `array::len(${field}[WHERE ${whereClause}]) > 0`;
 }

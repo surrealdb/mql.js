@@ -572,4 +572,115 @@ describe("array update operators", () => {
 		const updated = await col.findOne({ name: "Alice" });
 		expect(updated?.tags).not.toContain("b");
 	});
+
+	test("$push with $each appends multiple values", async () => {
+		await col.insertOne({ name: "Alice", age: 30, tags: ["a"] });
+		await col.updateOne(
+			{ name: "Alice" },
+			{ $push: { tags: { $each: ["b", "c", "d"] } } },
+		);
+		const updated = await col.findOne({ name: "Alice" });
+		expect(updated?.tags).toHaveLength(4);
+		expect(updated?.tags).toContain("b");
+		expect(updated?.tags).toContain("d");
+	});
+
+	test("$push with $each and $slice keeps N elements", async () => {
+		await col.insertOne({ name: "Alice", age: 30, score: 0, tags: ["a", "b"] });
+		await col.updateOne(
+			{ name: "Alice" },
+			{ $push: { tags: { $each: ["c", "d", "e"], $slice: 3 } } },
+		);
+		const updated = await col.findOne({ name: "Alice" });
+		expect(updated?.tags).toHaveLength(3);
+	});
+
+	test("$pop removes last element", async () => {
+		await col.insertOne({ name: "Alice", age: 30, tags: ["a", "b", "c"] });
+		await col.updateOne({ name: "Alice" }, { $pop: { tags: 1 } });
+		const updated = await col.findOne({ name: "Alice" });
+		expect(updated?.tags).toHaveLength(2);
+		expect(updated?.tags).not.toContain("c");
+	});
+
+	test("$pop removes first element", async () => {
+		await col.insertOne({ name: "Alice", age: 30, tags: ["a", "b", "c"] });
+		await col.updateOne({ name: "Alice" }, { $pop: { tags: -1 } });
+		const updated = await col.findOne({ name: "Alice" });
+		expect(updated?.tags).toHaveLength(2);
+		expect(updated?.tags).not.toContain("a");
+	});
+
+	test("$pullAll removes all matching values", async () => {
+		await col.insertOne({
+			name: "Alice",
+			age: 30,
+			tags: ["a", "b", "c", "d"],
+		});
+		await col.updateOne({ name: "Alice" }, { $pullAll: { tags: ["b", "d"] } });
+		const updated = await col.findOne({ name: "Alice" });
+		expect(updated?.tags).toEqual(["a", "c"]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// DB OPERATIONS
+// ---------------------------------------------------------------------------
+
+describe("Db operations", () => {
+	test("createCollection creates a table", async () => {
+		const newCol = await db.createCollection("test_create_col");
+		expect(newCol.collectionName).toBe("test_create_col");
+		// Clean up
+		await db.dropCollection("test_create_col");
+	});
+
+	test("listCollections returns created tables", async () => {
+		// The 'users' table exists from beforeEach
+		await col.insertOne({ name: "Alice", age: 30 });
+		const collections = await db.listCollections();
+		const names = collections.map((c) => c.name);
+		expect(names).toContain("users");
+		for (const c of collections) {
+			expect(c.type).toBe("collection");
+		}
+	});
+
+	test("dropCollection removes a table", async () => {
+		await db.createCollection("temp_drop");
+		const result = await db.dropCollection("temp_drop");
+		expect(result).toBe(true);
+		const collections = await db.listCollections();
+		const names = collections.map((c) => c.name);
+		expect(names).not.toContain("temp_drop");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// ARRAY FILTER OPERATORS
+// ---------------------------------------------------------------------------
+
+describe("array filter operators", () => {
+	test("$all finds documents with all values", async () => {
+		await col.insertMany([
+			{ name: "Alice", age: 30, tags: ["a", "b", "c"] },
+			{ name: "Bob", age: 25, tags: ["a", "b"] },
+			{ name: "Charlie", age: 35, tags: ["a"] },
+		]);
+		const results = await col.find({ tags: { $all: ["a", "b"] } }).toArray();
+		expect(results).toHaveLength(2);
+		const names = results.map((r) => r.name).sort();
+		expect(names).toEqual(["Alice", "Bob"]);
+	});
+
+	test("$size filters by array length", async () => {
+		await col.insertMany([
+			{ name: "Alice", age: 30, tags: ["a", "b", "c"] },
+			{ name: "Bob", age: 25, tags: ["a", "b"] },
+			{ name: "Charlie", age: 35, tags: ["a"] },
+		]);
+		const results = await col.find({ tags: { $size: 2 } }).toArray();
+		expect(results).toHaveLength(1);
+		expect(results[0].name).toBe("Bob");
+	});
 });

@@ -23,6 +23,15 @@ export type OptionalId<TSchema extends Document> = TSchema extends {
 export type WithoutId<TSchema extends Document> = Omit<TSchema, "_id">;
 
 // ---------------------------------------------------------------------------
+// Collection info (for listCollections)
+// ---------------------------------------------------------------------------
+
+export interface CollectionInfo {
+	name: string;
+	type: "collection";
+}
+
+// ---------------------------------------------------------------------------
 // Filter types
 // ---------------------------------------------------------------------------
 
@@ -48,10 +57,18 @@ export interface EvaluationOperators {
 	$regex?: RegExp | string;
 }
 
+/** Array operators. */
+export interface ArrayOperators {
+	$all?: unknown[];
+	$elemMatch?: Document;
+	$size?: number;
+}
+
 /** Operators that can be applied to a single field value. */
 export type FieldOperators<T = unknown> = ComparisonOperators<T> &
 	ElementOperators &
-	EvaluationOperators & {
+	EvaluationOperators &
+	ArrayOperators & {
 		$not?: FieldOperators<T>;
 	};
 
@@ -87,6 +104,8 @@ export interface UpdateFilter<TSchema extends Document = Document> {
 	$addToSet?: { [key: string]: unknown };
 	$rename?: { [key: string]: string };
 	$currentDate?: { [key: string]: true | { $type: "date" | "timestamp" } };
+	$pop?: { [key: string]: 1 | -1 };
+	$pullAll?: { [key: string]: unknown[] };
 }
 
 // ---------------------------------------------------------------------------
