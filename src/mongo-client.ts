@@ -15,6 +15,13 @@ export class MongoClient {
 	private readonly _options: MongoClientOptions;
 	private _defaultDbName?: string;
 
+	/**
+	 * Create a new MongoClient instance.
+	 *
+	 * @param url     - MongoDB-style connection string
+	 *                  (e.g. `mongodb://user:pass@host:port/database`).
+	 * @param options - Optional client settings such as namespace or database overrides.
+	 */
 	constructor(url: string, options?: MongoClientOptions) {
 		this._url = url;
 		this._options = options ?? {};

@@ -26,6 +26,7 @@ export type WithoutId<TSchema extends Document> = Omit<TSchema, "_id">;
 // Collection info (for listCollections)
 // ---------------------------------------------------------------------------
 
+/** Metadata about a collection, as returned by {@link Db.listCollections}. */
 export interface CollectionInfo {
 	name: string;
 	type: "collection";
@@ -125,17 +126,20 @@ export type Projection = { [key: string]: 1 | 0 | boolean };
 // Result types
 // ---------------------------------------------------------------------------
 
+/** Result of {@link Collection.insertOne}. */
 export interface InsertOneResult {
 	acknowledged: boolean;
 	insertedId: ObjectId | string | number;
 }
 
+/** Result of {@link Collection.insertMany}. */
 export interface InsertManyResult {
 	acknowledged: boolean;
 	insertedCount: number;
 	insertedIds: Record<number, ObjectId | string | number>;
 }
 
+/** Result of {@link Collection.updateOne} and {@link Collection.updateMany}. */
 export interface UpdateResult {
 	acknowledged: boolean;
 	matchedCount: number;
@@ -144,16 +148,22 @@ export interface UpdateResult {
 	upsertedCount: number;
 }
 
+/** Result of {@link Collection.deleteOne} and {@link Collection.deleteMany}. */
 export interface DeleteResult {
 	acknowledged: boolean;
 	deletedCount: number;
 }
 
+/**
+ * Result of {@link Collection.findOneAndUpdate}, {@link Collection.findOneAndDelete},
+ * or {@link Collection.findOneAndReplace} when `includeResultMetadata` is `true`.
+ */
 export interface ModifyResult<TSchema extends Document = Document> {
 	value: TSchema | null;
 	ok: number;
 }
 
+/** Result of a bulk write operation. */
 export interface BulkWriteResult {
 	acknowledged: boolean;
 	insertedCount: number;
@@ -169,6 +179,7 @@ export interface BulkWriteResult {
 // Options types
 // ---------------------------------------------------------------------------
 
+/** Options for {@link Collection.find} and {@link Collection.findOne}. */
 export interface FindOptions {
 	projection?: Projection;
 	sort?: Sort;
@@ -176,14 +187,17 @@ export interface FindOptions {
 	skip?: number;
 }
 
+/** Options for {@link Collection.updateOne} and {@link Collection.updateMany}. */
 export interface UpdateOptions {
 	upsert?: boolean;
 }
 
+/** Options for {@link Collection.replaceOne}. */
 export interface ReplaceOptions {
 	upsert?: boolean;
 }
 
+/** Options for {@link Collection.findOneAndUpdate}. */
 export interface FindOneAndUpdateOptions {
 	projection?: Projection;
 	sort?: Sort;
@@ -192,12 +206,14 @@ export interface FindOneAndUpdateOptions {
 	includeResultMetadata?: boolean;
 }
 
+/** Options for {@link Collection.findOneAndDelete}. */
 export interface FindOneAndDeleteOptions {
 	projection?: Projection;
 	sort?: Sort;
 	includeResultMetadata?: boolean;
 }
 
+/** Options for {@link Collection.findOneAndReplace}. */
 export interface FindOneAndReplaceOptions {
 	projection?: Projection;
 	sort?: Sort;
@@ -206,11 +222,13 @@ export interface FindOneAndReplaceOptions {
 	includeResultMetadata?: boolean;
 }
 
+/** Options for {@link Collection.countDocuments}. */
 export interface CountDocumentsOptions {
 	skip?: number;
 	limit?: number;
 }
 
+/** Options for the {@link MongoClient} constructor. */
 export interface MongoClientOptions {
 	/** SurrealDB namespace to use. Defaults to "default". */
 	namespace?: string;

@@ -217,6 +217,7 @@ export class FindCursor<TSchema extends Document = Document> {
 	// Async iteration
 	// -----------------------------------------------------------------------
 
+	/** Supports `for await...of` iteration over the cursor's documents. */
 	async *[Symbol.asyncIterator](): AsyncGenerator<TSchema> {
 		this._throwIfClosed();
 		await this._execute();

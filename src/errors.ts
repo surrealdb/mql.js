@@ -5,6 +5,7 @@
  * code (try/catch on MongoServerError, etc.) continues to work.
  */
 
+/** Base class for all MongoDB-compatible errors. */
 export class MongoError extends Error {
 	/** Numeric error code, when available. */
 	code?: number;

@@ -38,6 +38,12 @@ function hexToBytes(hex: string): Uint8Array {
 export class ObjectId {
 	private readonly _id: string;
 
+	/**
+	 * Create a new ObjectId.
+	 *
+	 * @param id - A 24-character hex string, an existing ObjectId to copy,
+	 *             or omit to auto-generate a new unique identifier.
+	 */
 	constructor(id?: string | ObjectId) {
 		if (id instanceof ObjectId) {
 			this._id = id._id;
@@ -122,10 +128,12 @@ export class ObjectId {
 		return false;
 	}
 
+	/** Return the 24-char hex string representation. */
 	toString(): string {
 		return this._id;
 	}
 
+	/** Serialize to JSON as a hex string. */
 	toJSON(): string {
 		return this._id;
 	}
