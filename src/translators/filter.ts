@@ -9,16 +9,65 @@
 
 import type { Document } from "../types.ts";
 
+// ---------------------------------------------------------------------------
+// BSON type → SurrealQL type::is_*() mapping
+// ---------------------------------------------------------------------------
+
+/** Maps MongoDB BSON type strings and numeric codes to SurrealQL type-check function names. */
+const BSON_TYPE_MAP: Record<string | number, string> = {
+	// String aliases
+	double: "type::is_float",
+	string: "type::is_string",
+	object: "type::is_object",
+	array: "type::is_array",
+	bool: "type::is_bool",
+	date: "type::is_datetime",
+	null: "type::is_null",
+	int: "type::is_int",
+	long: "type::is_int",
+	decimal: "type::is_decimal",
+	number: "type::is_number",
+	// Numeric BSON type codes
+	1: "type::is_float",
+	2: "type::is_string",
+	3: "type::is_object",
+	4: "type::is_array",
+	8: "type::is_bool",
+	9: "type::is_datetime",
+	10: "type::is_null",
+	16: "type::is_int",
+	18: "type::is_int",
+	19: "type::is_decimal",
+};
+
 export interface TranslatedFilter {
 	/** SurrealQL expression to be used after WHERE (empty string when no filter). */
 	clause: string;
 	/** Parameterised bindings for the clause. */
 	bindings: Record<string, unknown>;
+	/**
+	 * Optional ORDER BY clause implied by $near / $nearSphere.
+	 * When set, results should be sorted by distance ascending
+	 * (unless an explicit sort is provided).
+	 */
+	nearSort?: string;
+}
+
+/** Earth's mean radius in metres, used for $centerSphere radian→metre conversion. */
+const EARTH_RADIUS_M = 6_378_100;
+
+/** Options for `translateFilter`. */
+export interface TranslateFilterOptions {
+	/** Fields that have a FULLTEXT index, used for $text queries. */
+	textFields?: string[];
 }
 
 /** Binding counter – scoped per `translateFilter` call via the context. */
 interface Context {
 	counter: number;
+	textFields?: string[];
+	/** Populated by $near / $nearSphere to signal distance-based sorting. */
+	nearSort?: string;
 }
 
 function nextParam(ctx: Context): string {
@@ -40,16 +89,23 @@ function escapeField(field: string): string {
  * Translate a MongoDB filter document to a SurrealQL WHERE clause.
  * Returns an empty clause when the filter is empty or undefined.
  */
-export function translateFilter(filter?: Document | null): TranslatedFilter {
+export function translateFilter(
+	filter?: Document | null,
+	options?: TranslateFilterOptions,
+): TranslatedFilter {
 	if (!filter || Object.keys(filter).length === 0) {
 		return { clause: "", bindings: {} };
 	}
 
-	const ctx: Context = { counter: 0 };
+	const ctx: Context = { counter: 0, textFields: options?.textFields };
 	const bindings: Record<string, unknown> = {};
 	const clause = translateDocument(filter, ctx, bindings);
 
-	return { clause, bindings };
+	const result: TranslatedFilter = { clause, bindings };
+	if (ctx.nearSort) {
+		result.nearSort = ctx.nearSort;
+	}
+	return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -84,6 +140,8 @@ function translateDocument(
 				bindings,
 			);
 			parts.push(`NOT (${inner})`);
+		} else if (key === "$text") {
+			parts.push(translateTextSearch(value as Document, ctx, bindings));
 		} else {
 			// Field-level condition
 			parts.push(translateFieldCondition(key, value, ctx, bindings));
@@ -255,6 +313,44 @@ function translateOperators(
 				break;
 			}
 
+			// Type checking
+			case "$type": {
+				const fn = BSON_TYPE_MAP[val as string | number];
+				if (!fn) {
+					throw new Error(`Unsupported $type value: ${val}`);
+				}
+				parts.push(`${fn}(${field})`);
+				break;
+			}
+
+			// Modulo
+			case "$mod": {
+				const [divisor, remainder] = val as [number, number];
+				const pDiv = nextParam(ctx);
+				const pRem = nextParam(ctx);
+				bindings[pDiv] = divisor;
+				bindings[pRem] = remainder;
+				parts.push(`${field} % $${pDiv} = $${pRem}`);
+				break;
+			}
+
+			// Geospatial operators
+			case "$geoWithin": {
+				parts.push(translateGeoWithin(field, val as Document, ctx, bindings));
+				break;
+			}
+			case "$geoIntersects": {
+				parts.push(
+					translateGeoIntersects(field, val as Document, ctx, bindings),
+				);
+				break;
+			}
+			case "$near":
+			case "$nearSphere": {
+				parts.push(translateNear(field, val as Document, ctx, bindings));
+				break;
+			}
+
 			// Negation wrapper
 			case "$not": {
 				const inner = translateOperators(field, val as Document, ctx, bindings);
@@ -268,6 +364,204 @@ function translateOperators(
 	}
 
 	return parts.join(" AND ");
+}
+
+// ---------------------------------------------------------------------------
+// Geospatial operator helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Translate $geoWithin – documents whose geometry is entirely within a shape.
+ *
+ * Supports:
+ *  - $geometry (GeoJSON Polygon/MultiPolygon) → field INSIDE $p
+ *  - $centerSphere [[lon,lat], radiusRad]     → geo::distance(field, $p) <= radiusMetres
+ *  - $center [[x,y], radius]                  → geo::distance(field, $p) <= radius (metres)
+ *  - $box [[bl], [tr]]                        → field INSIDE $polygon
+ *  - $polygon [[p1],[p2],…]                   → field INSIDE $polygon
+ */
+function translateGeoWithin(
+	field: string,
+	val: Document,
+	ctx: Context,
+	bindings: Record<string, unknown>,
+): string {
+	if (val.$geometry) {
+		// GeoJSON geometry – use INSIDE operator
+		const p = nextParam(ctx);
+		bindings[p] = val.$geometry;
+		return `${field} INSIDE $${p}`;
+	}
+
+	if (val.$centerSphere) {
+		// Spherical circle: [[lon, lat], radiusInRadians]
+		const [center, radiusRad] = val.$centerSphere as [[number, number], number];
+		const pCenter = nextParam(ctx);
+		const pDist = nextParam(ctx);
+		bindings[pCenter] = { type: "Point", coordinates: center };
+		bindings[pDist] = radiusRad * EARTH_RADIUS_M;
+		return `geo::distance(${field}, $${pCenter}) <= $${pDist}`;
+	}
+
+	if (val.$center) {
+		// Flat circle: [[x, y], radius]  – radius treated as metres
+		const [center, radius] = val.$center as [[number, number], number];
+		const pCenter = nextParam(ctx);
+		const pDist = nextParam(ctx);
+		bindings[pCenter] = { type: "Point", coordinates: center };
+		bindings[pDist] = radius;
+		return `geo::distance(${field}, $${pCenter}) <= $${pDist}`;
+	}
+
+	if (val.$box) {
+		// Bounding box [[blX,blY],[trX,trY]] → convert to polygon, use INSIDE
+		const [[blX, blY], [trX, trY]] = val.$box as [
+			[number, number],
+			[number, number],
+		];
+		const polygon = {
+			type: "Polygon",
+			coordinates: [
+				[
+					[blX, blY],
+					[trX, blY],
+					[trX, trY],
+					[blX, trY],
+					[blX, blY],
+				],
+			],
+		};
+		const p = nextParam(ctx);
+		bindings[p] = polygon;
+		return `${field} INSIDE $${p}`;
+	}
+
+	if (val.$polygon) {
+		// Legacy polygon: [[x1,y1],[x2,y2],…] – auto-close ring
+		const points = val.$polygon as [number, number][];
+		const ring = [...points];
+		// Close the ring if not already closed
+		const first = ring[0];
+		const last = ring[ring.length - 1];
+		if (first[0] !== last[0] || first[1] !== last[1]) {
+			ring.push([...first] as [number, number]);
+		}
+		const polygon = { type: "Polygon", coordinates: [ring] };
+		const p = nextParam(ctx);
+		bindings[p] = polygon;
+		return `${field} INSIDE $${p}`;
+	}
+
+	throw new Error(
+		"$geoWithin requires $geometry, $centerSphere, $center, $box, or $polygon",
+	);
+}
+
+/**
+ * Translate $geoIntersects – documents whose geometry intersects a shape.
+ *
+ * MongoDB: { field: { $geoIntersects: { $geometry: { type: "Polygon", … } } } }
+ * SurrealQL: field INTERSECTS $p
+ */
+function translateGeoIntersects(
+	field: string,
+	val: Document,
+	ctx: Context,
+	bindings: Record<string, unknown>,
+): string {
+	if (!val.$geometry) {
+		throw new Error("$geoIntersects requires $geometry");
+	}
+	const p = nextParam(ctx);
+	bindings[p] = val.$geometry;
+	return `${field} INTERSECTS $${p}`;
+}
+
+/**
+ * Translate $near / $nearSphere – nearest documents to a point.
+ *
+ * MongoDB: { field: { $near: { $geometry: { type: "Point", … }, $maxDistance: 5000 } } }
+ * SurrealQL: geo::distance(field, $p) <= $maxDist  (+ ORDER BY geo::distance ASC)
+ *
+ * Both $near and $nearSphere use spherical geometry via geo::distance()
+ * since SurrealDB always computes haversine distances.
+ */
+function translateNear(
+	field: string,
+	val: Document,
+	ctx: Context,
+	bindings: Record<string, unknown>,
+): string {
+	if (!val.$geometry) {
+		throw new Error("$near/$nearSphere requires $geometry");
+	}
+
+	const pPoint = nextParam(ctx);
+	bindings[pPoint] = val.$geometry;
+
+	const distExpr = `geo::distance(${field}, $${pPoint})`;
+
+	// Set the distance sort (Collection uses this if no explicit sort)
+	ctx.nearSort = `ORDER BY ${distExpr} ASC`;
+
+	const conditions: string[] = [];
+
+	if (val.$minDistance !== undefined) {
+		const pMin = nextParam(ctx);
+		bindings[pMin] = val.$minDistance;
+		conditions.push(`${distExpr} >= $${pMin}`);
+	}
+
+	if (val.$maxDistance !== undefined) {
+		const pMax = nextParam(ctx);
+		bindings[pMax] = val.$maxDistance;
+		conditions.push(`${distExpr} <= $${pMax}`);
+	}
+
+	// If no distance constraints, the sort alone handles "nearest"
+	// but we still need to return a valid clause (always-true condition)
+	if (conditions.length === 0) {
+		return `${distExpr} >= 0`;
+	}
+
+	return conditions.join(" AND ");
+}
+
+/**
+ * Translate a $text search query.
+ *
+ * MongoDB: { $text: { $search: "coffee shop" } }
+ * SurrealQL: field @@ $p0  (OR'd for multiple text-indexed fields)
+ *
+ * Requires text fields to be registered via `createIndex()`.
+ */
+function translateTextSearch(
+	textOp: Document,
+	ctx: Context,
+	bindings: Record<string, unknown>,
+): string {
+	const search = textOp.$search as string;
+	if (typeof search !== "string") {
+		throw new Error("$text requires a $search string");
+	}
+
+	const fields = ctx.textFields;
+	if (!fields || fields.length === 0) {
+		throw new Error(
+			"$text query requires a text index. Call createIndex() with a 'text' field first.",
+		);
+	}
+
+	const p = nextParam(ctx);
+	bindings[p] = search;
+
+	if (fields.length === 1) {
+		return `${fields[0]} @@ $${p}`;
+	}
+
+	// Multiple text-indexed fields: OR them together
+	const fieldClauses = fields.map((f) => `${f} @@ $${p}`);
+	return `(${fieldClauses.join(" OR ")})`;
 }
 
 /**

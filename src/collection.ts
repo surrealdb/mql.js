@@ -17,6 +17,7 @@ import { translateSort } from "./translators/sort.ts";
 import { translateReplacement, translateUpdate } from "./translators/update.ts";
 import type {
 	CountDocumentsOptions,
+	CreateIndexOptions,
 	DeleteResult,
 	Document,
 	Filter,
@@ -24,6 +25,8 @@ import type {
 	FindOneAndReplaceOptions,
 	FindOneAndUpdateOptions,
 	FindOptions,
+	IndexDescription,
+	IndexSpecification,
 	InsertManyResult,
 	InsertOneResult,
 	ModifyResult,
@@ -63,6 +66,12 @@ export class Collection<TSchema extends Document = Document> {
 	/** @internal */
 	readonly _db: Db;
 
+	/** @internal – fields that have a FULLTEXT index, used for $text queries. */
+	_textFields: string[] = [];
+
+	/** @internal – tracked indexes for this collection. */
+	private _indexes: IndexDescription[] = [];
+
 	/** @internal – use `createCollection` factory instead. */
 	constructor(db: Db, name: string) {
 		this._db = db;
@@ -77,6 +86,13 @@ export class Collection<TSchema extends Document = Document> {
 	/** Escaped table name for SurrealQL statements. */
 	private get table(): string {
 		return escapeTable(this.collectionName);
+	}
+
+	/** @internal – filter options including text-indexed fields. */
+	private get _filterOptions() {
+		return this._textFields.length > 0
+			? { textFields: this._textFields }
+			: undefined;
 	}
 
 	/**
@@ -169,9 +185,12 @@ export class Collection<TSchema extends Document = Document> {
 		filter?: Filter<TSchema>,
 		options?: FindOptions,
 	): Promise<TSchema | null> {
-		const { clause, bindings } = translateFilter(filter as Document);
+		const { clause, bindings, nearSort } = translateFilter(
+			filter as Document,
+			this._filterOptions,
+		);
 		const proj = translateProjection(options?.projection);
-		const sortClause = translateSort(options?.sort);
+		const sortClause = translateSort(options?.sort) || nearSort || "";
 
 		const fields = proj.fields || "*";
 		let sql = `SELECT ${fields} FROM ${this.table}`;
@@ -226,13 +245,16 @@ export class Collection<TSchema extends Document = Document> {
 		update: Document,
 		options?: UpdateOptions & { limit?: number },
 	): Promise<UpdateResult> {
-		const { clause: whereClause, bindings: filterBindings } =
-			translateFilter(filter);
+		const { clause: whereClause, bindings: filterBindings } = translateFilter(
+			filter,
+			this._filterOptions,
+		);
 
 		const paramOffset = Object.keys(filterBindings).length;
 		const { clause: setClause, bindings: updateBindings } = translateUpdate(
 			update,
 			paramOffset,
+			{ arrayFilters: options?.arrayFilters },
 		);
 		const allBindings = { ...filterBindings, ...updateBindings };
 
@@ -312,6 +334,7 @@ export class Collection<TSchema extends Document = Document> {
 	): Promise<UpdateResult> {
 		const { clause: whereClause, bindings: filterBindings } = translateFilter(
 			filter as Document,
+			this._filterOptions,
 		);
 
 		if (!whereClause) {
@@ -364,7 +387,10 @@ export class Collection<TSchema extends Document = Document> {
 	 * Deletes the first document matching the filter.
 	 */
 	async deleteOne(filter: Filter<TSchema>): Promise<DeleteResult> {
-		const { clause, bindings } = translateFilter(filter as Document);
+		const { clause, bindings } = translateFilter(
+			filter as Document,
+			this._filterOptions,
+		);
 
 		// SurrealQL doesn't support LIMIT on DELETE, so find first, then delete by id.
 		let findSql = `SELECT id FROM ${this.table}`;
@@ -389,7 +415,10 @@ export class Collection<TSchema extends Document = Document> {
 	 * Deletes all documents matching the filter.
 	 */
 	async deleteMany(filter?: Filter<TSchema>): Promise<DeleteResult> {
-		const { clause, bindings } = translateFilter(filter as Document);
+		const { clause, bindings } = translateFilter(
+			filter as Document,
+			this._filterOptions,
+		);
 
 		let sql = `DELETE FROM ${this.table}`;
 		if (clause) sql += ` WHERE ${clause}`;
@@ -410,7 +439,10 @@ export class Collection<TSchema extends Document = Document> {
 		filter?: Filter<TSchema>,
 		options?: CountDocumentsOptions,
 	): Promise<number> {
-		const { clause, bindings } = translateFilter(filter as Document);
+		const { clause, bindings } = translateFilter(
+			filter as Document,
+			this._filterOptions,
+		);
 
 		let sql = `SELECT count() AS count FROM ${this.table}`;
 		if (clause) sql += ` WHERE ${clause}`;
@@ -448,7 +480,10 @@ export class Collection<TSchema extends Document = Document> {
 		key: string,
 		filter?: Filter<TSchema>,
 	): Promise<T[]> {
-		const { clause, bindings } = translateFilter(filter as Document);
+		const { clause, bindings } = translateFilter(
+			filter as Document,
+			this._filterOptions,
+		);
 
 		let sql = `SELECT array::distinct(${key}) AS vals FROM ${this.table}`;
 		if (clause) sql += ` WHERE ${clause}`;
@@ -458,6 +493,77 @@ export class Collection<TSchema extends Document = Document> {
 
 		if (!rows || rows.length === 0) return [];
 		return rows[0].vals ?? [];
+	}
+
+	// -----------------------------------------------------------------------
+	// INDEXES
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Creates an index on the collection.
+	 *
+	 * Supports regular indexes (`{ field: 1 }`) and text indexes (`{ field: "text" }`).
+	 * Text indexes enable `$text` queries on the indexed fields.
+	 *
+	 * @returns The name of the created index.
+	 */
+	async createIndex(
+		spec: IndexSpecification,
+		options?: CreateIndexOptions,
+	): Promise<string> {
+		const entries = Object.entries(spec);
+		const textFields = entries.filter(([, v]) => v === "text").map(([k]) => k);
+		const isTextIndex = textFields.length > 0;
+
+		// Generate index name: field1_1_field2_text or use provided name
+		const name =
+			options?.name ?? entries.map(([k, v]) => `${k}_${v}`).join("_");
+
+		const fields = entries.map(([k]) => k).join(", ");
+
+		let sql: string;
+		if (isTextIndex) {
+			sql = `DEFINE INDEX ${name} ON ${this.table} FIELDS ${fields} SEARCH ANALYZER blank BM25`;
+		} else {
+			sql = `DEFINE INDEX ${name} ON ${this.table} FIELDS ${fields}`;
+		}
+
+		await this.exec(sql);
+
+		// Track the index
+		this._indexes.push({ name, key: spec });
+		if (isTextIndex) {
+			this._textFields.push(...textFields);
+		}
+
+		return name;
+	}
+
+	/**
+	 * Drops an index from the collection by name.
+	 */
+	async dropIndex(name: string): Promise<void> {
+		await this.exec(`REMOVE INDEX ${name} ON ${this.table}`);
+
+		// Remove from tracked indexes
+		const idx = this._indexes.findIndex((i) => i.name === name);
+		if (idx !== -1) {
+			const removed = this._indexes.splice(idx, 1)[0];
+			// Remove any text fields from this index
+			const textFields = Object.entries(removed.key)
+				.filter(([, v]) => v === "text")
+				.map(([k]) => k);
+			this._textFields = this._textFields.filter(
+				(f) => !textFields.includes(f),
+			);
+		}
+	}
+
+	/**
+	 * Returns an array of index descriptions for this collection.
+	 */
+	listIndexes(): IndexDescription[] {
+		return [...this._indexes];
 	}
 
 	// -----------------------------------------------------------------------
@@ -487,12 +593,14 @@ export class Collection<TSchema extends Document = Document> {
 
 		const { clause: whereClause, bindings: filterBindings } = translateFilter(
 			filter as Document,
+			this._filterOptions,
 		);
 
 		const paramOffset = Object.keys(filterBindings).length;
 		const { clause: setClause, bindings: updateBindings } = translateUpdate(
 			update as Document,
 			paramOffset,
+			{ arrayFilters: options?.arrayFilters },
 		);
 		const allBindings = { ...filterBindings, ...updateBindings };
 
@@ -547,7 +655,10 @@ export class Collection<TSchema extends Document = Document> {
 		filter: Filter<TSchema>,
 		options?: FindOneAndDeleteOptions,
 	): Promise<TSchema | ModifyResult<TSchema> | null> {
-		const { clause, bindings } = translateFilter(filter as Document);
+		const { clause, bindings } = translateFilter(
+			filter as Document,
+			this._filterOptions,
+		);
 
 		// SurrealQL doesn't support LIMIT on DELETE, so find first, then delete by id.
 		let findSql = `SELECT id FROM ${this.table}`;
@@ -601,6 +712,7 @@ export class Collection<TSchema extends Document = Document> {
 
 		const { clause: whereClause, bindings: filterBindings } = translateFilter(
 			filter as Document,
+			this._filterOptions,
 		);
 
 		if (!whereClause) {
@@ -671,8 +783,12 @@ export async function executeFind<TSchema extends Document>(
 		projectionIncludeId?: boolean;
 	},
 ): Promise<TSchema[]> {
-	const { clause, bindings } = translateFilter(filter);
-	const sortClause = translateSort(options.sort);
+	const filterOptions =
+		collection._textFields.length > 0
+			? { textFields: collection._textFields }
+			: undefined;
+	const { clause, bindings, nearSort } = translateFilter(filter, filterOptions);
+	const sortClause = translateSort(options.sort) || nearSort || "";
 
 	const fields = options.projectionFields || "*";
 	let sql = `SELECT ${fields} FROM ${escapeTable(collection.collectionName)}`;

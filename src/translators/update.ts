@@ -20,6 +20,7 @@ interface Context {
 	counter: number;
 	bindings: Record<string, unknown>;
 	parts: string[];
+	arrayFilters?: Document[];
 }
 
 function nextParam(ctx: Context): string {
@@ -31,6 +32,133 @@ function escapeField(field: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Positional array operator support
+// ---------------------------------------------------------------------------
+
+/** Regex matching $[] (all-positional) in a field path. */
+const ALL_POSITIONAL_RE = /\.\$\[\]/g;
+
+/** Regex matching $[identifier] (filtered-positional) in a field path. */
+const FILTERED_POSITIONAL_RE = /\.\$\[(\w+)\]/g;
+
+/**
+ * Resolve a MongoDB field path, transforming positional array markers
+ * into SurrealQL array access syntax.
+ *
+ * - `grades.$[].score`       → `grades[*].score`
+ * - `grades.$[elem].score`   → `grades[WHERE grade = $p0].score`
+ *
+ * Falls back to `escapeField()` for paths without positional markers.
+ */
+function resolveField(field: string, ctx: Context): string {
+	let resolved = field;
+
+	// Replace .$[] with [*]
+	resolved = resolved.replace(ALL_POSITIONAL_RE, "[*]");
+
+	// Replace .$[identifier] with [WHERE condition]
+	if (FILTERED_POSITIONAL_RE.test(resolved)) {
+		// Reset lastIndex after test()
+		FILTERED_POSITIONAL_RE.lastIndex = 0;
+
+		resolved = resolved.replace(
+			FILTERED_POSITIONAL_RE,
+			(_match, identifier: string) => {
+				const condition = resolveArrayFilter(identifier, ctx);
+				return `[WHERE ${condition}]`;
+			},
+		);
+	}
+
+	return escapeField(resolved);
+}
+
+/**
+ * Translate a single arrayFilter entry (field + value) into a SurrealQL condition.
+ * Pushes results into the `conditions` array.
+ */
+function translateArrayFilterEntry(
+	subField: string,
+	value: unknown,
+	ctx: Context,
+	conditions: string[],
+): void {
+	if (isOperatorObject(value)) {
+		for (const [op, opVal] of Object.entries(
+			value as Record<string, unknown>,
+		)) {
+			const p = nextParam(ctx);
+			ctx.bindings[p] = opVal;
+			const sqlOp = COMPARISON_OPS[op];
+			if (!sqlOp) {
+				throw new Error(`Unsupported operator in arrayFilter: ${op}`);
+			}
+			conditions.push(`${subField} ${sqlOp} $${p}`);
+		}
+	} else {
+		const p = nextParam(ctx);
+		ctx.bindings[p] = value;
+		conditions.push(`${subField} = $${p}`);
+	}
+}
+
+/**
+ * Look up an arrayFilter identifier and translate its conditions into
+ * a SurrealQL WHERE clause fragment.
+ *
+ * Given arrayFilters: [{ "elem.grade": "A", "elem.score": { $gte: 90 } }]
+ * and identifier "elem", returns: `grade = $p0 AND score >= $p1`
+ */
+function resolveArrayFilter(identifier: string, ctx: Context): string {
+	if (!ctx.arrayFilters || ctx.arrayFilters.length === 0) {
+		throw new Error(
+			`Positional operator $[${identifier}] requires arrayFilters`,
+		);
+	}
+
+	const prefix = `${identifier}.`;
+	const filter = ctx.arrayFilters.find((f) =>
+		Object.keys(f).some((k) => k.startsWith(prefix)),
+	);
+
+	if (!filter) {
+		throw new Error(`No arrayFilter found for identifier "${identifier}"`);
+	}
+
+	const conditions: string[] = [];
+	for (const [key, value] of Object.entries(filter)) {
+		if (!key.startsWith(prefix)) continue;
+		translateArrayFilterEntry(key.slice(prefix.length), value, ctx, conditions);
+	}
+
+	return conditions.join(" AND ");
+}
+
+/**
+ * Check whether a value looks like a MongoDB operator object.
+ */
+function isOperatorObject(value: unknown): boolean {
+	if (value === null || value === undefined || typeof value !== "object") {
+		return false;
+	}
+	if (Array.isArray(value)) return false;
+	const keys = Object.keys(value as Record<string, unknown>);
+	return keys.length > 0 && keys.every((k) => k.startsWith("$"));
+}
+
+/** Maps common MongoDB comparison operators to SurrealQL operators. */
+const COMPARISON_OPS: Record<string, string> = {
+	$eq: "=",
+	$ne: "!=",
+	$gt: ">",
+	$gte: ">=",
+	$lt: "<",
+	$lte: "<=",
+	$in: "IN",
+	$nin: "NOT IN",
+};
+
+// ---------------------------------------------------------------------------
 // Operator handlers – each one processes all field entries for its operator
 // ---------------------------------------------------------------------------
 
@@ -39,16 +167,17 @@ type OperatorHandler = (entries: [string, unknown][], ctx: Context) => void;
 /** $set: { k: v } → SET k = $p */
 function handleSet(entries: [string, unknown][], ctx: Context): void {
 	for (const [field, value] of entries) {
+		const f = resolveField(field, ctx);
 		const p = nextParam(ctx);
 		ctx.bindings[p] = value;
-		ctx.parts.push(`${escapeField(field)} = $${p}`);
+		ctx.parts.push(`${f} = $${p}`);
 	}
 }
 
 /** $unset: { k: "" } → SET k = NONE */
 function handleUnset(entries: [string, unknown][], ctx: Context): void {
 	for (const [field] of entries) {
-		ctx.parts.push(`${escapeField(field)} = NONE`);
+		ctx.parts.push(`${resolveField(field, ctx)} = NONE`);
 	}
 }
 
@@ -56,9 +185,10 @@ function handleUnset(entries: [string, unknown][], ctx: Context): void {
 function handleBinaryOp(op: string): OperatorHandler {
 	return (entries, ctx) => {
 		for (const [field, value] of entries) {
+			const f = resolveField(field, ctx);
 			const p = nextParam(ctx);
 			ctx.bindings[p] = value;
-			ctx.parts.push(`${escapeField(field)} ${op} $${p}`);
+			ctx.parts.push(`${f} ${op} $${p}`);
 		}
 	};
 }
@@ -67,11 +197,10 @@ function handleBinaryOp(op: string): OperatorHandler {
 function handleFunctionOp(fn: string): OperatorHandler {
 	return (entries, ctx) => {
 		for (const [field, value] of entries) {
+			const f = resolveField(field, ctx);
 			const p = nextParam(ctx);
 			ctx.bindings[p] = value;
-			ctx.parts.push(
-				`${escapeField(field)} = ${fn}(${escapeField(field)}, $${p})`,
-			);
+			ctx.parts.push(`${f} = ${fn}(${f}, $${p})`);
 		}
 	};
 }
@@ -100,9 +229,10 @@ function handlePush(entries: [string, unknown][], ctx: Context): void {
 		if (isPushModifier(value)) {
 			handlePushWithModifiers(field, value as Record<string, unknown>, ctx);
 		} else {
+			const f = resolveField(field, ctx);
 			const p = nextParam(ctx);
 			ctx.bindings[p] = value;
-			ctx.parts.push(`${escapeField(field)} += [$${p}]`);
+			ctx.parts.push(`${f} += [$${p}]`);
 		}
 	}
 }
@@ -115,7 +245,7 @@ function handlePushWithModifiers(
 	mods: Record<string, unknown>,
 	ctx: Context,
 ): void {
-	const f = escapeField(field);
+	const f = resolveField(field, ctx);
 	const eachParam = nextParam(ctx);
 	ctx.bindings[eachParam] = mods.$each;
 
@@ -166,20 +296,20 @@ function handlePushWithModifiers(
 /** $pull: { k: v } → SET k -= [$p] */
 function handlePull(entries: [string, unknown][], ctx: Context): void {
 	for (const [field, value] of entries) {
+		const f = resolveField(field, ctx);
 		const p = nextParam(ctx);
 		ctx.bindings[p] = value;
-		ctx.parts.push(`${escapeField(field)} -= [$${p}]`);
+		ctx.parts.push(`${f} -= [$${p}]`);
 	}
 }
 
 /** $addToSet: { k: v } → SET k = array::union(k, [$p]) */
 function handleAddToSet(entries: [string, unknown][], ctx: Context): void {
 	for (const [field, value] of entries) {
+		const f = resolveField(field, ctx);
 		const p = nextParam(ctx);
 		ctx.bindings[p] = value;
-		ctx.parts.push(
-			`${escapeField(field)} = array::union(${escapeField(field)}, [$${p}])`,
-		);
+		ctx.parts.push(`${f} = array::union(${f}, [$${p}])`);
 	}
 }
 
@@ -187,23 +317,23 @@ function handleAddToSet(entries: [string, unknown][], ctx: Context): void {
 function handleRename(entries: [string, unknown][], ctx: Context): void {
 	for (const [oldField, newField] of entries) {
 		ctx.parts.push(
-			`${escapeField(newField as string)} = ${escapeField(oldField)}`,
+			`${resolveField(newField as string, ctx)} = ${resolveField(oldField, ctx)}`,
 		);
-		ctx.parts.push(`${escapeField(oldField)} = NONE`);
+		ctx.parts.push(`${resolveField(oldField, ctx)} = NONE`);
 	}
 }
 
 /** $currentDate: { k: true } → SET k = time::now() */
 function handleCurrentDate(entries: [string, unknown][], ctx: Context): void {
 	for (const [field] of entries) {
-		ctx.parts.push(`${escapeField(field)} = time::now()`);
+		ctx.parts.push(`${resolveField(field, ctx)} = time::now()`);
 	}
 }
 
 /** $pop: { k: 1 } (remove last) or { k: -1 } (remove first) */
 function handlePop(entries: [string, unknown][], ctx: Context): void {
 	for (const [field, value] of entries) {
-		const f = escapeField(field);
+		const f = resolveField(field, ctx);
 		if (value === -1) {
 			// Remove first element
 			ctx.parts.push(`${f} = array::slice(${f}, 1)`);
@@ -214,20 +344,30 @@ function handlePop(entries: [string, unknown][], ctx: Context): void {
 	}
 }
 
+/** $setOnInsert: { k: v } → SET k = k ?? $p (only sets on insert during upsert) */
+function handleSetOnInsert(entries: [string, unknown][], ctx: Context): void {
+	for (const [field, value] of entries) {
+		const f = resolveField(field, ctx);
+		const p = nextParam(ctx);
+		ctx.bindings[p] = value;
+		ctx.parts.push(`${f} = ${f} ?? $${p}`);
+	}
+}
+
 /** $pullAll: { k: [v1, v2] } → SET k = array::complement(k, $p) */
 function handlePullAll(entries: [string, unknown][], ctx: Context): void {
 	for (const [field, value] of entries) {
+		const f = resolveField(field, ctx);
 		const p = nextParam(ctx);
 		ctx.bindings[p] = value;
-		ctx.parts.push(
-			`${escapeField(field)} = array::complement(${escapeField(field)}, $${p})`,
-		);
+		ctx.parts.push(`${f} = array::complement(${f}, $${p})`);
 	}
 }
 
 /** Map of operator names to their handler functions. */
 const OPERATOR_HANDLERS: Record<string, OperatorHandler> = {
 	$set: handleSet,
+	$setOnInsert: handleSetOnInsert,
 	$unset: handleUnset,
 	$inc: handleBinaryOp("+="),
 	$mul: handleBinaryOp("*="),
@@ -246,6 +386,14 @@ const OPERATOR_HANDLERS: Record<string, OperatorHandler> = {
 // Public API
 // ---------------------------------------------------------------------------
 
+/** Options for `translateUpdate`. */
+export interface TranslateUpdateOptions {
+	/** Starting index for parameter names (avoids collisions). */
+	startIndex?: number;
+	/** Array filters for positional filtered operators ($[identifier]). */
+	arrayFilters?: Document[];
+}
+
 /**
  * Translate a MongoDB update document into a SurrealQL SET clause.
  *
@@ -254,12 +402,14 @@ const OPERATOR_HANDLERS: Record<string, OperatorHandler> = {
  */
 export function translateUpdate(
 	update: Document,
-	startIndex = 0,
+	startIndex?: number,
+	options?: TranslateUpdateOptions,
 ): TranslatedUpdate {
 	const ctx: Context = {
-		counter: startIndex,
+		counter: startIndex ?? options?.startIndex ?? 0,
 		bindings: {},
 		parts: [],
+		arrayFilters: options?.arrayFilters,
 	};
 
 	for (const [op, fields] of Object.entries(update)) {

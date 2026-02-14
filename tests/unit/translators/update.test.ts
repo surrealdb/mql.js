@@ -125,6 +125,36 @@ describe("translateUpdate", () => {
 	});
 
 	// -----------------------------------------------------------------
+	// $setOnInsert
+	// -----------------------------------------------------------------
+	test("$setOnInsert single field", () => {
+		const { clause, bindings } = translateUpdate({
+			$setOnInsert: { status: "new" },
+		});
+		expect(clause).toBe("SET status = status ?? $p0");
+		expect(bindings).toEqual({ p0: "new" });
+	});
+
+	test("$setOnInsert multiple fields", () => {
+		const { clause, bindings } = translateUpdate({
+			$setOnInsert: { status: "new", createdAt: "2024-01-01" },
+		});
+		expect(clause).toBe(
+			"SET status = status ?? $p0, createdAt = createdAt ?? $p1",
+		);
+		expect(bindings).toEqual({ p0: "new", p1: "2024-01-01" });
+	});
+
+	test("$setOnInsert combined with $set", () => {
+		const { clause, bindings } = translateUpdate({
+			$set: { name: "Jane" },
+			$setOnInsert: { status: "new" },
+		});
+		expect(clause).toBe("SET name = $p0, status = status ?? $p1");
+		expect(bindings).toEqual({ p0: "Jane", p1: "new" });
+	});
+
+	// -----------------------------------------------------------------
 	// Combined operators
 	// -----------------------------------------------------------------
 	test("$set + $inc combined", () => {
@@ -266,6 +296,84 @@ describe("translateUpdate", () => {
 		});
 		expect(clause).toBe("SET tags = array::complement(tags, $p0)");
 		expect(bindings).toEqual({ p0: ["a", "b"] });
+	});
+
+	// -----------------------------------------------------------------
+	// Positional array operators: $[]
+	// -----------------------------------------------------------------
+	test("$set with $[] updates all elements", () => {
+		const { clause, bindings } = translateUpdate({
+			$set: { "grades.$[].score": 100 },
+		});
+		expect(clause).toBe("SET grades[*].score = $p0");
+		expect(bindings).toEqual({ p0: 100 });
+	});
+
+	test("$inc with $[] increments all elements", () => {
+		const { clause, bindings } = translateUpdate({
+			$inc: { "scores.$[].value": 5 },
+		});
+		expect(clause).toBe("SET scores[*].value += $p0");
+		expect(bindings).toEqual({ p0: 5 });
+	});
+
+	test("$unset with $[] removes field from all elements", () => {
+		const { clause, bindings } = translateUpdate({
+			$unset: { "items.$[].oldField": "" },
+		});
+		expect(clause).toBe("SET items[*].oldField = NONE");
+		expect(bindings).toEqual({});
+	});
+
+	// -----------------------------------------------------------------
+	// Positional array operators: $[identifier]
+	// -----------------------------------------------------------------
+	test("$set with $[identifier] and equality arrayFilter", () => {
+		const { clause, bindings } = translateUpdate(
+			{ $set: { "grades.$[elem].score": 100 } },
+			0,
+			{ arrayFilters: [{ "elem.grade": "A" }] },
+		);
+		expect(clause).toBe("SET grades[WHERE grade = $p0].score = $p1");
+		expect(bindings).toEqual({ p0: "A", p1: 100 });
+	});
+
+	test("$set with $[identifier] and operator arrayFilter", () => {
+		const { clause, bindings } = translateUpdate(
+			{ $set: { "scores.$[high].passed": true } },
+			0,
+			{ arrayFilters: [{ "high.value": { $gte: 90 } }] },
+		);
+		expect(clause).toBe("SET scores[WHERE value >= $p0].passed = $p1");
+		expect(bindings).toEqual({ p0: 90, p1: true });
+	});
+
+	test("$inc with $[identifier] and multiple conditions", () => {
+		const { clause, bindings } = translateUpdate(
+			{ $inc: { "items.$[item].qty": 1 } },
+			0,
+			{
+				arrayFilters: [{ "item.status": "active", "item.qty": { $lt: 100 } }],
+			},
+		);
+		expect(clause).toBe(
+			"SET items[WHERE status = $p0 AND qty < $p1].qty += $p2",
+		);
+		expect(bindings).toEqual({ p0: "active", p1: 100, p2: 1 });
+	});
+
+	test("$[identifier] throws without arrayFilters", () => {
+		expect(() =>
+			translateUpdate({ $set: { "grades.$[elem].score": 100 } }),
+		).toThrow("Positional operator $[elem] requires arrayFilters");
+	});
+
+	test("$[identifier] throws with no matching filter", () => {
+		expect(() =>
+			translateUpdate({ $set: { "grades.$[elem].score": 100 } }, 0, {
+				arrayFilters: [{ "other.grade": "A" }],
+			}),
+		).toThrow('No arrayFilter found for identifier "elem"');
 	});
 
 	// -----------------------------------------------------------------

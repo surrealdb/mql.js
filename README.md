@@ -36,8 +36,11 @@ A drop-in MongoDB driver replacement powered by SurrealDB. Use the MongoDB API y
 
 - **MongoDB-compatible API** - MongoClient, Db, Collection, and FindCursor behave just like the official MongoDB driver
 - **Standard CRUD operations** - insertOne, insertMany, find, findOne, updateOne, updateMany, deleteOne, deleteMany, and more
-- **Query filter operators** - $eq, $gt, $lt, $in, $and, $or, $regex, $elemMatch, and more
-- **Update operators** - $set, $inc, $push, $pull, $addToSet, $min, $max, $rename, and more
+- **Query filter operators** - $eq, $gt, $lt, $in, $and, $or, $regex, $elemMatch, $type, $mod, and more
+- **Update operators** - $set, $setOnInsert, $inc, $push, $pull, $addToSet, $min, $max, $rename, and more
+- **Geospatial queries** - $geoWithin, $geoIntersects, $near, $nearSphere with full GeoJSON support
+- **Full-text search** - $text queries with createIndex for text indexes
+- **Positional array updates** - $[] and $[identifier] with arrayFilters
 - **Cursor chaining** - sort, limit, skip, project, plus `for await...of` async iteration
 - **ObjectId support** - MongoDB-compatible ObjectId generation and parsing
 - **TypeScript generics** - Typed collections with full type inference
@@ -265,9 +268,14 @@ Filters use the MongoDB query language and are translated to SurrealQL at execut
 ### Evaluation
 
 ```typescript
-{ name: { $regex: "^Al" } }  // regex match
-{ name: /^Al/i }              // native RegExp
+{ name: { $regex: "^Al" } }      // regex match
+{ name: /^Al/i }                   // native RegExp
+{ qty: { $mod: [4, 0] } }         // modulo (qty % 4 === 0)
+{ age: { $type: "number" } }      // type check (BSON type string or code)
+{ age: { $type: 16 } }            // type check by numeric BSON type code
 ```
+
+Supported `$type` values: `"double"`, `"string"`, `"object"`, `"array"`, `"bool"`, `"date"`, `"null"`, `"int"`, `"long"`, `"decimal"`, `"number"` (any numeric), and their BSON numeric codes.
 
 ### Array
 
@@ -275,6 +283,63 @@ Filters use the MongoDB query language and are translated to SurrealQL at execut
 { tags: { $all: ["a", "b"] } }     // contains all elements
 { tags: { $size: 3 } }              // array has exactly 3 elements
 { results: { $elemMatch: { score: { $gt: 80 }, grade: "A" } } } // element matches
+```
+
+### Geospatial
+
+The driver supports MongoDB's geospatial query operators, mapped to SurrealDB's native geo functions and operators.
+
+```typescript
+// Documents within a polygon
+{ location: { $geoWithin: { $geometry: {
+  type: "Polygon",
+  coordinates: [[[-74, 40.7], [-73.9, 40.7], [-73.9, 40.8], [-74, 40.8], [-74, 40.7]]]
+} } } }
+
+// Documents within a spherical radius (radians)
+{ location: { $geoWithin: { $centerSphere: [[-73.93, 40.82], 5 / 3963.2] } } }
+
+// Documents within a bounding box
+{ location: { $geoWithin: { $box: [[-74.0, 40.7], [-73.9, 40.8]] } } }
+
+// Documents intersecting a geometry
+{ area: { $geoIntersects: { $geometry: {
+  type: "Polygon",
+  coordinates: [[[0, 0], [3, 6], [6, 1], [0, 0]]]
+} } } }
+
+// Nearest documents (sorted by distance)
+{ location: { $near: {
+  $geometry: { type: "Point", coordinates: [-73.9667, 40.78] },
+  $maxDistance: 5000,  // metres
+  $minDistance: 100,   // metres (optional)
+} } }
+
+// Nearest with spherical geometry (same as $near for SurrealDB)
+{ location: { $nearSphere: {
+  $geometry: { type: "Point", coordinates: [-73.9667, 40.78] },
+  $maxDistance: 5000,
+} } }
+```
+
+`$geoWithin` supports `$geometry`, `$centerSphere`, `$center`, `$box`, and `$polygon` shape specifiers. `$near` and `$nearSphere` automatically sort results by distance ascending.
+
+### Full-text search
+
+Full-text search requires a text index to be created first.
+
+```typescript
+// Create a text index
+await collection.createIndex({ title: "text" });
+
+// Search
+const results = await collection.find({ $text: { $search: "coffee shop" } }).toArray();
+```
+
+Multi-field text indexes search across all indexed fields:
+
+```typescript
+await collection.createIndex({ title: "text", description: "text" });
 ```
 
 ### Nested fields
@@ -291,6 +356,7 @@ Filters use the MongoDB query language and are translated to SurrealQL at execut
 | Operator | Example | Description |
 | --- | --- | --- |
 | `$set` | `{ $set: { name: "Jane" } }` | Set field value |
+| `$setOnInsert` | `{ $setOnInsert: { status: "new" } }` | Set only on insert during upsert |
 | `$unset` | `{ $unset: { email: "" } }` | Remove field |
 | `$inc` | `{ $inc: { score: 10 } }` | Increment (or decrement with negative) |
 | `$mul` | `{ $mul: { price: 1.1 } }` | Multiply |
@@ -311,6 +377,37 @@ Filters use the MongoDB query language and are translated to SurrealQL at execut
 | `$pull` | `{ $pull: { tags: "old" } }` | Remove matching elements |
 | `$pullAll` | `{ $pullAll: { tags: ["a", "b"] } }` | Remove all listed elements |
 | `$pop` | `{ $pop: { tags: 1 } }` | Remove last (`1`) or first (`-1`) element |
+
+### Positional array operators
+
+Update specific elements within arrays using positional operators in field paths.
+
+```typescript
+// Update all array elements
+await users.updateMany(
+  {},
+  { $set: { "scores.$[].passed": true } },
+);
+
+// Update elements matching a condition (arrayFilters)
+await users.updateMany(
+  {},
+  { $set: { "grades.$[elem].adjusted": true } },
+  { arrayFilters: [{ "elem.score": { $gte: 90 } }] },
+);
+
+// Increment a field on filtered elements
+await users.updateMany(
+  {},
+  { $inc: { "items.$[item].qty": 1 } },
+  { arrayFilters: [{ "item.status": "active" }] },
+);
+```
+
+| Syntax | Description |
+| --- | --- |
+| `"field.$[]"` | All elements in the array |
+| `"field.$[id]"` | Elements matching the `arrayFilters` condition for `id` |
 
 ## Cursors
 
@@ -369,6 +466,25 @@ const copy = cursor.clone();
 // Close to release resources
 await cursor.close();
 console.log(cursor.closed); // true
+```
+
+## Indexes
+
+```typescript
+// Create a standard index
+await users.createIndex({ email: 1 });
+
+// Create a text index for full-text search
+await users.createIndex({ bio: "text" });
+
+// Create a named index
+await users.createIndex({ age: 1 }, { name: "age_asc" });
+
+// Drop an index
+await users.dropIndex("age_asc");
+
+// List indexes
+const indexes = users.listIndexes();
 ```
 
 ## Database operations

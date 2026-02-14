@@ -56,6 +56,8 @@ export interface ElementOperators {
 /** Evaluation operators. */
 export interface EvaluationOperators {
 	$regex?: RegExp | string;
+	$type?: string | number;
+	$mod?: [number, number];
 }
 
 /** Array operators. */
@@ -65,11 +67,42 @@ export interface ArrayOperators {
 	$size?: number;
 }
 
+/** GeoJSON geometry object. */
+export interface GeoJsonGeometry {
+	type: string;
+	coordinates: unknown;
+}
+
+/** Geospatial operators. */
+export interface GeospatialOperators {
+	$geoWithin?: {
+		$geometry?: GeoJsonGeometry;
+		$box?: [[number, number], [number, number]];
+		$center?: [[number, number], number];
+		$centerSphere?: [[number, number], number];
+		$polygon?: [number, number][];
+	};
+	$geoIntersects?: {
+		$geometry: GeoJsonGeometry;
+	};
+	$near?: {
+		$geometry: GeoJsonGeometry;
+		$maxDistance?: number;
+		$minDistance?: number;
+	};
+	$nearSphere?: {
+		$geometry: GeoJsonGeometry;
+		$maxDistance?: number;
+		$minDistance?: number;
+	};
+}
+
 /** Operators that can be applied to a single field value. */
 export type FieldOperators<T = unknown> = ComparisonOperators<T> &
 	ElementOperators &
 	EvaluationOperators &
-	ArrayOperators & {
+	ArrayOperators &
+	GeospatialOperators & {
 		$not?: FieldOperators<T>;
 	};
 
@@ -83,6 +116,12 @@ export type Filter<TSchema extends Document = Document> = {
 	$and?: Filter<TSchema>[];
 	$or?: Filter<TSchema>[];
 	$nor?: Filter<TSchema>[];
+	$text?: {
+		$search: string;
+		$language?: string;
+		$caseSensitive?: boolean;
+		$diacriticSensitive?: boolean;
+	};
 } & {
 	/** Allow arbitrary dotted-path keys. */
 	[key: string]: unknown;
@@ -95,6 +134,7 @@ export type Filter<TSchema extends Document = Document> = {
 /** Update operators – mirrors MongoDB's `UpdateFilter`. */
 export interface UpdateFilter<TSchema extends Document = Document> {
 	$set?: Partial<TSchema> & Document;
+	$setOnInsert?: Partial<TSchema> & Document;
 	$unset?: { [key: string]: "" | true | 1 };
 	$inc?: { [key: string]: number };
 	$mul?: { [key: string]: number };
@@ -190,6 +230,7 @@ export interface FindOptions {
 /** Options for {@link Collection.updateOne} and {@link Collection.updateMany}. */
 export interface UpdateOptions {
 	upsert?: boolean;
+	arrayFilters?: Document[];
 }
 
 /** Options for {@link Collection.replaceOne}. */
@@ -204,6 +245,7 @@ export interface FindOneAndUpdateOptions {
 	upsert?: boolean;
 	returnDocument?: "before" | "after";
 	includeResultMetadata?: boolean;
+	arrayFilters?: Document[];
 }
 
 /** Options for {@link Collection.findOneAndDelete}. */
@@ -234,4 +276,26 @@ export interface MongoClientOptions {
 	namespace?: string;
 	/** SurrealDB database – overrides the database in the connection URL. */
 	database?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Index types
+// ---------------------------------------------------------------------------
+
+/**
+ * Index specification – keys map field names to sort direction (1/-1)
+ * or to "text" for full-text search indexes.
+ */
+export type IndexSpecification = { [key: string]: 1 | -1 | "text" };
+
+/** Options for {@link Collection.createIndex}. */
+export interface CreateIndexOptions {
+	/** Custom name for the index. Auto-generated if omitted. */
+	name?: string;
+}
+
+/** Metadata about an index, as returned by {@link Collection.listIndexes}. */
+export interface IndexDescription {
+	name: string;
+	key: IndexSpecification;
 }
