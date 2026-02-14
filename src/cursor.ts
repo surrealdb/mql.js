@@ -117,7 +117,7 @@ export class FindCursor<TSchema extends Document = Document> {
 	async toArray(): Promise<TSchema[]> {
 		this._throwIfClosed();
 		await this._execute();
-		return this._results?.slice();
+		return this._results!.slice();
 	}
 
 	/**
@@ -127,10 +127,10 @@ export class FindCursor<TSchema extends Document = Document> {
 		this._throwIfClosed();
 		await this._execute();
 
-		if (this._index >= this._results?.length) {
+		if (this._index >= this._results!.length) {
 			return null;
 		}
-		return this._results?.[this._index++];
+		return this._results![this._index++];
 	}
 
 	/**
@@ -139,16 +139,15 @@ export class FindCursor<TSchema extends Document = Document> {
 	async hasNext(): Promise<boolean> {
 		this._throwIfClosed();
 		await this._execute();
-		return this._index < this._results?.length;
+		return this._index < this._results!.length;
 	}
 
 	/**
 	 * Iterates over all documents, calling the provided function for each.
 	 * Stops if the function returns `false`.
 	 */
-	async forEach(
-		iterator: (doc: TSchema) => boolean | undefined,
-	): Promise<void> {
+	// biome-ignore lint/suspicious/noConfusingVoidType: matches MongoDB driver's forEach signature
+	async forEach(iterator: (doc: TSchema) => boolean | void): Promise<void> {
 		this._throwIfClosed();
 		await this._execute();
 
@@ -176,7 +175,7 @@ export class FindCursor<TSchema extends Document = Document> {
 	async count(): Promise<number> {
 		this._throwIfClosed();
 		await this._execute();
-		return this._results?.length;
+		return this._results!.length;
 	}
 
 	/**
@@ -296,9 +295,8 @@ class MappedCursor<TSource extends Document, TTarget extends Document> {
 		return this._source.hasNext();
 	}
 
-	async forEach(
-		iterator: (doc: TTarget) => boolean | undefined,
-	): Promise<void> {
+	// biome-ignore lint/suspicious/noConfusingVoidType: matches MongoDB driver's forEach signature
+	async forEach(iterator: (doc: TTarget) => boolean | void): Promise<void> {
 		for await (const doc of this._source) {
 			const result = iterator(this._transform(doc));
 			if (result === false) break;

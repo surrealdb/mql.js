@@ -35,6 +35,7 @@
 	},
 	"scripts": {
 		"ts": "tsc --watch --noEmit true --emitDeclarationOnly false",
+		"type-check": "tsc --noEmit",
 		"quality:check": "biome check .",
 		"quality:apply": "biome check . --write",
 		"quality:apply:unsafe": "biome check . --write --unsafe",
