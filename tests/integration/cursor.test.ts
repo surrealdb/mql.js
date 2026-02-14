@@ -7,8 +7,8 @@ import {
 	test,
 } from "bun:test";
 import type { Subprocess } from "bun";
-import { MongoClient, type ObjectId } from "../../src/index.ts";
 import type { Collection, Db } from "../../src/index.ts";
+import { MongoClient, type ObjectId } from "../../src/index.ts";
 
 interface Doc {
 	[key: string]: unknown;
@@ -148,10 +148,10 @@ describe("FindCursor iteration", () => {
 
 	test("forEach stops on false return", async () => {
 		const names: string[] = [];
-		// biome-ignore lint/complexity/noForEach: testing the forEach API
 		await col
 			.find({})
 			.sort({ age: 1 })
+			// biome-ignore lint/suspicious/useIterableCallbackReturn: our forEach intentionally supports returning false
 			.forEach((doc) => {
 				names.push(doc.name);
 				if (names.length >= 2) return false;

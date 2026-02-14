@@ -18,6 +18,8 @@ export interface TranslatedUpdate {
 
 interface Context {
 	counter: number;
+	bindings: Record<string, unknown>;
+	parts: string[];
 }
 
 function nextParam(ctx: Context): string {
@@ -27,6 +29,117 @@ function nextParam(ctx: Context): string {
 function escapeField(field: string): string {
 	return field;
 }
+
+// ---------------------------------------------------------------------------
+// Operator handlers – each one processes all field entries for its operator
+// ---------------------------------------------------------------------------
+
+type OperatorHandler = (entries: [string, unknown][], ctx: Context) => void;
+
+/** $set: { k: v } → SET k = $p */
+function handleSet(entries: [string, unknown][], ctx: Context): void {
+	for (const [field, value] of entries) {
+		const p = nextParam(ctx);
+		ctx.bindings[p] = value;
+		ctx.parts.push(`${escapeField(field)} = $${p}`);
+	}
+}
+
+/** $unset: { k: "" } → SET k = NONE */
+function handleUnset(entries: [string, unknown][], ctx: Context): void {
+	for (const [field] of entries) {
+		ctx.parts.push(`${escapeField(field)} = NONE`);
+	}
+}
+
+/** Simple binary operator: $inc (+=), $mul (*=) */
+function handleBinaryOp(op: string): OperatorHandler {
+	return (entries, ctx) => {
+		for (const [field, value] of entries) {
+			const p = nextParam(ctx);
+			ctx.bindings[p] = value;
+			ctx.parts.push(`${escapeField(field)} ${op} $${p}`);
+		}
+	};
+}
+
+/** Function-based operator: $min → math::min, $max → math::max */
+function handleFunctionOp(fn: string): OperatorHandler {
+	return (entries, ctx) => {
+		for (const [field, value] of entries) {
+			const p = nextParam(ctx);
+			ctx.bindings[p] = value;
+			ctx.parts.push(
+				`${escapeField(field)} = ${fn}(${escapeField(field)}, $${p})`,
+			);
+		}
+	};
+}
+
+/** $push: { k: v } → SET k += [$p] */
+function handlePush(entries: [string, unknown][], ctx: Context): void {
+	for (const [field, value] of entries) {
+		const p = nextParam(ctx);
+		ctx.bindings[p] = value;
+		ctx.parts.push(`${escapeField(field)} += [$${p}]`);
+	}
+}
+
+/** $pull: { k: v } → SET k -= [$p] */
+function handlePull(entries: [string, unknown][], ctx: Context): void {
+	for (const [field, value] of entries) {
+		const p = nextParam(ctx);
+		ctx.bindings[p] = value;
+		ctx.parts.push(`${escapeField(field)} -= [$${p}]`);
+	}
+}
+
+/** $addToSet: { k: v } → SET k = array::union(k, [$p]) */
+function handleAddToSet(entries: [string, unknown][], ctx: Context): void {
+	for (const [field, value] of entries) {
+		const p = nextParam(ctx);
+		ctx.bindings[p] = value;
+		ctx.parts.push(
+			`${escapeField(field)} = array::union(${escapeField(field)}, [$${p}])`,
+		);
+	}
+}
+
+/** $rename: { old: "new" } → SET new = old, old = NONE */
+function handleRename(entries: [string, unknown][], ctx: Context): void {
+	for (const [oldField, newField] of entries) {
+		ctx.parts.push(
+			`${escapeField(newField as string)} = ${escapeField(oldField)}`,
+		);
+		ctx.parts.push(`${escapeField(oldField)} = NONE`);
+	}
+}
+
+/** $currentDate: { k: true } → SET k = time::now() */
+function handleCurrentDate(entries: [string, unknown][], ctx: Context): void {
+	for (const [field] of entries) {
+		ctx.parts.push(`${escapeField(field)} = time::now()`);
+	}
+}
+
+/** Map of operator names to their handler functions. */
+const OPERATOR_HANDLERS: Record<string, OperatorHandler> = {
+	$set: handleSet,
+	$unset: handleUnset,
+	$inc: handleBinaryOp("+="),
+	$mul: handleBinaryOp("*="),
+	$min: handleFunctionOp("math::min"),
+	$max: handleFunctionOp("math::max"),
+	$push: handlePush,
+	$pull: handlePull,
+	$addToSet: handleAddToSet,
+	$rename: handleRename,
+	$currentDate: handleCurrentDate,
+};
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 /**
  * Translate a MongoDB update document into a SurrealQL SET clause.
@@ -38,130 +151,31 @@ export function translateUpdate(
 	update: Document,
 	startIndex = 0,
 ): TranslatedUpdate {
-	const ctx: Context = { counter: startIndex };
-	const bindings: Record<string, unknown> = {};
-	const setParts: string[] = [];
+	const ctx: Context = {
+		counter: startIndex,
+		bindings: {},
+		parts: [],
+	};
 
 	for (const [op, fields] of Object.entries(update)) {
 		if (typeof fields !== "object" || fields === null) {
 			throw new Error(`Update operator ${op} requires an object value`);
 		}
 
-		const entries = Object.entries(fields as Record<string, unknown>);
-
-		switch (op) {
-			case "$set": {
-				for (const [field, value] of entries) {
-					const p = nextParam(ctx);
-					bindings[p] = value;
-					setParts.push(`${escapeField(field)} = $${p}`);
-				}
-				break;
-			}
-
-			case "$unset": {
-				for (const [field] of entries) {
-					setParts.push(`${escapeField(field)} = NONE`);
-				}
-				break;
-			}
-
-			case "$inc": {
-				for (const [field, value] of entries) {
-					const p = nextParam(ctx);
-					bindings[p] = value;
-					setParts.push(`${escapeField(field)} += $${p}`);
-				}
-				break;
-			}
-
-			case "$mul": {
-				for (const [field, value] of entries) {
-					const p = nextParam(ctx);
-					bindings[p] = value;
-					setParts.push(`${escapeField(field)} *= $${p}`);
-				}
-				break;
-			}
-
-			case "$min": {
-				for (const [field, value] of entries) {
-					const p = nextParam(ctx);
-					bindings[p] = value;
-					setParts.push(
-						`${escapeField(field)} = math::min(${escapeField(field)}, $${p})`,
-					);
-				}
-				break;
-			}
-
-			case "$max": {
-				for (const [field, value] of entries) {
-					const p = nextParam(ctx);
-					bindings[p] = value;
-					setParts.push(
-						`${escapeField(field)} = math::max(${escapeField(field)}, $${p})`,
-					);
-				}
-				break;
-			}
-
-			case "$push": {
-				for (const [field, value] of entries) {
-					const p = nextParam(ctx);
-					bindings[p] = value;
-					setParts.push(`${escapeField(field)} += [$${p}]`);
-				}
-				break;
-			}
-
-			case "$pull": {
-				for (const [field, value] of entries) {
-					const p = nextParam(ctx);
-					bindings[p] = value;
-					setParts.push(`${escapeField(field)} -= [$${p}]`);
-				}
-				break;
-			}
-
-			case "$addToSet": {
-				for (const [field, value] of entries) {
-					const p = nextParam(ctx);
-					bindings[p] = value;
-					setParts.push(
-						`${escapeField(field)} = array::union(${escapeField(field)}, [$${p}])`,
-					);
-				}
-				break;
-			}
-
-			case "$rename": {
-				for (const [oldField, newField] of entries) {
-					setParts.push(
-						`${escapeField(newField as string)} = ${escapeField(oldField)}`,
-					);
-					setParts.push(`${escapeField(oldField)} = NONE`);
-				}
-				break;
-			}
-
-			case "$currentDate": {
-				for (const [field] of entries) {
-					setParts.push(`${escapeField(field)} = time::now()`);
-				}
-				break;
-			}
-
-			default:
-				throw new Error(`Unsupported update operator: ${op}`);
+		const handler = OPERATOR_HANDLERS[op];
+		if (!handler) {
+			throw new Error(`Unsupported update operator: ${op}`);
 		}
+
+		const entries = Object.entries(fields as Record<string, unknown>);
+		handler(entries, ctx);
 	}
 
-	if (setParts.length === 0) {
+	if (ctx.parts.length === 0) {
 		return { clause: "", bindings: {} };
 	}
 
-	return { clause: `SET ${setParts.join(", ")}`, bindings };
+	return { clause: `SET ${ctx.parts.join(", ")}`, bindings: ctx.bindings };
 }
 
 /**

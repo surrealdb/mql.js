@@ -237,42 +237,56 @@ export class Collection<TSchema extends Document = Document> {
 		const allBindings = { ...filterBindings, ...updateBindings };
 
 		// SurrealQL does not support LIMIT on UPDATE/DELETE.
-		// For updateOne (limit=1), we first SELECT the matching record's id,
-		// then UPDATE that specific record.
+		// For updateOne (limit=1), find-then-update by specific id.
 		if (options?.limit === 1 && !options?.upsert) {
-			// Step 1: find one matching record
-			let findSql = `SELECT id FROM ${this.table}`;
-			if (whereClause) findSql += ` WHERE ${whereClause}`;
-			findSql += " LIMIT 1";
-			const found = await this.exec<Record<string, unknown>[]>(
-				findSql,
+			return this._updateOneById(
+				whereClause,
 				filterBindings,
-			);
-
-			if (!found || found.length === 0) {
-				return makeUpdateResult([]);
-			}
-
-			// Step 2: update that specific record by id
-			const rid = found[0].id;
-			const updateSql = `UPDATE $__rid ${setClause}`;
-			allBindings.__rid = rid;
-			const rows = await this.exec<Record<string, unknown>[]>(
-				updateSql,
+				setClause,
 				allBindings,
 			);
-			return makeUpdateResult(rows || []);
 		}
 
-		// Upsert or updateMany
-		let sql: string;
-		if (options?.upsert) {
-			sql = `UPSERT ${this.table} ${setClause}`;
-			if (whereClause) sql += ` WHERE ${whereClause}`;
-		} else {
-			sql = `UPDATE ${this.table} ${setClause}`;
-			if (whereClause) sql += ` WHERE ${whereClause}`;
+		return this._updateBulk(whereClause, setClause, allBindings, options);
+	}
+
+	/** Find one matching record, then update it by id. */
+	private async _updateOneById(
+		whereClause: string,
+		filterBindings: Record<string, unknown>,
+		setClause: string,
+		allBindings: Record<string, unknown>,
+	): Promise<UpdateResult> {
+		let findSql = `SELECT id FROM ${this.table}`;
+		if (whereClause) findSql += ` WHERE ${whereClause}`;
+		findSql += " LIMIT 1";
+		const found = await this.exec<Record<string, unknown>[]>(
+			findSql,
+			filterBindings,
+		);
+
+		if (!found || found.length === 0) {
+			return makeUpdateResult([]);
 		}
+
+		allBindings.__rid = found[0].id;
+		const rows = await this.exec<Record<string, unknown>[]>(
+			`UPDATE $__rid ${setClause}`,
+			allBindings,
+		);
+		return makeUpdateResult(rows || []);
+	}
+
+	/** Upsert or update-many – operates on the whole table with WHERE. */
+	private async _updateBulk(
+		whereClause: string,
+		setClause: string,
+		allBindings: Record<string, unknown>,
+		options?: UpdateOptions,
+	): Promise<UpdateResult> {
+		const verb = options?.upsert ? "UPSERT" : "UPDATE";
+		let sql = `${verb} ${this.table} ${setClause}`;
+		if (whereClause) sql += ` WHERE ${whereClause}`;
 
 		const rows = await this.exec<Record<string, unknown>[]>(sql, allBindings);
 

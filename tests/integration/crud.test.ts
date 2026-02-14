@@ -7,8 +7,8 @@ import {
 	test,
 } from "bun:test";
 import type { Subprocess } from "bun";
-import { MongoClient, ObjectId } from "../../src/index.ts";
 import type { Collection, Db } from "../../src/index.ts";
+import { MongoClient, ObjectId } from "../../src/index.ts";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -269,7 +269,6 @@ describe("find (cursor)", () => {
 			{ name: "Bob", age: 25 },
 		]);
 		const names: string[] = [];
-		// biome-ignore lint/complexity/noForEach: testing the forEach API
 		await col
 			.find({})
 			.sort({ age: 1 })
