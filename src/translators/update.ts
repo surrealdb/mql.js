@@ -181,7 +181,7 @@ function handleUnset(entries: [string, unknown][], ctx: Context): void {
 	}
 }
 
-/** Simple binary operator: $inc (+=), $mul (*=) */
+/** Simple compound-assignment operator: $inc (+=) */
 function handleBinaryOp(op: string): OperatorHandler {
 	return (entries, ctx) => {
 		for (const [field, value] of entries) {
@@ -193,14 +193,31 @@ function handleBinaryOp(op: string): OperatorHandler {
 	};
 }
 
-/** Function-based operator: $min → math::min, $max → math::max */
+/**
+ * $mul handler – SurrealQL does not support `*=`, so we expand to
+ * `field = field * $p`.
+ */
+function handleMul(entries: [string, unknown][], ctx: Context): void {
+	for (const [field, value] of entries) {
+		const f = resolveField(field, ctx);
+		const p = nextParam(ctx);
+		ctx.bindings[p] = value;
+		ctx.parts.push(`${f} = ${f} * $${p}`);
+	}
+}
+
+/**
+ * Function-based operator: $min → math::min, $max → math::max.
+ * SurrealDB's math::min/max accept a single array argument, so we
+ * wrap the two values in an array: `math::min([field, $p])`.
+ */
 function handleFunctionOp(fn: string): OperatorHandler {
 	return (entries, ctx) => {
 		for (const [field, value] of entries) {
 			const f = resolveField(field, ctx);
 			const p = nextParam(ctx);
 			ctx.bindings[p] = value;
-			ctx.parts.push(`${f} = ${fn}(${f}, $${p})`);
+			ctx.parts.push(`${f} = ${fn}([${f}, $${p}])`);
 		}
 	};
 }
@@ -370,7 +387,7 @@ const OPERATOR_HANDLERS: Record<string, OperatorHandler> = {
 	$setOnInsert: handleSetOnInsert,
 	$unset: handleUnset,
 	$inc: handleBinaryOp("+="),
-	$mul: handleBinaryOp("*="),
+	$mul: handleMul,
 	$min: handleFunctionOp("math::min"),
 	$max: handleFunctionOp("math::max"),
 	$push: handlePush,

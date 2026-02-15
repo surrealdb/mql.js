@@ -316,7 +316,7 @@ describe("translateFilter", () => {
 		const { clause, bindings } = translateFilter({
 			x: { $type: "string" },
 		});
-		expect(clause).toBe("type::is_string(x)");
+		expect(clause).toBe("type::is::string(x)");
 		expect(bindings).toEqual({});
 	});
 
@@ -324,7 +324,7 @@ describe("translateFilter", () => {
 		const { clause, bindings } = translateFilter({
 			x: { $type: 2 },
 		});
-		expect(clause).toBe("type::is_string(x)");
+		expect(clause).toBe("type::is::string(x)");
 		expect(bindings).toEqual({});
 	});
 
@@ -332,55 +332,55 @@ describe("translateFilter", () => {
 		const { clause, bindings } = translateFilter({
 			x: { $type: "number" },
 		});
-		expect(clause).toBe("type::is_number(x)");
+		expect(clause).toBe("type::is::number(x)");
 		expect(bindings).toEqual({});
 	});
 
-	test("$type 'double' / 1 maps to type::is_float", () => {
+	test("$type 'double' / 1 maps to type::is::float", () => {
 		const { clause: c1 } = translateFilter({ x: { $type: "double" } });
 		const { clause: c2 } = translateFilter({ x: { $type: 1 } });
-		expect(c1).toBe("type::is_float(x)");
-		expect(c2).toBe("type::is_float(x)");
+		expect(c1).toBe("type::is::float(x)");
+		expect(c2).toBe("type::is::float(x)");
 	});
 
-	test("$type 'object' / 3 maps to type::is_object", () => {
+	test("$type 'object' / 3 maps to type::is::object", () => {
 		const { clause } = translateFilter({ x: { $type: "object" } });
-		expect(clause).toBe("type::is_object(x)");
+		expect(clause).toBe("type::is::object(x)");
 	});
 
-	test("$type 'array' / 4 maps to type::is_array", () => {
+	test("$type 'array' / 4 maps to type::is::array", () => {
 		const { clause } = translateFilter({ x: { $type: "array" } });
-		expect(clause).toBe("type::is_array(x)");
+		expect(clause).toBe("type::is::array(x)");
 	});
 
-	test("$type 'bool' / 8 maps to type::is_bool", () => {
+	test("$type 'bool' / 8 maps to type::is::bool", () => {
 		const { clause } = translateFilter({ x: { $type: "bool" } });
-		expect(clause).toBe("type::is_bool(x)");
+		expect(clause).toBe("type::is::bool(x)");
 	});
 
-	test("$type 'date' / 9 maps to type::is_datetime", () => {
+	test("$type 'date' / 9 maps to type::is::datetime", () => {
 		const { clause } = translateFilter({ x: { $type: "date" } });
-		expect(clause).toBe("type::is_datetime(x)");
+		expect(clause).toBe("type::is::datetime(x)");
 	});
 
-	test("$type 'null' / 10 maps to type::is_null", () => {
+	test("$type 'null' / 10 maps to type::is::null", () => {
 		const { clause } = translateFilter({ x: { $type: "null" } });
-		expect(clause).toBe("type::is_null(x)");
+		expect(clause).toBe("type::is::null(x)");
 	});
 
-	test("$type 'int' / 16 maps to type::is_int", () => {
+	test("$type 'int' / 16 maps to type::is::int", () => {
 		const { clause } = translateFilter({ x: { $type: "int" } });
-		expect(clause).toBe("type::is_int(x)");
+		expect(clause).toBe("type::is::int(x)");
 	});
 
-	test("$type 'long' / 18 maps to type::is_int (no distinction)", () => {
+	test("$type 'long' / 18 maps to type::is::int (no distinction)", () => {
 		const { clause } = translateFilter({ x: { $type: "long" } });
-		expect(clause).toBe("type::is_int(x)");
+		expect(clause).toBe("type::is::int(x)");
 	});
 
-	test("$type 'decimal' / 19 maps to type::is_decimal", () => {
+	test("$type 'decimal' / 19 maps to type::is::decimal", () => {
 		const { clause } = translateFilter({ x: { $type: "decimal" } });
-		expect(clause).toBe("type::is_decimal(x)");
+		expect(clause).toBe("type::is::decimal(x)");
 	});
 
 	test("$type throws on unsupported type", () => {

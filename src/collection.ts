@@ -515,15 +515,19 @@ export class Collection<TSchema extends Document = Document> {
 		const textFields = entries.filter(([, v]) => v === "text").map(([k]) => k);
 		const isTextIndex = textFields.length > 0;
 
-		// Generate index name: field1_1_field2_text or use provided name
+		// Generate index name: field1_1_field2_text or use provided name.
+		// Replace `-` with `neg` so the name is a valid SurrealQL identifier.
 		const name =
-			options?.name ?? entries.map(([k, v]) => `${k}_${v}`).join("_");
+			options?.name ??
+			entries
+				.map(([k, v]) => `${k}_${String(v).replace("-", "neg")}`)
+				.join("_");
 
 		const fields = entries.map(([k]) => k).join(", ");
 
 		let sql: string;
 		if (isTextIndex) {
-			sql = `DEFINE INDEX ${name} ON ${this.table} FIELDS ${fields} SEARCH ANALYZER blank BM25`;
+			sql = `DEFINE INDEX ${name} ON ${this.table} FIELDS ${fields} SEARCH ANALYZER blank BM25 HIGHLIGHTS`;
 		} else {
 			sql = `DEFINE INDEX ${name} ON ${this.table} FIELDS ${fields}`;
 		}

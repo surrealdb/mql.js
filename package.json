@@ -24,7 +24,8 @@
 		"@types/bun": "latest",
 		"dts-bundle-generator": "^9.5.1",
 		"esbuild": "^0.21.5",
-		"esbuild-plugin-tsc": "^0.4.0"
+		"esbuild-plugin-tsc": "^0.4.0",
+		"mongoose": "^9.2.1"
 	},
 	"peerDependencies": {
 		"typescript": "^5.0.0",

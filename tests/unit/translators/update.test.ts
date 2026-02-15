@@ -53,7 +53,7 @@ describe("translateUpdate", () => {
 	// -----------------------------------------------------------------
 	test("$mul", () => {
 		const { clause, bindings } = translateUpdate({ $mul: { price: 1.1 } });
-		expect(clause).toBe("SET price *= $p0");
+		expect(clause).toBe("SET price = price * $p0");
 		expect(bindings).toEqual({ p0: 1.1 });
 	});
 
@@ -62,13 +62,13 @@ describe("translateUpdate", () => {
 	// -----------------------------------------------------------------
 	test("$min", () => {
 		const { clause, bindings } = translateUpdate({ $min: { low: 5 } });
-		expect(clause).toBe("SET low = math::min(low, $p0)");
+		expect(clause).toBe("SET low = math::min([low, $p0])");
 		expect(bindings).toEqual({ p0: 5 });
 	});
 
 	test("$max", () => {
 		const { clause, bindings } = translateUpdate({ $max: { high: 100 } });
-		expect(clause).toBe("SET high = math::max(high, $p0)");
+		expect(clause).toBe("SET high = math::max([high, $p0])");
 		expect(bindings).toEqual({ p0: 100 });
 	});
 
