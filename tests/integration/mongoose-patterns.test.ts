@@ -87,12 +87,15 @@ beforeEach(async () => {
 	users = db.collection<User>("mg_users");
 	posts = db.collection<Post>("mg_posts");
 	products = db.collection<Product>("mg_products");
-	try {
-		await users.deleteMany({});
-		await posts.deleteMany({});
-		await products.deleteMany({});
-	} catch {
-		// ignore
+	// Each deleteMany runs in its own try/catch because SurrealDB 3.x throws
+	// "table does not exist" on missing tables; an early failure must not
+	// skip clearing the others.
+	for (const c of [users, posts, products]) {
+		try {
+			await c.deleteMany({});
+		} catch {
+			// table may not exist yet
+		}
 	}
 });
 

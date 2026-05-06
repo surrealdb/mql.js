@@ -16,6 +16,8 @@ export interface SurrealTestContext<TSchema extends Document = Document> {
 	client: MongoClient;
 	db: Db;
 	collection: (name: string) => Collection<TSchema>;
+	/** Server version reported by the connected SurrealDB instance (e.g. "3.0.4"). */
+	serverVersion: string;
 }
 
 /**
@@ -69,11 +71,14 @@ export async function setupSurreal<TSchema extends Document = Document>(
 	await client.connect();
 	const db = client.db(dbName);
 
+	const serverVersion = client.serverVersion ?? "0.0.0";
+
 	return {
 		process: proc,
 		client,
 		db,
 		collection: (name: string) => db.collection<TSchema>(name),
+		serverVersion,
 	};
 }
 
