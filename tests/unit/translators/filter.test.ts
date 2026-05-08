@@ -140,25 +140,57 @@ describe("translateFilter", () => {
 	// -----------------------------------------------------------------
 	// $regex
 	// -----------------------------------------------------------------
-	test("$regex with string", () => {
-		const { clause, bindings } = translateFilter({
-			name: { $regex: "^Jo" },
-		});
+	test("$regex with string emits ~ on v2", () => {
+		const { clause, bindings } = translateFilter(
+			{ name: { $regex: "^Jo" } },
+			{ surrealVersion: "2.0.0" },
+		);
 		expect(clause).toBe("name ~ $p0");
 		expect(bindings).toEqual({ p0: "^Jo" });
 	});
 
-	test("$regex with RegExp", () => {
-		const { clause, bindings } = translateFilter({
-			name: { $regex: /^Jo/i },
-		});
+	test("$regex with string emits string::matches on v3", () => {
+		const { clause, bindings } = translateFilter(
+			{ name: { $regex: "^Jo" } },
+			{ surrealVersion: "3.0.0" },
+		);
+		expect(clause).toBe("string::matches(name, $p0)");
+		expect(bindings).toEqual({ p0: "^Jo" });
+	});
+
+	test("$regex with RegExp emits ~ on v2", () => {
+		const { clause, bindings } = translateFilter(
+			{ name: { $regex: /^Jo/i } },
+			{ surrealVersion: "2.0.0" },
+		);
 		expect(clause).toBe("name ~ $p0");
 		expect(bindings).toEqual({ p0: "^Jo" });
 	});
 
-	test("RegExp shorthand on field", () => {
-		const { clause, bindings } = translateFilter({ name: /^Jo/ });
+	test("$regex with RegExp emits string::matches on v3", () => {
+		const { clause, bindings } = translateFilter(
+			{ name: { $regex: /^Jo/i } },
+			{ surrealVersion: "3.0.0" },
+		);
+		expect(clause).toBe("string::matches(name, $p0)");
+		expect(bindings).toEqual({ p0: "^Jo" });
+	});
+
+	test("RegExp shorthand on field emits ~ on v2", () => {
+		const { clause, bindings } = translateFilter(
+			{ name: /^Jo/ },
+			{ surrealVersion: "2.0.0" },
+		);
 		expect(clause).toBe("name ~ $p0");
+		expect(bindings).toEqual({ p0: "^Jo" });
+	});
+
+	test("RegExp shorthand on field emits string::matches on v3", () => {
+		const { clause, bindings } = translateFilter(
+			{ name: /^Jo/ },
+			{ surrealVersion: "3.0.0" },
+		);
+		expect(clause).toBe("string::matches(name, $p0)");
 		expect(bindings).toEqual({ p0: "^Jo" });
 	});
 
@@ -310,77 +342,123 @@ describe("translateFilter", () => {
 	});
 
 	// -----------------------------------------------------------------
-	// $type
+	// $type — both dialects: v2 emits `type::is::*`, v3 emits `type::is_*`.
 	// -----------------------------------------------------------------
+	const V2 = { surrealVersion: "2.0.0" };
+	const V3 = { surrealVersion: "3.0.0" };
+
 	test("$type with string alias", () => {
-		const { clause, bindings } = translateFilter({
-			x: { $type: "string" },
-		});
-		expect(clause).toBe("type::is::string(x)");
-		expect(bindings).toEqual({});
+		expect(translateFilter({ x: { $type: "string" } }, V2).clause).toBe(
+			"type::is::string(x)",
+		);
+		expect(translateFilter({ x: { $type: "string" } }, V3).clause).toBe(
+			"type::is_string(x)",
+		);
 	});
 
 	test("$type with numeric BSON code", () => {
-		const { clause, bindings } = translateFilter({
-			x: { $type: 2 },
-		});
-		expect(clause).toBe("type::is::string(x)");
-		expect(bindings).toEqual({});
+		expect(translateFilter({ x: { $type: 2 } }, V2).clause).toBe(
+			"type::is::string(x)",
+		);
+		expect(translateFilter({ x: { $type: 2 } }, V3).clause).toBe(
+			"type::is_string(x)",
+		);
 	});
 
 	test("$type 'number' matches any numeric type", () => {
-		const { clause, bindings } = translateFilter({
-			x: { $type: "number" },
-		});
-		expect(clause).toBe("type::is::number(x)");
-		expect(bindings).toEqual({});
+		expect(translateFilter({ x: { $type: "number" } }, V2).clause).toBe(
+			"type::is::number(x)",
+		);
+		expect(translateFilter({ x: { $type: "number" } }, V3).clause).toBe(
+			"type::is_number(x)",
+		);
 	});
 
-	test("$type 'double' / 1 maps to type::is::float", () => {
-		const { clause: c1 } = translateFilter({ x: { $type: "double" } });
-		const { clause: c2 } = translateFilter({ x: { $type: 1 } });
-		expect(c1).toBe("type::is::float(x)");
-		expect(c2).toBe("type::is::float(x)");
+	test("$type 'double' / 1 maps to float", () => {
+		expect(translateFilter({ x: { $type: "double" } }, V2).clause).toBe(
+			"type::is::float(x)",
+		);
+		expect(translateFilter({ x: { $type: 1 } }, V2).clause).toBe(
+			"type::is::float(x)",
+		);
+		expect(translateFilter({ x: { $type: "double" } }, V3).clause).toBe(
+			"type::is_float(x)",
+		);
+		expect(translateFilter({ x: { $type: 1 } }, V3).clause).toBe(
+			"type::is_float(x)",
+		);
 	});
 
-	test("$type 'object' / 3 maps to type::is::object", () => {
-		const { clause } = translateFilter({ x: { $type: "object" } });
-		expect(clause).toBe("type::is::object(x)");
+	test("$type 'object' / 3 maps to object", () => {
+		expect(translateFilter({ x: { $type: "object" } }, V2).clause).toBe(
+			"type::is::object(x)",
+		);
+		expect(translateFilter({ x: { $type: "object" } }, V3).clause).toBe(
+			"type::is_object(x)",
+		);
 	});
 
-	test("$type 'array' / 4 maps to type::is::array", () => {
-		const { clause } = translateFilter({ x: { $type: "array" } });
-		expect(clause).toBe("type::is::array(x)");
+	test("$type 'array' / 4 maps to array", () => {
+		expect(translateFilter({ x: { $type: "array" } }, V2).clause).toBe(
+			"type::is::array(x)",
+		);
+		expect(translateFilter({ x: { $type: "array" } }, V3).clause).toBe(
+			"type::is_array(x)",
+		);
 	});
 
-	test("$type 'bool' / 8 maps to type::is::bool", () => {
-		const { clause } = translateFilter({ x: { $type: "bool" } });
-		expect(clause).toBe("type::is::bool(x)");
+	test("$type 'bool' / 8 maps to bool", () => {
+		expect(translateFilter({ x: { $type: "bool" } }, V2).clause).toBe(
+			"type::is::bool(x)",
+		);
+		expect(translateFilter({ x: { $type: "bool" } }, V3).clause).toBe(
+			"type::is_bool(x)",
+		);
 	});
 
-	test("$type 'date' / 9 maps to type::is::datetime", () => {
-		const { clause } = translateFilter({ x: { $type: "date" } });
-		expect(clause).toBe("type::is::datetime(x)");
+	test("$type 'date' / 9 maps to datetime", () => {
+		expect(translateFilter({ x: { $type: "date" } }, V2).clause).toBe(
+			"type::is::datetime(x)",
+		);
+		expect(translateFilter({ x: { $type: "date" } }, V3).clause).toBe(
+			"type::is_datetime(x)",
+		);
 	});
 
-	test("$type 'null' / 10 maps to type::is::null", () => {
-		const { clause } = translateFilter({ x: { $type: "null" } });
-		expect(clause).toBe("type::is::null(x)");
+	test("$type 'null' / 10 maps to null", () => {
+		expect(translateFilter({ x: { $type: "null" } }, V2).clause).toBe(
+			"type::is::null(x)",
+		);
+		expect(translateFilter({ x: { $type: "null" } }, V3).clause).toBe(
+			"type::is_null(x)",
+		);
 	});
 
-	test("$type 'int' / 16 maps to type::is::int", () => {
-		const { clause } = translateFilter({ x: { $type: "int" } });
-		expect(clause).toBe("type::is::int(x)");
+	test("$type 'int' / 16 maps to int", () => {
+		expect(translateFilter({ x: { $type: "int" } }, V2).clause).toBe(
+			"type::is::int(x)",
+		);
+		expect(translateFilter({ x: { $type: "int" } }, V3).clause).toBe(
+			"type::is_int(x)",
+		);
 	});
 
-	test("$type 'long' / 18 maps to type::is::int (no distinction)", () => {
-		const { clause } = translateFilter({ x: { $type: "long" } });
-		expect(clause).toBe("type::is::int(x)");
+	test("$type 'long' / 18 maps to int (no distinction)", () => {
+		expect(translateFilter({ x: { $type: "long" } }, V2).clause).toBe(
+			"type::is::int(x)",
+		);
+		expect(translateFilter({ x: { $type: "long" } }, V3).clause).toBe(
+			"type::is_int(x)",
+		);
 	});
 
-	test("$type 'decimal' / 19 maps to type::is::decimal", () => {
-		const { clause } = translateFilter({ x: { $type: "decimal" } });
-		expect(clause).toBe("type::is::decimal(x)");
+	test("$type 'decimal' / 19 maps to decimal", () => {
+		expect(translateFilter({ x: { $type: "decimal" } }, V2).clause).toBe(
+			"type::is::decimal(x)",
+		);
+		expect(translateFilter({ x: { $type: "decimal" } }, V3).clause).toBe(
+			"type::is_decimal(x)",
+		);
 	});
 
 	test("$type throws on unsupported type", () => {

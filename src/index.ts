@@ -1,8 +1,13 @@
-// Stub index for build verification
+/**
+ * Public entry point for `@surrealdb/mql`. Everything exported from here
+ * forms the contract that downstream code may rely on; internals live in
+ * `client/`, `db/`, `collection/`, `cursor/`, `surreal/`, and `translators/`.
+ */
 
-export { Collection } from "./collection.ts";
-export { FindCursor } from "./cursor.ts";
-export { Db } from "./db.ts";
+export { MongoClient } from "./client/mongo-client.ts";
+export { Collection } from "./collection/collection.ts";
+export { FindCursor } from "./cursor/find-cursor.ts";
+export { Db } from "./db/db.ts";
 export {
 	MongoClientError,
 	MongoCursorExhaustedError,
@@ -11,7 +16,6 @@ export {
 	MongoNotConnectedError,
 	MongoServerError,
 } from "./errors.ts";
-export { MongoClient } from "./mongo-client.ts";
 export { ObjectId } from "./object-id.ts";
 export type {
 	BulkWriteResult,
