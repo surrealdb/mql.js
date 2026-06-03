@@ -14,6 +14,7 @@
 import type { ConnectOptions, Surreal } from "surrealdb";
 import { MongoNetworkError } from "../errors.ts";
 import { mapConnectError } from "../surreal/error-mapper.ts";
+import { escapeIdentifier } from "../surreal/sql/escape.ts";
 
 export interface ConnectArgs {
 	url: string;
@@ -56,6 +57,42 @@ export class ConnectionManager {
 			throw mapConnectError(err);
 		} finally {
 			unsubError();
+		}
+	}
+
+	/**
+	 * Best-effort creation of the target namespace and database so a freshly
+	 * pointed connection behaves like MongoDB, which creates a database (and
+	 * collection) implicitly on first write. Newer SurrealDB versions no
+	 * longer auto-create them, so without this the first operation fails with
+	 * `The namespace '<ns>' does not exist`.
+	 *
+	 * Any error — most commonly a non-root user that lacks `DEFINE` permission
+	 * but is connecting to an already-existing namespace — is intentionally
+	 * ignored: ensuring existence must never turn a usable connection into a
+	 * failed one.
+	 */
+	async ensureNamespaceAndDatabase(
+		namespace: string | undefined,
+		database: string | undefined,
+	): Promise<void> {
+		const statements: string[] = [];
+		if (namespace) {
+			statements.push(
+				`DEFINE NAMESPACE IF NOT EXISTS ${escapeIdentifier(namespace)}`,
+			);
+		}
+		if (database) {
+			statements.push(
+				`DEFINE DATABASE IF NOT EXISTS ${escapeIdentifier(database)}`,
+			);
+		}
+		if (statements.length === 0) return;
+
+		try {
+			await this.surreal.query(`${statements.join("; ")};`);
+		} catch {
+			// Intentionally ignored — see the doc comment above.
 		}
 	}
 

@@ -68,6 +68,15 @@ export class MongoClient {
 
 		this._connected = true;
 
+		// MongoDB creates a database implicitly on first write; newer SurrealDB
+		// versions no longer auto-create the namespace/database, so ensure they
+		// exist up front or the first operation fails with "namespace does not
+		// exist". Best-effort: never fails an otherwise-usable connection.
+		await this._connectionManager.ensureNamespaceAndDatabase(
+			parsed.namespace,
+			parsed.database,
+		);
+
 		this._serverVersion = await this._connectionManager.detectServerVersion();
 		this._executor.setServerVersion(this._serverVersion);
 
