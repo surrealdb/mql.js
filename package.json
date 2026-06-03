@@ -1,6 +1,6 @@
 {
 	"name": "@surrealdb/mql",
-	"version": "0.1.2",
+	"version": "0.1.0",
 	"type": "module",
 	"license": "Apache-2.0",
 	"description": "A MongoDB-compatible driver powered by SurrealDB.",
@@ -29,10 +29,11 @@
 		"mongodb": "^7.2.0",
 		"mongodb-memory-server": "^11.1.0",
 		"mongoose": "^9.2.1",
-		"semver": "^7.7.4"
+		"semver": "^7.7.4",
+		"typescript": "6.0.3"
 	},
 	"peerDependencies": {
-		"typescript": "^5.0.0",
+		"typescript": "^5.0.0 || ^6.0.0",
 		"tslib": "^2.6.3"
 	},
 	"dependencies": {
@@ -45,6 +46,7 @@
 		"quality:apply": "biome check . --write",
 		"quality:apply:unsafe": "biome check . --write --unsafe",
 		"build": "bun run scripts/build.ts",
+		"prepublishOnly": "bun run build",
 		"test": "bun test",
 		"test:unit": "bun test tests/unit",
 		"test:integration": "bun test tests/integration",

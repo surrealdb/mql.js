@@ -11,8 +11,10 @@ let randomBytes: Uint8Array;
 let counter: number;
 
 function initRandom(): void {
-	randomBytes = new Uint8Array(5);
-	crypto.getRandomValues(randomBytes);
+	// Back the view with an explicit ArrayBuffer so its type is
+	// `Uint8Array<ArrayBuffer>`, which `crypto.getRandomValues` requires under
+	// TypeScript's newer lib typings (the `Uint8Array` generic added in 5.7+).
+	randomBytes = crypto.getRandomValues(new Uint8Array(new ArrayBuffer(5)));
 	counter = Math.floor(Math.random() * 0xffffff);
 }
 
