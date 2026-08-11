@@ -27,6 +27,7 @@ export {
 	MongoDriverError,
 	MongoError,
 	MongoErrorCode,
+	MongoErrorLabel,
 	MongoExpiredSessionError,
 	MongoInvalidArgumentError,
 	MongoNetworkError,
@@ -43,6 +44,16 @@ export {
 	MongoWriteConcernError,
 } from "./errors.ts";
 export { ObjectId } from "./object-id.ts";
+export type {
+	ClientSessionId,
+	ClientSessionOptions,
+	EndSessionOptions,
+	TransactionOptions,
+	WithSessionCallback,
+	WithTransactionCallback,
+} from "./session/client-session.ts";
+export { ClientSession } from "./session/client-session.ts";
+export { Transaction, TransactionState } from "./session/transaction.ts";
 export type {
 	AbstractCursorOptions,
 	Auth,
@@ -78,6 +89,7 @@ export type {
 	IndexInformationOptions,
 	IndexKey,
 	IndexSpecification,
+	IndexSpecificationOptions,
 	InsertManyResult,
 	InsertOneOptions,
 	InsertOneResult,

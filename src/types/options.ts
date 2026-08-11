@@ -1,3 +1,4 @@
+import type { ClientSession } from "../session/client-session.ts";
 import type { Document } from "./documents.ts";
 
 /**
@@ -124,14 +125,11 @@ export interface BSONSerializeOptions {
  */
 export interface OperationOptions extends BSONSerializeOptions {
 	/**
-	 * Session the operation runs in.
-	 *
-	 * Typed as `unknown` because this driver has no `ClientSession` yet, and
-	 * rejected rather than ignored: a session is how a caller asks for a
-	 * transaction, and performing the write outside one while the caller believes
-	 * it can be rolled back is the most damaging thing this gate could allow.
+	 * Session the operation runs in. Honoured: when the session has a transaction
+	 * in progress, the operation's statements run inside it and are committed or
+	 * rolled back with it.
 	 */
-	session?: unknown;
+	session?: ClientSession;
 	/** Internal retryable-write bookkeeping. Accepted, no effect. */
 	willRetryWrite?: boolean;
 	/** Which replica-set member to read from. Accepted, no effect — one node. */
@@ -771,16 +769,22 @@ export interface CollationOptions {
 }
 
 /**
- * Options for `Collection.createIndex` and `Collection.createIndexes`.
+ * The fields that describe the index itself, as opposed to the command that
+ * creates it.
+ *
+ * Separated out because one entry of a `createIndexes` batch takes exactly
+ * these — an `IndexDescription` describes an index, so a session or a time limit
+ * has no place in it — while `createIndex` also takes the command surface. The
+ * official driver draws the same line with a `Pick` (mongodb.d.ts:5147).
  *
  * The full `CreateIndexesOptions` surface from mongodb.d.ts:3718 is modelled,
  * because a silently dropped option is worse than a rejected one: a caller who
  * asks for a TTL index and gets a plain one has a data-retention bug, not a
  * compatibility gap. Each field is therefore honoured, deliberately ignored, or
  * rejected — see `assertSupportedIndexOptions` in
- * `src/collection/index-definition.ts` for the per-option policy and reasons.
+ * `src/collection/operation-options.ts` for the per-option policy and reasons.
  */
-export interface CreateIndexesOptions {
+export interface IndexSpecificationOptions {
 	/** Override the auto-generated index name. Honoured. */
 	name?: string;
 	/** Create a unique index. Honoured, as SurrealDB's `UNIQUE`. */
@@ -828,6 +832,20 @@ export interface CreateIndexesOptions {
 }
 
 /**
+ * Options for `Collection.createIndex` and `Collection.createIndexes`.
+ *
+ * The index's own fields plus the command surface, which is what makes `session`
+ * nameable on a typed call: `DEFINE INDEX` runs inside a caller's transaction and
+ * is rolled back with it, so a caller creating an index as part of a migration
+ * must be able to say so without casting. `writeConcern` is dropped as the
+ * official driver drops it (mongodb.d.ts:3718) — index builds have no
+ * per-command durability setting.
+ */
+export interface CreateIndexesOptions
+	extends IndexSpecificationOptions,
+		Omit<CommandOperationOptions, "writeConcern"> {}
+
+/**
  * @deprecated Use `CreateIndexesOptions`, which is what the official driver
  * calls this. Retained as an alias so existing annotations keep compiling.
  */
@@ -836,11 +854,12 @@ export type CreateIndexOptions = CreateIndexesOptions;
 /**
  * One index in a `createIndexes` batch.
  *
- * Mirrors MongoDB's `IndexDescription` (mongodb.d.ts:5147): the per-index
- * options are the same ones `createIndex` takes, with the key alongside them.
+ * Mirrors MongoDB's `IndexDescription` (mongodb.d.ts:5147): the index-shaping
+ * options with the key alongside them, and none of the command-level fields —
+ * those belong to the `createIndexes` call, which takes one options object for
+ * the whole batch.
  */
-export interface IndexDescription extends Omit<CreateIndexesOptions, "name"> {
-	name?: string;
+export interface IndexDescription extends IndexSpecificationOptions {
 	key: IndexKey | Map<string, IndexDirection>;
 }
 
@@ -867,9 +886,15 @@ export type IndexDescriptionCompact = Record<
 	[name: string, direction: IndexDirection][]
 >;
 
-/** Options for `Collection.listIndexes`, `indexes` and `indexExists`. */
-// biome-ignore lint/suspicious/noEmptyInterface: mirrors the driver's own placeholder for cursor options this driver has no use for yet
-export interface ListIndexesOptions {}
+/**
+ * Options for `Collection.listIndexes`, `indexes` and `indexExists`.
+ *
+ * Extends the command surface, as the driver's own
+ * `AbstractCursorOptions`-derived type does (mongodb.d.ts:5406), so `session`
+ * and the rest are nameable on a typed call rather than only reachable through
+ * an untyped one.
+ */
+export interface ListIndexesOptions extends CommandOperationOptions {}
 
 /** Options for `Collection.indexInformation`. Mirrors mongodb.d.ts:5173. */
 export interface IndexInformationOptions extends ListIndexesOptions {
@@ -880,6 +905,11 @@ export interface IndexInformationOptions extends ListIndexesOptions {
 	full?: boolean;
 }
 
-/** Options for `Collection.dropIndex` and `Collection.dropIndexes`. */
-// biome-ignore lint/suspicious/noEmptyInterface: the driver's own options here are all command-level concerns this driver does not model
-export interface DropIndexesOptions {}
+/**
+ * Options for `Collection.dropIndex` and `Collection.dropIndexes`.
+ *
+ * Extends the command surface for the same reason `ListIndexesOptions` does: a
+ * `session` has to be nameable on a typed call, since dropping an index inside a
+ * caller's transaction is rolled back with it.
+ */
+export interface DropIndexesOptions extends CommandOperationOptions {}

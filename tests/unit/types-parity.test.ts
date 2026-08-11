@@ -21,12 +21,16 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+	type ClientSession as MongoClientSession,
 	type Collection as MongoCollection,
 	type Db as MongoDb,
 	type FindCursor as MongoFindCursor,
 	MongoClient as NativeMongoClient,
 } from "mongodb";
-import type { Db as MqlDb } from "../../src/index.ts";
+import type {
+	ClientSession as MqlClientSession,
+	Db as MqlDb,
+} from "../../src/index.ts";
 import {
 	Collection as MqlCollection,
 	FindCursor as MqlFindCursor,
@@ -157,9 +161,17 @@ async function _useMqlCollection(
 
 async function _useMongoIndexes(
 	col: MongoCollection<MongoParityUser>,
+	session: MongoClientSession,
 ): Promise<unknown> {
 	const cursor = col.listIndexes();
 	return [
+		// Index DDL is transactional on both drivers, so `session` has to be
+		// nameable on the call rather than reachable only through a cast.
+		await col.createIndex({ age: 1 }, { session }),
+		await col.createIndexes([{ key: { age: 1 } }], { session }),
+		await col.listIndexes({ session }).toArray(),
+		await col.indexInformation({ session }),
+		await col.dropIndexes({ session }),
 		await col.createIndex({ age: 1 }),
 		await col.createIndex({ age: -1 }, { name: "by_age_desc" }),
 		await col.createIndex({ email: 1 }, { unique: true, sparse: true }),
@@ -187,9 +199,15 @@ async function _useMongoIndexes(
 
 async function _useMqlIndexes(
 	col: MqlCollection<MqlParityUser>,
+	session: MqlClientSession,
 ): Promise<unknown> {
 	const cursor = col.listIndexes();
 	return [
+		await col.createIndex({ age: 1 }, { session }),
+		await col.createIndexes([{ key: { age: 1 } }], { session }),
+		await col.listIndexes({ session }).toArray(),
+		await col.indexInformation({ session }),
+		await col.dropIndexes({ session }),
 		await col.createIndex({ age: 1 }),
 		await col.createIndex({ age: -1 }, { name: "by_age_desc" }),
 		await col.createIndex({ email: 1 }, { unique: true, sparse: true }),

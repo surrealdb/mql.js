@@ -276,24 +276,31 @@ describe("client options: rejected", () => {
 	});
 
 	test("a read concern needing a replica set is refused with code 123", () => {
-		for (const query of [
-			"readConcernLevel=snapshot",
-			"readConcernLevel=linearizable",
-		]) {
-			let error: unknown;
-			try {
-				fromUri(query);
-			} catch (err) {
-				error = err;
-			}
-			expect(error).toBeInstanceOf(MongoServerError);
-			expect((error as MongoServerError).code).toBe(
-				MongoErrorCode.NotAReplicaSet,
-			);
+		let error: unknown;
+		try {
+			fromUri("readConcernLevel=linearizable");
+		} catch (err) {
+			error = err;
 		}
-		expect(() => fromObject({ readConcern: { level: "snapshot" } })).toThrow(
-			MongoServerError,
+		expect(error).toBeInstanceOf(MongoServerError);
+		expect((error as MongoServerError).code).toBe(
+			MongoErrorCode.NotAReplicaSet,
 		);
+		expect(() =>
+			fromObject({ readConcern: { level: "linearizable" } }),
+		).toThrow(MongoServerError);
+	});
+
+	// A client-wide read concern is the same promise as a per-operation one, made
+	// once for every operation, so the two gates have to agree: `snapshot` asks
+	// that reads come from one consistent point in time, which every SurrealDB
+	// statement and transaction is, and refusing it in the connection string while
+	// honouring it on the call would make the answer depend on where it was asked.
+	test("`snapshot` is served in the connection string as it is per operation", () => {
+		expect(() => fromUri("readConcernLevel=snapshot")).not.toThrow();
+		expect(() =>
+			fromObject({ readConcern: { level: "snapshot" } }),
+		).not.toThrow();
 	});
 
 	test("the same rule applies whichever spelling the caller used", () => {
