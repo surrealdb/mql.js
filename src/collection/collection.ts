@@ -18,11 +18,15 @@ import {
 	type SurrealDialect,
 } from "../translators/dialect/index.ts";
 import type {
+	BulkWriteOptions,
 	CountDocumentsOptions,
 	CreateIndexesOptions,
+	DeleteOptions,
 	DeleteResult,
+	DistinctOptions,
 	Document,
 	DropIndexesOptions,
+	EstimatedDocumentCountOptions,
 	Filter,
 	FindOneAndDeleteOptions,
 	FindOneAndReplaceOptions,
@@ -34,6 +38,7 @@ import type {
 	IndexInformationOptions,
 	IndexSpecification,
 	InsertManyResult,
+	InsertOneOptions,
 	InsertOneResult,
 	ListIndexesOptions,
 	ModifyResult,
@@ -117,6 +122,7 @@ export class Collection<TSchema extends Document = Document> {
 			escapedTable: escapeIdentifier(this.collectionName),
 			dialect,
 			indexes: this._indexRegistry,
+			defaults: this._db._client.defaults,
 		};
 	}
 
@@ -128,12 +134,18 @@ export class Collection<TSchema extends Document = Document> {
 	// INSERT
 	// -----------------------------------------------------------------------
 
-	insertOne(doc: OptionalId<TSchema>): Promise<InsertOneResult> {
-		return insertOneOp(this.context(), doc);
+	insertOne(
+		doc: OptionalId<TSchema>,
+		options?: InsertOneOptions,
+	): Promise<InsertOneResult> {
+		return insertOneOp(this.context(), doc, options);
 	}
 
-	insertMany(docs: OptionalId<TSchema>[]): Promise<InsertManyResult> {
-		return insertManyOp(this.context(), docs);
+	insertMany(
+		docs: OptionalId<TSchema>[],
+		options?: BulkWriteOptions,
+	): Promise<InsertManyResult> {
+		return insertManyOp(this.context(), docs, options);
 	}
 
 	// -----------------------------------------------------------------------
@@ -142,15 +154,23 @@ export class Collection<TSchema extends Document = Document> {
 
 	find(filter?: Filter<TSchema>, options?: FindOptions): FindCursor<TSchema> {
 		const ctx = this.context();
+		// The cursor owns `sort`/`limit`/`skip`/`projection`, since its chaining
+		// methods can still change them; everything else the caller passed is
+		// captured here and reaches the query untouched.
 		const runner: FindRunner<TSchema> = (state: FindCursorState) =>
-			executeFindOp<TSchema>(ctx, state.filter, {
-				sort: state.sort,
-				limit: state.limit,
-				skip: state.skip,
-				projectionFields: state.projectionFields,
-				projectionExcludeFields: state.projectionExcludeFields,
-				projectionIncludeId: state.projectionIncludeId,
-			});
+			executeFindOp<TSchema>(
+				ctx,
+				state.filter,
+				{
+					sort: state.sort,
+					limit: state.limit,
+					skip: state.skip,
+					projectionFields: state.projectionFields,
+					projectionExcludeFields: state.projectionExcludeFields,
+					projectionIncludeId: state.projectionIncludeId,
+				},
+				options,
+			);
 		return new FindCursor<TSchema>(
 			runner as FindRunner<Document>,
 			filter as Document,
@@ -201,12 +221,18 @@ export class Collection<TSchema extends Document = Document> {
 	// DELETE
 	// -----------------------------------------------------------------------
 
-	deleteOne(filter: Filter<TSchema>): Promise<DeleteResult> {
-		return deleteOneOp(this.context(), filter);
+	deleteOne(
+		filter: Filter<TSchema>,
+		options?: DeleteOptions,
+	): Promise<DeleteResult> {
+		return deleteOneOp(this.context(), filter, options);
 	}
 
-	deleteMany(filter?: Filter<TSchema>): Promise<DeleteResult> {
-		return deleteManyOp(this.context(), filter);
+	deleteMany(
+		filter?: Filter<TSchema>,
+		options?: DeleteOptions,
+	): Promise<DeleteResult> {
+		return deleteManyOp(this.context(), filter, options);
 	}
 
 	// -----------------------------------------------------------------------
@@ -220,12 +246,18 @@ export class Collection<TSchema extends Document = Document> {
 		return countDocumentsOp(this.context(), filter, options);
 	}
 
-	estimatedDocumentCount(): Promise<number> {
-		return estimatedDocumentCountOp(this.context());
+	estimatedDocumentCount(
+		options?: EstimatedDocumentCountOptions,
+	): Promise<number> {
+		return estimatedDocumentCountOp(this.context(), options);
 	}
 
-	distinct<T = unknown>(key: string, filter?: Filter<TSchema>): Promise<T[]> {
-		return distinctOp<T, TSchema>(this.context(), key, filter);
+	distinct<T = unknown>(
+		key: string,
+		filter?: Filter<TSchema>,
+		options?: DistinctOptions,
+	): Promise<T[]> {
+		return distinctOp<T, TSchema>(this.context(), key, filter, options);
 	}
 
 	// -----------------------------------------------------------------------
@@ -246,12 +278,12 @@ export class Collection<TSchema extends Document = Document> {
 		return createIndexesOp(this.context(), specs, options);
 	}
 
-	dropIndex(name: string, _options?: DropIndexesOptions): Promise<Document> {
-		return dropIndexOp(this.context(), name);
+	dropIndex(name: string, options?: DropIndexesOptions): Promise<Document> {
+		return dropIndexOp(this.context(), name, options);
 	}
 
-	dropIndexes(_options?: DropIndexesOptions): Promise<boolean> {
-		return dropIndexesOp(this.context());
+	dropIndexes(options?: DropIndexesOptions): Promise<boolean> {
+		return dropIndexesOp(this.context(), options);
 	}
 
 	/**
@@ -260,9 +292,12 @@ export class Collection<TSchema extends Document = Document> {
 	 * Returns a cursor rather than an array because that is the shape MongoDB
 	 * consumers write against — `await col.listIndexes().toArray()`.
 	 */
-	listIndexes(_options?: ListIndexesOptions): ListIndexesCursor {
+	listIndexes(options?: ListIndexesOptions): ListIndexesCursor {
 		const ctx = this.context();
-		return new ListIndexesCursor(() => listIndexesOp(ctx));
+		// The gate runs inside the runner rather than here, so an option this driver
+		// refuses rejects the iteration the way MongoDB's cursor reports a bad
+		// option: `listIndexes()` itself only ever hands back a cursor.
+		return new ListIndexesCursor(() => listIndexesOp(ctx, options));
 	}
 
 	/**
@@ -286,14 +321,14 @@ export class Collection<TSchema extends Document = Document> {
 	indexes(
 		options?: IndexInformationOptions,
 	): Promise<IndexDescriptionCompact | IndexDescriptionInfo[]> {
-		return indexInformationOp(this.context(), options?.full ?? true);
+		return indexInformationOp(this.context(), options?.full ?? true, options);
 	}
 
 	indexExists(
 		indexes: string | string[],
-		_options?: ListIndexesOptions,
+		options?: ListIndexesOptions,
 	): Promise<boolean> {
-		return indexExistsOp(this.context(), indexes);
+		return indexExistsOp(this.context(), indexes, options);
 	}
 
 	indexInformation(
@@ -308,7 +343,7 @@ export class Collection<TSchema extends Document = Document> {
 	indexInformation(
 		options?: IndexInformationOptions,
 	): Promise<IndexDescriptionCompact | IndexDescriptionInfo[]> {
-		return indexInformationOp(this.context(), options?.full);
+		return indexInformationOp(this.context(), options?.full, options);
 	}
 
 	// -----------------------------------------------------------------------

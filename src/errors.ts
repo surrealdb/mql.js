@@ -64,6 +64,8 @@ export const MongoErrorCode = {
 	MaxTimeMSExpired: 50,
 	/** The command is not recognised by the server. */
 	CommandNotFound: 59,
+	/** The deployment is not a replica set, so the requested guarantee is unavailable. */
+	NotAReplicaSet: 123,
 	/** A unique index rejected the write. */
 	DuplicateKey: 11000,
 	/** A schema validator or assertion rejected the document. */
@@ -91,6 +93,7 @@ const CODE_NAMES: Record<number, string> = {
 	86: "IndexKeySpecsConflict",
 	11000: "DuplicateKey",
 	121: "DocumentValidationFailure",
+	123: "NotAReplicaSet",
 	251: "NoSuchTransaction",
 };
 

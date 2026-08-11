@@ -25,12 +25,8 @@ describe("updateOne", () => {
 		);
 		expect(executor.queries[0].bindings).toEqual({ p0: "Alice" });
 
-		expect(executor.queries[1].sql).toBe("UPDATE $__rid SET age = $p1");
-		expect(executor.queries[1].bindings).toEqual({
-			p0: "Alice",
-			p1: 31,
-			__rid: rid,
-		});
+		expect(executor.queries[1].sql).toBe("UPDATE $__rid SET age = $p0");
+		expect(executor.queries[1].bindings).toEqual({ p0: 31, __rid: rid });
 
 		expect(result.matchedCount).toBe(1);
 		expect(result.modifiedCount).toBe(1);
@@ -47,10 +43,11 @@ describe("updateOne", () => {
 		expect(executor.queries.length).toBe(1); // no UPDATE follow-up
 	});
 
-	test("upsert path takes the bulk UPSERT statement (no SELECT first)", async () => {
+	test("upsert with no match inserts a document seeded from the filter", async () => {
 		const { ctx, executor } = makeContext({ collectionName: "users" });
-		const rid = new RecordId("users", "abc");
-		executor.enqueue([{ id: rid, name: "X" }]);
+		executor
+			.enqueue([]) // SELECT id … LIMIT 1 → no match
+			.enqueue([{ id: new RecordId("users", "abc"), name: "X", age: 1 }]);
 
 		const result = await updateOne(
 			ctx,
@@ -59,13 +56,32 @@ describe("updateOne", () => {
 			{ upsert: true },
 		);
 
-		expect(executor.queries.length).toBe(1);
-		expect(executor.queries[0].sql).toBe(
-			"UPSERT users SET age = $p1 WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0))",
+		// The created document carries the filter's `name`, without which the
+		// next call with the same filter would insert a second one.
+		expect(executor.queries[1].sql).toBe(
+			"UPSERT $__rid SET name = $p0, age = $p1 RETURN AFTER",
 		);
-		expect(executor.queries[0].bindings).toEqual({ p0: "X", p1: 1 });
+		expect(executor.queries[1].bindings?.p0).toBe("X");
 		expect(result.upsertedId).toBeTruthy();
 		expect(result.upsertedCount).toBe(1);
+		expect(result.matchedCount).toBe(0);
+	});
+
+	test("upsert with a match updates the matched record only", async () => {
+		const { ctx, executor } = makeContext({ collectionName: "users" });
+		const rid = new RecordId("users", "abc");
+		executor.enqueue([{ id: rid }]).enqueue([{ id: rid }]);
+
+		const result = await updateOne(
+			ctx,
+			{ name: "X" },
+			{ $set: { age: 1 } },
+			{ upsert: true },
+		);
+
+		expect(executor.queries[1].sql).toBe("UPDATE $__rid SET age = $p0");
+		expect(result.upsertedCount).toBe(0);
+		expect(result.matchedCount).toBe(1);
 	});
 });
 

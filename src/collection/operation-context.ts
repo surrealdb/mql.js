@@ -16,6 +16,20 @@ import type { Document } from "../types.ts";
 import type { IndexRegistry } from "./index-registry.ts";
 import { loadTextFields } from "./operations/indexes.ts";
 
+/**
+ * Client-wide settings an operation inherits unless it says otherwise.
+ *
+ * MongoDB's client options are defaults for every operation run through the
+ * client, so the two of them this driver can serve are carried here rather than
+ * being accepted at construction and quietly forgotten.
+ */
+export interface ClientDefaults {
+	/** `MongoClientOptions.ignoreUndefined`. */
+	readonly ignoreUndefined?: boolean;
+	/** `MongoClientOptions.timeoutMS`, as a per-operation time budget. */
+	readonly timeoutMS?: number;
+}
+
 export interface OperationContext {
 	/** Driver port used for every read/write. */
 	readonly executor: QueryExecutor;
@@ -27,6 +41,8 @@ export interface OperationContext {
 	readonly dialect: SurrealDialect;
 	/** Per-collection index/text-field state. */
 	readonly indexes: IndexRegistry;
+	/** Client-wide option defaults this operation inherits, if any. */
+	readonly defaults?: ClientDefaults;
 }
 
 /**

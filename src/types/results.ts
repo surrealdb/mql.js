@@ -32,9 +32,16 @@ export interface DeleteResult {
 /**
  * Result of `Collection.findOneAndUpdate`, `Collection.findOneAndDelete`,
  * or `Collection.findOneAndReplace` when `includeResultMetadata` is `true`.
+ *
+ * Mirrors MongoDB's `ModifyResult` (mongodb.d.ts:5480). `lastErrorObject` is
+ * where the command reports what the write did — `{n, updatedExisting}`, plus
+ * `upserted` when a document was created. That is the only place an upsert is
+ * visible, since `value` is `null` for the "before" of a document that did not
+ * previously exist.
  */
 export interface ModifyResult<TSchema extends Document = Document> {
 	value: TSchema | null;
+	lastErrorObject?: Document;
 	ok: number;
 }
 

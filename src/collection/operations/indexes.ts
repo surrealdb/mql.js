@@ -24,10 +24,13 @@ import { escapeIdentifier } from "../../surreal/sql/escape.ts";
 import type {
 	CreateIndexesOptions,
 	Document,
+	DropIndexesOptions,
 	IndexDescription,
 	IndexDescriptionCompact,
 	IndexDescriptionInfo,
+	IndexInformationOptions,
 	IndexSpecification,
+	ListIndexesOptions,
 } from "../../types.ts";
 import {
 	buildIndexStatements,
@@ -43,6 +46,7 @@ import {
 	toCompactIndexInformation,
 } from "../index-definition.ts";
 import type { OperationContext } from "../operation-context.ts";
+import { assertSupportedIndexOptions } from "../operation-options.ts";
 
 /** Shape of the parts of `INFO FOR TABLE … STRUCTURE` this driver reads. */
 interface TableStructure {
@@ -55,8 +59,12 @@ interface TableStructure {
  * A table with no indexes — including one that does not exist yet, which
  * SurrealDB reports identically — still yields the implicit `_id_` entry, the
  * way MongoDB reports it for a collection that has only ever been written to.
+ *
+ * Exported because the option gate needs it too: a caller's `hint` has to be
+ * checked against the indexes that exist, since SurrealDB ignores a `WITH INDEX`
+ * naming one that does not.
  */
-async function readIndexInventory(
+export async function readIndexInventory(
 	ctx: OperationContext,
 ): Promise<IndexInventory> {
 	const structure = await ctx.executor.query<TableStructure>(
@@ -196,6 +204,7 @@ export async function createIndex(
 	spec: IndexSpecification,
 	options?: CreateIndexesOptions,
 ): Promise<string> {
+	assertSupportedIndexOptions(options);
 	return defineIndex(ctx, resolveIndexDefinition(spec, options));
 }
 
@@ -204,6 +213,8 @@ export async function createIndexes(
 	specs: readonly IndexDescription[],
 	options?: CreateIndexesOptions,
 ): Promise<string[]> {
+	assertSupportedIndexOptions(options);
+
 	if (specs.length === 0) {
 		throw new MongoInvalidArgumentError(
 			"createIndexes requires at least one index specification",
@@ -238,7 +249,10 @@ export async function createIndexes(
 export async function dropIndex(
 	ctx: OperationContext,
 	name: string,
+	options?: DropIndexesOptions,
 ): Promise<Document> {
+	assertSupportedIndexOptions(options);
+
 	if (name === ID_INDEX_NAME) {
 		throw new MongoServerError("cannot drop _id index", {
 			code: MongoErrorCode.InvalidOptions,
@@ -272,7 +286,12 @@ export async function dropIndex(
  * here: SurrealDB reports an unwritten table and an empty one identically, so
  * there is nothing to distinguish and the answer is always `true`.
  */
-export async function dropIndexes(ctx: OperationContext): Promise<boolean> {
+export async function dropIndexes(
+	ctx: OperationContext,
+	options?: DropIndexesOptions,
+): Promise<boolean> {
+	assertSupportedIndexOptions(options);
+
 	const inventory = await readIndexInventory(ctx);
 
 	for (const index of inventory.physical) {
@@ -288,7 +307,10 @@ export async function dropIndexes(ctx: OperationContext): Promise<boolean> {
 /** Every index on the collection, `_id_` first. */
 export async function listIndexes(
 	ctx: OperationContext,
+	options?: ListIndexesOptions,
 ): Promise<IndexDescriptionInfo[]> {
+	assertSupportedIndexOptions(options);
+
 	const { descriptions } = await readIndexInventory(ctx);
 	return descriptions;
 }
@@ -302,8 +324,9 @@ export async function listIndexes(
 export async function indexExists(
 	ctx: OperationContext,
 	names: string | string[],
+	options?: ListIndexesOptions,
 ): Promise<boolean> {
-	const descriptions = await listIndexes(ctx);
+	const descriptions = await listIndexes(ctx, options);
 	const existing = new Set(descriptions.map((d) => d.name));
 	const wanted = Array.isArray(names) ? names : [names];
 	return wanted.every((name) => existing.has(name));
@@ -312,20 +335,24 @@ export async function indexExists(
 export async function indexInformation(
 	ctx: OperationContext,
 	full: true,
+	options?: IndexInformationOptions,
 ): Promise<IndexDescriptionInfo[]>;
 export async function indexInformation(
 	ctx: OperationContext,
 	full?: false,
+	options?: IndexInformationOptions,
 ): Promise<IndexDescriptionCompact>;
 export async function indexInformation(
 	ctx: OperationContext,
 	full?: boolean,
+	options?: IndexInformationOptions,
 ): Promise<IndexDescriptionCompact | IndexDescriptionInfo[]>;
 export async function indexInformation(
 	ctx: OperationContext,
 	full?: boolean,
+	options?: IndexInformationOptions,
 ): Promise<IndexDescriptionCompact | IndexDescriptionInfo[]> {
-	const descriptions = await listIndexes(ctx);
+	const descriptions = await listIndexes(ctx, options);
 	return full ? descriptions : toCompactIndexInformation(descriptions);
 }
 

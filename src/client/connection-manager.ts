@@ -12,20 +12,39 @@
  */
 
 import type { ConnectOptions, Surreal } from "surrealdb";
-import { MongoNetworkError } from "../errors.ts";
+import {
+	MongoNetworkError,
+	MongoNetworkTimeoutError,
+	MongoServerSelectionError,
+} from "../errors.ts";
 import { mapConnectError } from "../surreal/error-mapper.ts";
 import { escapeIdentifier } from "../surreal/sql/escape.ts";
 
 export interface ConnectArgs {
 	url: string;
 	options: ConnectOptions;
+	/** Milliseconds allowed for the connection to become ready; `0` for no limit. */
+	connectTimeoutMS?: number;
+	/** Milliseconds allowed to find a usable server; `0` for no limit. */
+	serverSelectionTimeoutMS?: number;
+}
+
+/** A connect budget that expired, and the error it is reported as. */
+interface Budget {
+	readonly limitMS: number;
+	readonly error: () => Error;
 }
 
 export class ConnectionManager {
 	constructor(private readonly surreal: Surreal) {}
 
 	/** Connect with the fail-fast race; returns nothing on success. */
-	async connect({ url, options }: ConnectArgs): Promise<void> {
+	async connect({
+		url,
+		options,
+		connectTimeoutMS,
+		serverSelectionTimeoutMS,
+	}: ConnectArgs): Promise<void> {
 		let connectSettled = false;
 		let capturedError: Error | undefined;
 
@@ -46,16 +65,25 @@ export class ConnectionManager {
 			});
 		});
 
+		const budget = tightestBudget(connectTimeoutMS, serverSelectionTimeoutMS);
+		const timer = new Timer();
+
 		try {
 			await Promise.race([
 				this.surreal.connect(url, options).then(() => {
 					connectSettled = true;
 				}),
 				guard,
+				...(budget ? [timer.expire(budget)] : []),
 			]);
 		} catch (err) {
+			// The SDK's `connect()` cannot be cancelled, so an expired budget leaves
+			// an attempt running: close it rather than leave a socket opening behind
+			// a promise nobody is waiting on any more.
+			if (!connectSettled) await this.surreal.close().catch(() => {});
 			throw mapConnectError(err);
 		} finally {
+			timer.cancel();
 			unsubError();
 		}
 	}
@@ -109,5 +137,63 @@ export class ConnectionManager {
 		} catch {
 			return undefined;
 		}
+	}
+}
+
+/**
+ * The connect budget that binds, of MongoDB's two.
+ *
+ * `connectTimeoutMS` bounds establishing a connection and
+ * `serverSelectionTimeoutMS` bounds finding a server to establish it to. Against
+ * a single named SurrealDB node those are the same wait, so the tighter one
+ * decides — honouring only the larger would break the promise the smaller made.
+ * `0` means "no limit" in MongoDB, so it takes no part.
+ */
+function tightestBudget(
+	connectTimeoutMS: number | undefined,
+	serverSelectionTimeoutMS: number | undefined,
+): Budget | undefined {
+	const budgets: Budget[] = [];
+
+	if (connectTimeoutMS !== undefined && connectTimeoutMS > 0) {
+		budgets.push({
+			limitMS: connectTimeoutMS,
+			error: () =>
+				new MongoNetworkTimeoutError(
+					`connection timed out after ${connectTimeoutMS} ms`,
+				),
+		});
+	}
+	if (serverSelectionTimeoutMS !== undefined && serverSelectionTimeoutMS > 0) {
+		budgets.push({
+			limitMS: serverSelectionTimeoutMS,
+			error: () =>
+				new MongoServerSelectionError(
+					`Server selection timed out after ${serverSelectionTimeoutMS} ms`,
+				),
+		});
+	}
+
+	return budgets.sort((a, b) => a.limitMS - b.limitMS)[0];
+}
+
+/**
+ * A cancellable delay.
+ *
+ * The handle has to be cleared on every exit: an outstanding timer keeps a Node
+ * process alive well past the connect it was guarding.
+ */
+class Timer {
+	private handle: ReturnType<typeof setTimeout> | undefined;
+
+	expire(budget: Budget): Promise<never> {
+		return new Promise<never>((_, reject) => {
+			this.handle = setTimeout(() => reject(budget.error()), budget.limitMS);
+		});
+	}
+
+	cancel(): void {
+		if (this.handle !== undefined) clearTimeout(this.handle);
+		this.handle = undefined;
 	}
 }

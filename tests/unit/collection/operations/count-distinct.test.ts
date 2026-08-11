@@ -4,6 +4,7 @@ import {
 	estimatedDocumentCount,
 } from "../../../../src/collection/operations/count.ts";
 import { distinct } from "../../../../src/collection/operations/distinct.ts";
+import { MongoInvalidArgumentError } from "../../../../src/errors.ts";
 import { makeContext } from "../../../helpers/operation-context.ts";
 
 describe("countDocuments", () => {
@@ -26,13 +27,47 @@ describe("countDocuments", () => {
 		expect(await countDocuments(ctx)).toBe(0);
 	});
 
-	test("appends START / LIMIT for skip / limit options", async () => {
+	test("counts a bounded subquery for skip / limit, so the bounds reach the rows", async () => {
 		const { ctx, executor } = makeContext();
 		executor.enqueue([{ count: 1 }]);
 		await countDocuments(ctx, undefined, { skip: 10, limit: 5 });
+		// `START`/`LIMIT` on the aggregate itself would bound the single row that
+		// reports the count, leaving the count unchanged.
 		expect(executor.queries[0].sql).toBe(
-			"SELECT count() AS count FROM users GROUP ALL START 10 LIMIT 5",
+			"SELECT count() AS count FROM (SELECT id FROM users START 10 LIMIT 5) GROUP ALL",
 		);
+	});
+
+	test("keeps the flat form when nothing bounds the count", async () => {
+		const { ctx, executor } = makeContext();
+		executor.enqueue([{ count: 1 }]);
+		await countDocuments(ctx, undefined, { skip: 0 });
+		expect(executor.queries[0].sql).toBe(
+			"SELECT count() AS count FROM users GROUP ALL",
+		);
+	});
+
+	test("bounds the filtered set, not the aggregate", async () => {
+		const { ctx, executor } = makeContext();
+		executor.enqueue([{ count: 2 }]);
+		await countDocuments(ctx, { active: true }, { limit: 2 });
+		expect(executor.queries[0].sql).toBe(
+			"SELECT count() AS count FROM (SELECT id FROM users WHERE (active = $p0 OR (type::is_array(active) AND active CONTAINS $p0)) LIMIT 2) GROUP ALL",
+		);
+		expect(executor.queries[0].bindings).toEqual({ p0: true });
+	});
+
+	test("rejects the bounds MongoDB rejects", async () => {
+		const { ctx } = makeContext();
+		await expect(
+			countDocuments(ctx, undefined, { limit: 0 }),
+		).rejects.toBeInstanceOf(MongoInvalidArgumentError);
+		await expect(
+			countDocuments(ctx, undefined, { limit: -1 }),
+		).rejects.toBeInstanceOf(MongoInvalidArgumentError);
+		await expect(
+			countDocuments(ctx, undefined, { skip: -1 }),
+		).rejects.toBeInstanceOf(MongoInvalidArgumentError);
 	});
 
 	test("treats missing `count` field as 0", async () => {

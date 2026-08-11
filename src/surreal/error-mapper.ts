@@ -96,6 +96,16 @@ const INDEX_LIFECYCLE_PATTERNS: ReadonlyArray<{
 	},
 ];
 
+/**
+ * The `TIMEOUT` clause firing, which is how `maxTimeMS` is enforced.
+ *
+ * Verified against 3.x: `The query was not executed because it exceeded the
+ * timeout: 1ns`. MongoDB reports the same event as code 50 with its own wording,
+ * which is what applications and mongoose branch on.
+ */
+const QUERY_TIMEOUT_PATTERN =
+	/^The query was not executed because it exceeded the timeout/;
+
 /** Assertion / type-coercion rejections, which MongoDB reports as code 121. */
 const VALIDATION_PATTERNS = [
 	/^Couldn't coerce value for field/,
@@ -387,6 +397,17 @@ export function mapQueryError(err: unknown): MongoError {
 	// applications branch on (`err.code === 11000`).
 	const duplicate = parseDuplicateKeyError(message);
 	if (duplicate) return duplicateKeyError(duplicate, err);
+
+	// A `TIMEOUT` clause firing is the caller's own `maxTimeMS` expiring, so it
+	// carries MongoDB's `MaxTimeMSExpired` code and message rather than being
+	// reported as an opaque query failure. The SurrealDB text is preserved as the
+	// cause, which is where the duration that was exceeded remains visible.
+	if (QUERY_TIMEOUT_PATTERN.test(message)) {
+		return new MongoServerError("operation exceeded time limit", {
+			code: MongoErrorCode.MaxTimeMSExpired,
+			cause: err,
+		});
+	}
 
 	for (const rule of INDEX_LIFECYCLE_PATTERNS) {
 		const match = rule.pattern.exec(message);

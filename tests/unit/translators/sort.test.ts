@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { MongoInvalidArgumentError } from "../../../src/errors.ts";
-import { translateSort } from "../../../src/translators/sort.ts";
+import { sortColumns, translateSort } from "../../../src/translators/sort.ts";
 import type { SortDirection } from "../../../src/types/options.ts";
 import type { Sort } from "../../../src/types.ts";
 
@@ -113,5 +113,44 @@ describe("translateSort", () => {
 		expect(() =>
 			translateSort([["name", 2 as unknown as SortDirection]] as Sort),
 		).toThrow(MongoInvalidArgumentError);
+	});
+});
+
+describe("sortColumns", () => {
+	// SurrealDB refuses an `ORDER BY` naming an idiom the field list does not
+	// carry, so every statement that projects its fields has to select these.
+	test("nothing to order by yields no columns", () => {
+		expect(sortColumns(null)).toEqual([]);
+		expect(sortColumns(undefined)).toEqual([]);
+		expect(sortColumns({})).toEqual([]);
+	});
+
+	test("reads the same three shapes the clause does", () => {
+		expect(sortColumns("name")).toEqual(["name"]);
+		expect(sortColumns({ name: 1, age: -1 })).toEqual(["name", "age"]);
+		expect(
+			sortColumns([
+				["name", 1],
+				["age", -1],
+			] as Sort),
+		).toEqual(["name", "age"]);
+	});
+
+	test("`_id` becomes SurrealDB's `id` column", () => {
+		expect(sortColumns({ _id: 1 })).toEqual(["id"]);
+	});
+
+	test("paths and awkward names are escaped as idioms", () => {
+		expect(sortColumns({ "nested.d": -1 })).toEqual(["nested.d"]);
+		expect(sortColumns({ "weird field": 1 })).toEqual(["`weird field`"]);
+	});
+
+	test("a column named twice appears once", () => {
+		expect(
+			sortColumns([
+				["name", 1],
+				["name", -1],
+			] as Sort),
+		).toEqual(["name"]);
 	});
 });

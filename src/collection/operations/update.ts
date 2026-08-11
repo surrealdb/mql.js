@@ -1,12 +1,16 @@
 /**
- * `updateOne` / `updateMany` operations and shared SET-builder helpers.
+ * `updateOne` / `updateMany` operations.
  *
  * SurrealQL doesn't accept `LIMIT` on `UPDATE`, so `updateOne` finds the
- * matching record id first and updates it by id; `updateMany` and
- * `upsert` operate on the whole table.
+ * matching record id first and updates it by id; `updateMany` operates on the
+ * whole table through its `WHERE` clause.
+ *
+ * `upsert` also resolves the match itself rather than deferring to SurrealDB's
+ * `UPSERT … WHERE`, because MongoDB's insert is built from the filter — see
+ * `upsert.ts`.
  */
 
-import type { ObjectId } from "../../object-id.ts";
+import { statement } from "../../surreal/sql/statement.ts";
 import { translateFilter } from "../../translators/filter.ts";
 import { translateUpdate } from "../../translators/update.ts";
 import type {
@@ -16,12 +20,18 @@ import type {
 	UpdateOptions,
 	UpdateResult,
 } from "../../types.ts";
-import { recordToDocument } from "../../utils/id.ts";
 import { makeUpdateResult } from "../../utils/result.ts";
+import { applyUndefinedPolicy } from "../../utils/undefined.ts";
 import {
 	filterOptionsFor,
 	type OperationContext,
 } from "../operation-context.ts";
+import {
+	type OperationPlan,
+	resolveOperationPlan,
+} from "../operation-options.ts";
+import { selectOneId } from "./find.ts";
+import { insertUpserted } from "./upsert.ts";
 
 export async function updateOne<TSchema extends Document>(
 	ctx: OperationContext,
@@ -29,10 +39,7 @@ export async function updateOne<TSchema extends Document>(
 	update: UpdateFilter<TSchema>,
 	options?: UpdateOptions,
 ): Promise<UpdateResult> {
-	return runUpdate(ctx, filter as Document, update as Document, {
-		...options,
-		limit: 1,
-	});
+	return runUpdate(ctx, filter as Document, update as Document, options, true);
 }
 
 export async function updateMany<TSchema extends Document>(
@@ -41,90 +48,95 @@ export async function updateMany<TSchema extends Document>(
 	update: UpdateFilter<TSchema>,
 	options?: UpdateOptions,
 ): Promise<UpdateResult> {
-	return runUpdate(ctx, filter as Document, update as Document, options);
+	return runUpdate(ctx, filter as Document, update as Document, options, false);
 }
 
 async function runUpdate(
 	ctx: OperationContext,
 	filter: Document,
 	update: Document,
-	options?: UpdateOptions & { limit?: number },
+	options: UpdateOptions | undefined,
+	single: boolean,
 ): Promise<UpdateResult> {
+	const plan = await resolveOperationPlan(ctx, options, { indexHint: true });
+	const document = applyUndefinedPolicy(update, plan.ignoreUndefined);
+	const criteria = applyUndefinedPolicy(filter, plan.ignoreUndefined);
+
 	const { clause: whereClause, bindings: filterBindings } = translateFilter(
-		filter,
+		criteria,
 		await filterOptionsFor(ctx, filter),
 	);
 
-	const paramOffset = Object.keys(filterBindings).length;
-	const { clause: setClause, bindings: updateBindings } = translateUpdate(
-		update,
-		paramOffset,
-		// The translator needs to know whether this statement can insert:
-		// `$setOnInsert` must contribute nothing to a plain update.
-		{ arrayFilters: options?.arrayFilters, upsert: options?.upsert === true },
-	);
-	const allBindings = { ...filterBindings, ...updateBindings };
+	// `updateOne` has to know which record to touch, and an upsert has to know
+	// whether to touch one at all, so both resolve the match before writing.
+	if (single || options?.upsert) {
+		const rid = await selectOneId(ctx, whereClause, plan, filterBindings);
 
-	if (options?.limit === 1 && !options?.upsert) {
-		return updateOneById(
-			ctx,
-			whereClause,
-			filterBindings,
-			setClause,
-			allBindings,
-		);
+		if (rid === undefined) {
+			if (!options?.upsert) return makeUpdateResult([]);
+			const inserted = await insertUpserted(
+				ctx,
+				criteria,
+				document,
+				plan,
+				options,
+			);
+			return makeUpdateResult([], inserted.insertedId);
+		}
+
+		if (single) {
+			return updateById(ctx, rid, document, plan, options);
+		}
 	}
-	return updateBulk(ctx, whereClause, setClause, allBindings, options);
+
+	return updateWhere(ctx, whereClause, filterBindings, document, plan, options);
 }
 
-async function updateOneById(
+/** Update the one record `rid` addresses. */
+async function updateById(
 	ctx: OperationContext,
-	whereClause: string,
-	filterBindings: Record<string, unknown>,
-	setClause: string,
-	allBindings: Record<string, unknown>,
+	rid: unknown,
+	update: Document,
+	plan: OperationPlan,
+	options?: UpdateOptions,
 ): Promise<UpdateResult> {
-	let findSql = `SELECT id FROM ${ctx.escapedTable}`;
-	if (whereClause) findSql += ` WHERE ${whereClause}`;
-	findSql += " LIMIT 1";
+	const { clause, bindings } = translateUpdate(update, 0, {
+		arrayFilters: options?.arrayFilters,
+	});
 
-	const found = await ctx.executor.query<Record<string, unknown>[]>(
-		findSql,
-		filterBindings,
-	);
-
-	if (!found || found.length === 0) {
-		return makeUpdateResult([]);
-	}
-
-	allBindings.__rid = found[0].id;
 	const rows = await ctx.executor.query<Record<string, unknown>[]>(
-		`UPDATE $__rid ${setClause}`,
-		allBindings,
+		statement("UPDATE $__rid", clause, plan.timeout),
+		{ ...bindings, __rid: rid },
 	);
 	return makeUpdateResult(rows || []);
 }
 
-async function updateBulk(
+/** Update every record the filter matches. */
+async function updateWhere(
 	ctx: OperationContext,
 	whereClause: string,
-	setClause: string,
-	allBindings: Record<string, unknown>,
+	filterBindings: Record<string, unknown>,
+	update: Document,
+	plan: OperationPlan,
 	options?: UpdateOptions,
 ): Promise<UpdateResult> {
-	const verb = options?.upsert ? "UPSERT" : "UPDATE";
-	let sql = `${verb} ${ctx.escapedTable} ${setClause}`;
-	if (whereClause) sql += ` WHERE ${whereClause}`;
-
-	const rows = await ctx.executor.query<Record<string, unknown>[]>(
-		sql,
-		allBindings,
+	const { clause, bindings } = translateUpdate(
+		update,
+		Object.keys(filterBindings).length,
+		{ arrayFilters: options?.arrayFilters },
 	);
 
-	let upsertedId: ObjectId | string | number | null = null;
-	if (options?.upsert && rows && rows.length > 0) {
-		upsertedId = recordToDocument(rows[0])._id as ObjectId | string | number;
-	}
+	const sql = statement(
+		`UPDATE ${ctx.escapedTable}`,
+		plan.indexHint,
+		clause,
+		whereClause && `WHERE ${whereClause}`,
+		plan.timeout,
+	);
 
-	return makeUpdateResult(rows || [], upsertedId);
+	const rows = await ctx.executor.query<Record<string, unknown>[]>(sql, {
+		...filterBindings,
+		...bindings,
+	});
+	return makeUpdateResult(rows || []);
 }

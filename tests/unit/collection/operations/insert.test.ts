@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { RecordId, Table } from "surrealdb";
+import { RecordId } from "surrealdb";
 import {
 	insertMany,
 	insertOne,
@@ -8,15 +8,17 @@ import { ObjectId } from "../../../../src/object-id.ts";
 import { makeContext } from "../../../helpers/operation-context.ts";
 
 describe("insertOne", () => {
-	test("calls executor.createRecord with a RecordId for the table and returns the inserted id", async () => {
+	test("emits CREATE with the record id and content bound, and returns the inserted id", async () => {
 		const { ctx, executor } = makeContext({ collectionName: "users" });
 		const result = await insertOne(ctx, { name: "Alice" });
 
-		expect(executor.createCalls.length).toBe(1);
-		const call = executor.createCalls[0];
-		expect(call.recordId).toBeInstanceOf(RecordId);
-		expect((call.recordId as RecordId).table.name).toBe("users");
-		expect(call.content).toEqual({ name: "Alice" });
+		expect(executor.queries.length).toBe(1);
+		expect(executor.queries[0].sql).toBe("CREATE $__rid CONTENT $__doc");
+
+		const bindings = executor.queries[0].bindings as Record<string, unknown>;
+		expect(bindings.__rid).toBeInstanceOf(RecordId);
+		expect((bindings.__rid as RecordId).table.name).toBe("users");
+		expect(bindings.__doc).toEqual({ name: "Alice" });
 
 		expect(result.acknowledged).toBe(true);
 		expect(result.insertedId).toBeInstanceOf(ObjectId);
@@ -25,15 +27,43 @@ describe("insertOne", () => {
 	test("preserves a caller-supplied string _id", async () => {
 		const { ctx, executor } = makeContext({ collectionName: "users" });
 		const result = await insertOne(ctx, { _id: "alice", name: "Alice" });
+		const bindings = executor.queries[0].bindings as Record<string, unknown>;
+
 		expect(result.insertedId).toBe("alice");
-		expect((executor.createCalls[0].recordId as RecordId).id).toBe("alice");
+		expect((bindings.__rid as RecordId).id).toBe("alice");
 		// The content sent to SurrealDB must NOT contain `_id`
-		expect(executor.createCalls[0].content._id).toBeUndefined();
+		expect((bindings.__doc as Record<string, unknown>)._id).toBeUndefined();
+	});
+
+	test("appends TIMEOUT for maxTimeMS", async () => {
+		const { ctx, executor } = makeContext();
+		await insertOne(ctx, { name: "Alice" }, { maxTimeMS: 250 });
+		expect(executor.queries[0].sql).toBe(
+			"CREATE $__rid CONTENT $__doc TIMEOUT 250ms",
+		);
+	});
+
+	test("stores undefined as null unless ignoreUndefined is set", async () => {
+		const { ctx, executor } = makeContext();
+		await insertOne(ctx, { name: "Alice", nickname: undefined });
+		expect(executor.queries[0].bindings?.__doc).toEqual({
+			name: "Alice",
+			nickname: null,
+		});
+
+		await insertOne(
+			ctx,
+			{ name: "Bob", nickname: undefined },
+			{
+				ignoreUndefined: true,
+			},
+		);
+		expect(executor.queries[1].bindings?.__doc).toEqual({ name: "Bob" });
 	});
 
 	test("propagates errors from the executor", async () => {
 		const { ctx, executor } = makeContext();
-		executor.createRecord = async () => {
+		executor.query = async () => {
 			throw new Error("boom");
 		};
 		await expect(insertOne(ctx, { name: "x" })).rejects.toThrow("boom");
@@ -41,22 +71,26 @@ describe("insertOne", () => {
 });
 
 describe("insertMany", () => {
-	test("delegates to executor.insertMany with a Table, attaches RecordIds and returns mapped result", async () => {
+	test("emits INSERT INTO with the documents bound, ids attached and result mapped", async () => {
 		const { ctx, executor } = makeContext({ collectionName: "users" });
 		const result = await insertMany(ctx, [
 			{ name: "Alice" },
 			{ _id: "bob", name: "Bob" },
 		]);
 
-		expect(executor.insertManyCalls.length).toBe(1);
-		const call = executor.insertManyCalls[0];
-		expect(call.table).toBe("users");
-		expect(call.docs.length).toBe(2);
+		expect(executor.queries.length).toBe(1);
+		expect(executor.queries[0].sql).toBe("INSERT INTO users $__docs");
+
+		const docs = executor.queries[0].bindings?.__docs as Record<
+			string,
+			unknown
+		>[];
+		expect(docs.length).toBe(2);
 
 		// Each doc has a populated `id` (RecordId) and no `_id`.
-		expect(call.docs[0].id).toBeInstanceOf(RecordId);
-		expect(call.docs[0]._id).toBeUndefined();
-		expect((call.docs[1].id as RecordId).id).toBe("bob");
+		expect(docs[0].id).toBeInstanceOf(RecordId);
+		expect(docs[0]._id).toBeUndefined();
+		expect((docs[1].id as RecordId).id).toBe("bob");
 
 		expect(result.acknowledged).toBe(true);
 		expect(result.insertedCount).toBe(2);
@@ -64,27 +98,26 @@ describe("insertMany", () => {
 		expect(result.insertedIds[1]).toBe("bob");
 	});
 
-	test("empty input returns a zero-count result and does not call insertMany on the executor", async () => {
+	test("empty input inserts an empty batch and returns a zero-count result", async () => {
 		const { ctx, executor } = makeContext();
-		// Note: insertMany is still called once with `[]`; that's a deliberate
-		// no-op so SurrealDB doesn't accidentally see undefined behaviour.
+		// The statement still runs with `[]`; that's a deliberate no-op so
+		// SurrealDB doesn't accidentally see undefined behaviour.
 		const result = await insertMany(ctx, []);
 		expect(result.insertedCount).toBe(0);
-		expect(executor.insertManyCalls.length).toBe(1);
-		expect(executor.insertManyCalls[0].docs).toEqual([]);
+		expect(executor.queries[0].bindings?.__docs).toEqual([]);
 	});
 
-	test("works when caller supplies an explicit Table object", async () => {
-		const { ctx, executor } = makeContext({ collectionName: "events" });
+	test("escapes the collection name in the statement", async () => {
+		const { ctx, executor } = makeContext({ collectionName: "user events" });
 		await insertMany(ctx, [{ kind: "ping" }]);
-		// The executor receives the unescaped collection name string; the
-		// SurrealdbExecutor adapter wraps it in `new Table()` itself.
-		expect(executor.insertManyCalls[0].table).toBe("events");
+		expect(executor.queries[0].sql).toBe("INSERT INTO `user events` $__docs");
 	});
 
-	test("ignored: TS-only check that Table import is used", () => {
-		// Import is needed so the file participates in the same module
-		// graph as the production code path; harmless assertion here.
-		expect(typeof Table).toBe("function");
+	test("appends TIMEOUT for maxTimeMS", async () => {
+		const { ctx, executor } = makeContext({ collectionName: "events" });
+		await insertMany(ctx, [{ kind: "ping" }], { maxTimeMS: 1000 });
+		expect(executor.queries[0].sql).toBe(
+			"INSERT INTO events $__docs TIMEOUT 1000ms",
+		);
 	});
 });
