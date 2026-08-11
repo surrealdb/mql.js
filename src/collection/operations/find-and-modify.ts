@@ -2,16 +2,20 @@
  * `findOneAndUpdate`, `findOneAndDelete`, `findOneAndReplace`.
  *
  * MongoDB's "find and modify" methods all share the same shape:
- *   1. resolve the matching record id — under the caller's `sort`, which is what
+ *   1. name the matching record — under the caller's `sort`, which is what
  *      decides *which* document is modified when several match
  *   2. mutate it, or insert the document an `upsert` asks for
  *   3. return the document (before or after), projected, and an optional
  *      modify-result wrapper
  *
- * The `sort` is applied to the id lookup rather than to the write, because
- * SurrealQL's `UPDATE`/`DELETE` take neither `ORDER BY` nor `LIMIT`; the
- * projection is applied to the document the write returns, because `RETURN
- * BEFORE`/`RETURN AFTER` hand back the whole record.
+ * The `sort` is applied to the record the write targets rather than to the write
+ * itself, because SurrealQL's `UPDATE`/`DELETE` take neither `ORDER BY` nor
+ * `LIMIT`; that target is a subquery, so choosing the document and modifying it
+ * happen in one statement and nothing can come between them (see
+ * `modify-one.ts` — a `findOneAndUpdate` resolved in two round trips modifies a
+ * document that no longer matches the filter). The projection is applied to the
+ * document the write returns, because `RETURN BEFORE`/`RETURN AFTER` hand back
+ * the whole record.
  */
 
 import { MongoInvalidArgumentError } from "../../errors.ts";
@@ -40,7 +44,7 @@ import {
 	type OperationContext,
 } from "../operation-context.ts";
 import { resolveOperationPlan } from "../operation-options.ts";
-import { selectOneId } from "./find.ts";
+import { oneRecordTarget, writeOneRecord } from "./modify-one.ts";
 import { insertUpserted, insertUpsertedReplacement } from "./upsert.ts";
 
 /** What the write did, in the terms `lastErrorObject` reports. */
@@ -117,55 +121,43 @@ export async function findOneAndUpdate<TSchema extends Document>(
 		await filterOptionsFor(ctx, filter as Document),
 	);
 
-	const rid = await selectOneId(
-		ctx,
-		whereClause,
-		plan,
-		filterBindings,
-		options?.sort,
-	);
-
-	if (rid === undefined) {
-		if (!options?.upsert) {
-			return wrap<TSchema>(null, options, { n: 0, updatedExisting: false });
-		}
-		const inserted = await insertUpserted(
-			ctx,
-			criteria,
-			document,
-			plan,
-			options,
-		);
-		// MongoDB returns `null` for the "before" of a document that did not exist,
-		// while still reporting the insert in `lastErrorObject`.
-		const value = wantsBefore(options.returnDocument)
-			? null
-			: toProjected<TSchema>(inserted.record, options.projection);
-		return wrap(value, options, {
-			n: 1,
-			updatedExisting: false,
-			upserted: inserted.insertedId,
-		});
-	}
-
 	const { clause: setClause, bindings: updateBindings } = translateUpdate(
 		document,
-		0,
+		Object.keys(filterBindings).length,
 		{ arrayFilters: options?.arrayFilters },
 	);
 
-	const rows = await ctx.executor.query<Record<string, unknown>[]>(
+	const rows = await writeOneRecord(
+		ctx,
 		statement(
-			"UPDATE $__rid",
+			`UPDATE ${oneRecordTarget(ctx, whereClause, plan, options?.sort)}`,
 			setClause,
 			wantsBefore(options?.returnDocument) ? "RETURN BEFORE" : "RETURN AFTER",
 			plan.timeout,
 		),
-		{ ...updateBindings, __rid: rid },
+		{ ...filterBindings, ...updateBindings },
 	);
 
-	const value = toProjected<TSchema>(rows?.[0], options?.projection);
-	return wrap(value, options, { n: 1, updatedExisting: true });
+	if (rows.length > 0) {
+		const value = toProjected<TSchema>(rows[0], options?.projection);
+		return wrap(value, options, { n: 1, updatedExisting: true });
+	}
+
+	if (!options?.upsert) {
+		return wrap<TSchema>(null, options, { n: 0, updatedExisting: false });
+	}
+
+	const inserted = await insertUpserted(ctx, criteria, document, plan, options);
+	// MongoDB returns `null` for the "before" of a document that did not exist,
+	// while still reporting the insert in `lastErrorObject`.
+	const value = wantsBefore(options.returnDocument)
+		? null
+		: toProjected<TSchema>(inserted.record, options.projection);
+	return wrap(value, options, {
+		n: 1,
+		updatedExisting: false,
+		upserted: inserted.insertedId,
+	});
 }
 
 export async function findOneAndDelete<TSchema extends Document>(
@@ -180,18 +172,17 @@ export async function findOneAndDelete<TSchema extends Document>(
 		await filterOptionsFor(ctx, filter as Document),
 	);
 
-	const rid = await selectOneId(ctx, clause, plan, bindings, options?.sort);
-
-	if (rid === undefined) {
-		return wrap<TSchema>(null, options, { n: 0 });
-	}
-
-	const rows = await ctx.executor.query<Record<string, unknown>[]>(
-		statement("DELETE $__rid RETURN BEFORE", plan.timeout),
-		{ __rid: rid },
+	const rows = await writeOneRecord(
+		ctx,
+		statement(
+			`DELETE ${oneRecordTarget(ctx, clause, plan, options?.sort)}`,
+			"RETURN BEFORE",
+			plan.timeout,
+		),
+		bindings,
 	);
 
-	const value = toProjected<TSchema>(rows?.[0], options?.projection);
+	const value = toProjected<TSchema>(rows[0], options?.projection);
 	return wrap(value, options, { n: value ? 1 : 0 });
 }
 
@@ -222,46 +213,40 @@ export async function findOneAndReplace<TSchema extends Document>(
 		);
 	}
 
-	const rid = await selectOneId(
-		ctx,
-		whereClause,
-		plan,
-		filterBindings,
-		options?.sort,
-	);
-
-	if (rid === undefined) {
-		if (!options?.upsert) {
-			return wrap<TSchema>(null, options, { n: 0, updatedExisting: false });
-		}
-		const inserted = await insertUpsertedReplacement(
-			ctx,
-			criteria,
-			document,
-			plan,
-		);
-		const value = wantsBefore(options.returnDocument)
-			? null
-			: toProjected<TSchema>(inserted.record, options.projection);
-		return wrap(value, options, {
-			n: 1,
-			updatedExisting: false,
-			upserted: inserted.insertedId,
-		});
-	}
-
 	const { clause: contentClause, bindings: contentBindings } =
-		translateReplacement(document, 0);
+		translateReplacement(document, Object.keys(filterBindings).length);
 
-	const rows = await ctx.executor.query<Record<string, unknown>[]>(
+	const rows = await writeOneRecord(
+		ctx,
 		statement(
-			`UPDATE $__rid ${contentClause}`,
+			`UPDATE ${oneRecordTarget(ctx, whereClause, plan, options?.sort)} ${contentClause}`,
 			wantsBefore(options?.returnDocument) ? "RETURN BEFORE" : "RETURN AFTER",
 			plan.timeout,
 		),
-		{ ...contentBindings, __rid: rid },
+		{ ...filterBindings, ...contentBindings },
 	);
 
-	const value = toProjected<TSchema>(rows?.[0], options?.projection);
-	return wrap(value, options, { n: 1, updatedExisting: true });
+	if (rows.length > 0) {
+		const value = toProjected<TSchema>(rows[0], options?.projection);
+		return wrap(value, options, { n: 1, updatedExisting: true });
+	}
+
+	if (!options?.upsert) {
+		return wrap<TSchema>(null, options, { n: 0, updatedExisting: false });
+	}
+
+	const inserted = await insertUpsertedReplacement(
+		ctx,
+		criteria,
+		document,
+		plan,
+	);
+	const value = wantsBefore(options.returnDocument)
+		? null
+		: toProjected<TSchema>(inserted.record, options.projection);
+	return wrap(value, options, {
+		n: 1,
+		updatedExisting: false,
+		upserted: inserted.insertedId,
+	});
 }
