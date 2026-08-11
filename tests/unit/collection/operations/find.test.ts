@@ -25,7 +25,7 @@ describe("findOne", () => {
 		await findOne(ctx, { name: "Alice" }, { projection: { name: 1 } });
 
 		expect(executor.queries[0].sql).toBe(
-			"SELECT name FROM users WHERE name = $p0 LIMIT 1",
+			"SELECT name FROM users WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0)) LIMIT 1",
 		);
 		expect(executor.queries[0].bindings).toEqual({ p0: "Alice" });
 	});
@@ -87,7 +87,7 @@ describe("executeFind", () => {
 		);
 
 		expect(executor.queries[0].sql).toBe(
-			"SELECT * FROM users WHERE active = $p0 ORDER BY age ASC LIMIT 5 START 10",
+			"SELECT * FROM users WHERE (active = $p0 OR (type::is_array(active) AND active CONTAINS $p0)) ORDER BY age ASC LIMIT 5 START 10",
 		);
 		expect(executor.queries[0].bindings).toEqual({ p0: true });
 		expect(docs).toEqual([{ _id: "a", name: "Alice" }]);

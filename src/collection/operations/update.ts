@@ -59,7 +59,9 @@ async function runUpdate(
 	const { clause: setClause, bindings: updateBindings } = translateUpdate(
 		update,
 		paramOffset,
-		{ arrayFilters: options?.arrayFilters },
+		// The translator needs to know whether this statement can insert:
+		// `$setOnInsert` must contribute nothing to a plain update.
+		{ arrayFilters: options?.arrayFilters, upsert: options?.upsert === true },
 	);
 	const allBindings = { ...filterBindings, ...updateBindings };
 
