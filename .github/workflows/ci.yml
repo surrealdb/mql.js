@@ -193,7 +193,11 @@ jobs:
           if [ "${{ matrix.surrealdb.tag }}" = "nightly" ]; then
             curl --proto '=https' --tlsv1.2 -sSf https://install.surrealdb.com | sh -s -- --nightly
           else
-            curl --proto '=https' --tlsv1.2 -sSf https://install.surrealdb.com | sh -s -- --version "${{ matrix.surrealdb.name }}"
+            # The version must carry its "v" prefix: the installer builds
+            # download.surrealdb.com/<ver>/surreal-<ver>.<arch>.tgz, and only the
+            # v-prefixed path exists (an unprefixed one 403s). `latest.txt`
+            # likewise reports e.g. "v3.2.4".
+            curl --proto '=https' --tlsv1.2 -sSf https://install.surrealdb.com | sh -s -- --version "${{ matrix.surrealdb.tag }}"
           fi
           surreal version
 
