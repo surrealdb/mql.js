@@ -7,6 +7,7 @@
  * and calling `.register()` once — Open/Closed in practice.
  */
 
+import { MongoInvalidArgumentError } from "../../errors.ts";
 import type { TranslateContext } from "./translate-context.ts";
 
 export interface FilterOperator {
@@ -35,7 +36,10 @@ export class FilterOperatorRegistry {
 
 	get(name: string): FilterOperator {
 		const op = this.ops.get(name);
-		if (!op) throw new Error(`Unsupported filter operator: ${name}`);
+		if (!op)
+			throw new MongoInvalidArgumentError(
+				`Unsupported filter operator: ${name}`,
+			);
 		return op;
 	}
 

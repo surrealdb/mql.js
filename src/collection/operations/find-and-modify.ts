@@ -8,7 +8,7 @@
  */
 
 import type { RecordId } from "surrealdb";
-import { MongoServerError } from "../../errors.ts";
+import { MongoInvalidArgumentError } from "../../errors.ts";
 import { translateFilter } from "../../translators/filter.ts";
 import {
 	translateReplacement,
@@ -138,7 +138,9 @@ export async function findOneAndReplace<TSchema extends Document>(
 	);
 
 	if (!whereClause) {
-		throw new MongoServerError("findOneAndReplace requires a non-empty filter");
+		throw new MongoInvalidArgumentError(
+			"findOneAndReplace requires a non-empty filter",
+		);
 	}
 
 	const findSql = `SELECT * FROM ${ctx.escapedTable} WHERE ${whereClause} LIMIT 1`;

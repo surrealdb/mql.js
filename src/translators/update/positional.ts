@@ -8,6 +8,7 @@
  * `UpdateOptions`) to build the WHERE clause inside the brackets.
  */
 
+import { MongoInvalidArgumentError } from "../../errors.ts";
 import type { UpdateContext } from "./update-context.ts";
 
 const ALL_POSITIONAL_RE = /\.\$\[\]/g;
@@ -44,7 +45,10 @@ function translateArrayFilterEntry(
 			value as Record<string, unknown>,
 		)) {
 			const sqlOp = COMPARISON_OPS[op];
-			if (!sqlOp) throw new Error(`Unsupported operator in arrayFilter: ${op}`);
+			if (!sqlOp)
+				throw new MongoInvalidArgumentError(
+					`Unsupported operator in arrayFilter: ${op}`,
+				);
 			const p = ctx.bind(opVal);
 			conditions.push(`${subField} ${sqlOp} $${p}`);
 		}
@@ -56,7 +60,7 @@ function translateArrayFilterEntry(
 
 function resolveArrayFilter(identifier: string, ctx: UpdateContext): string {
 	if (!ctx.arrayFilters || ctx.arrayFilters.length === 0) {
-		throw new Error(
+		throw new MongoInvalidArgumentError(
 			`Positional operator $[${identifier}] requires arrayFilters`,
 		);
 	}
@@ -67,7 +71,9 @@ function resolveArrayFilter(identifier: string, ctx: UpdateContext): string {
 	);
 
 	if (!filter) {
-		throw new Error(`No arrayFilter found for identifier "${identifier}"`);
+		throw new MongoInvalidArgumentError(
+			`No arrayFilter found for identifier "${identifier}"`,
+		);
 	}
 
 	const conditions: string[] = [];

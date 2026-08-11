@@ -5,6 +5,7 @@
  * compile to (e.g. `~` vs `string::matches()`).
  */
 
+import { MongoInvalidArgumentError } from "../../../errors.ts";
 import type { FilterOperator } from "../operator-registry.ts";
 
 export const evaluationOperators: FilterOperator[] = [
@@ -20,7 +21,10 @@ export const evaluationOperators: FilterOperator[] = [
 		name: "$type",
 		translate(field, value, ctx) {
 			const fn = ctx.dialect.typeCheckFn(value as string | number);
-			if (!fn) throw new Error(`Unsupported $type value: ${value}`);
+			if (!fn)
+				throw new MongoInvalidArgumentError(
+					`Unsupported $type value: ${value}`,
+				);
 			return `${fn}(${field})`;
 		},
 	},

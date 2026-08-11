@@ -5,8 +5,8 @@ import {
 	type FindRunner,
 } from "../../../src/cursor/find-cursor.ts";
 import {
-	MongoClientError,
 	MongoCursorExhaustedError,
+	MongoCursorInUseError,
 } from "../../../src/errors.ts";
 import type { Document } from "../../../src/types.ts";
 
@@ -83,15 +83,15 @@ describe("FindCursor – chaining and lazy execution", () => {
 		expect(calls[0].filter).toEqual({ name: "Alice" });
 	});
 
-	test("calling chaining methods after execution throws MongoClientError", async () => {
+	test("calling chaining methods after execution throws MongoCursorInUseError", async () => {
 		const { runner } = recordingRunner([]);
 		const cursor = new FindCursor<User>(runner);
 		await cursor.toArray();
-		expect(() => cursor.sort({ age: 1 })).toThrow(MongoClientError);
-		expect(() => cursor.limit(5)).toThrow(MongoClientError);
-		expect(() => cursor.skip(3)).toThrow(MongoClientError);
-		expect(() => cursor.project({ name: 1 })).toThrow(MongoClientError);
-		expect(() => cursor.filter({})).toThrow(MongoClientError);
+		expect(() => cursor.sort({ age: 1 })).toThrow(MongoCursorInUseError);
+		expect(() => cursor.limit(5)).toThrow(MongoCursorInUseError);
+		expect(() => cursor.skip(3)).toThrow(MongoCursorInUseError);
+		expect(() => cursor.project({ name: 1 })).toThrow(MongoCursorInUseError);
+		expect(() => cursor.filter({})).toThrow(MongoCursorInUseError);
 	});
 });
 

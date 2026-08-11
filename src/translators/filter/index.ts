@@ -216,12 +216,12 @@ function translateOperators(
 function translateTextSearch(textOp: Document, ctx: TranslateContext): string {
 	const search = textOp.$search as string;
 	if (typeof search !== "string") {
-		throw new Error("$text requires a $search string");
+		throw new MongoInvalidArgumentError("$text requires a $search string");
 	}
 
 	const fields = ctx.textFields;
 	if (!fields || fields.length === 0) {
-		throw new Error(
+		throw new MongoInvalidArgumentError(
 			"$text query requires a text index. Call createIndex() with a 'text' field first.",
 		);
 	}
@@ -239,4 +239,7 @@ export {
 	type FilterOperator,
 	FilterOperatorRegistry,
 } from "./operator-registry.ts";
+
+import { MongoInvalidArgumentError } from "../../errors.ts";
+
 export type { TranslateContext } from "./translate-context.ts";

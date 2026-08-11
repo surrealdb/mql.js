@@ -8,16 +8,35 @@ export { MongoClient } from "./client/mongo-client.ts";
 export { Collection } from "./collection/collection.ts";
 export { FindCursor } from "./cursor/find-cursor.ts";
 export { Db } from "./db/db.ts";
+export type {
+	MongoErrorCodeValue,
+	MongoServerErrorOptions,
+	WriteError,
+} from "./errors.ts";
 export {
+	codeNameFor,
 	MongoAPIError,
 	MongoClientError,
 	MongoCompatibilityError,
 	MongoCursorExhaustedError,
+	MongoCursorInUseError,
 	MongoDriverError,
 	MongoError,
+	MongoErrorCode,
+	MongoExpiredSessionError,
+	MongoInvalidArgumentError,
 	MongoNetworkError,
+	MongoNetworkTimeoutError,
 	MongoNotConnectedError,
+	MongoOperationTimeoutError,
+	MongoParseError,
+	MongoRuntimeError,
 	MongoServerError,
+	MongoServerSelectionError,
+	MongoSystemError,
+	MongoTopologyClosedError,
+	MongoTransactionError,
+	MongoWriteConcernError,
 } from "./errors.ts";
 export { ObjectId } from "./object-id.ts";
 export type {

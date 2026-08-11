@@ -63,7 +63,9 @@ export function translateUpdate(
 
 	for (const [op, fields] of Object.entries(update)) {
 		if (typeof fields !== "object" || fields === null) {
-			throw new Error(`Update operator ${op} requires an object value`);
+			throw new MongoInvalidArgumentError(
+				`Update operator ${op} requires an object value`,
+			);
 		}
 		const handler = registry.get(op);
 		const entries = Object.entries(fields as Record<string, unknown>);
@@ -97,4 +99,7 @@ export {
 	type UpdateOperator,
 	UpdateOperatorRegistry,
 } from "./operator-registry.ts";
+
+import { MongoInvalidArgumentError } from "../../errors.ts";
+
 export type { UpdateContext } from "./update-context.ts";
