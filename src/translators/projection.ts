@@ -16,6 +16,7 @@
  * field list. Exclusion is handled via a post-processing flag.
  */
 
+import { escapeFieldPath } from "../surreal/sql/escape.ts";
 import type { Projection } from "../types.ts";
 
 export interface TranslatedProjection {
@@ -74,7 +75,9 @@ export function translateProjection(
 			.filter(([_, v]) => Boolean(v))
 			.map(([key]) => key);
 		return {
-			fields: fieldNames.join(", "),
+			// Escaped for SurrealQL; `excludeFields` below stays unescaped
+			// because it is used for in-memory post-processing, not SQL.
+			fields: fieldNames.map(escapeFieldPath).join(", "),
 			isExclusion: false,
 			excludeFields: [],
 			includeId,

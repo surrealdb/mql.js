@@ -10,6 +10,7 @@
  *   ORDER BY field ASC|DESC
  */
 
+import { escapeFieldPath } from "../surreal/sql/escape.ts";
 import type { Sort } from "../types.ts";
 
 /**
@@ -21,20 +22,20 @@ export function translateSort(sort?: Sort | null): string {
 
 	// String shorthand: single field ascending
 	if (typeof sort === "string") {
-		return `ORDER BY ${sort} ASC`;
+		return `ORDER BY ${escapeFieldPath(sort)} ASC`;
 	}
 
 	// Array of tuples: [["name", 1], ["age", -1]]
 	if (Array.isArray(sort)) {
 		const parts = sort.map(([field, dir]) => {
-			return `${field} ${normaliseDirection(dir)}`;
+			return `${escapeFieldPath(field)} ${normaliseDirection(dir)}`;
 		});
 		return parts.length > 0 ? `ORDER BY ${parts.join(", ")}` : "";
 	}
 
 	// Object: { name: 1, age: -1 }
 	const parts = Object.entries(sort).map(([field, dir]) => {
-		return `${field} ${normaliseDirection(dir)}`;
+		return `${escapeFieldPath(field)} ${normaliseDirection(dir)}`;
 	});
 	return parts.length > 0 ? `ORDER BY ${parts.join(", ")}` : "";
 }

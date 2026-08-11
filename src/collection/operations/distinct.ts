@@ -2,6 +2,7 @@
  * `distinct` operation.
  */
 
+import { escapeFieldPath } from "../../surreal/sql/escape.ts";
 import { translateFilter } from "../../translators/filter.ts";
 import type { Document, Filter } from "../../types.ts";
 import {
@@ -18,7 +19,7 @@ export async function distinct<
 		filterOptionsFor(ctx),
 	);
 
-	let sql = `SELECT array::distinct(${key}) AS vals FROM ${ctx.escapedTable}`;
+	let sql = `SELECT array::distinct(${escapeFieldPath(key)}) AS vals FROM ${ctx.escapedTable}`;
 	if (clause) sql += ` WHERE ${clause}`;
 	sql += " GROUP ALL";
 

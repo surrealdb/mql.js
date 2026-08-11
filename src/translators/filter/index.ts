@@ -53,11 +53,6 @@ export interface TranslateFilterOptions {
 	registry?: FilterOperatorRegistry;
 }
 
-/** Escape a field path for use in SurrealQL. Dot-notation passes through as-is. */
-function escapeField(field: string): string {
-	return field;
-}
-
 /**
  * Translate a MongoDB filter document to a SurrealQL WHERE clause.
  * Returns an empty clause when the filter is empty or undefined.
@@ -170,7 +165,7 @@ function translateFieldCondition(
 	ctx: TranslateContext,
 	registry: FilterOperatorRegistry,
 ): string {
-	const f = escapeField(field);
+	const f = escapeFieldPath(field);
 
 	if (value instanceof RegExp) {
 		return registry.get("$regex").translate(f, value, ctx);
@@ -241,5 +236,6 @@ export {
 } from "./operator-registry.ts";
 
 import { MongoInvalidArgumentError } from "../../errors.ts";
+import { escapeFieldPath } from "../../surreal/sql/escape.ts";
 
 export type { TranslateContext } from "./translate-context.ts";

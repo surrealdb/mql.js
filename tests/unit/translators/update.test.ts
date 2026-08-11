@@ -313,7 +313,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$inc: { "scores.$[].value": 5 },
 		});
-		expect(clause).toBe("SET scores[*].value += $p0");
+		expect(clause).toBe("SET scores[*].`value` += $p0");
 		expect(bindings).toEqual({ p0: 5 });
 	});
 
@@ -344,7 +344,7 @@ describe("translateUpdate", () => {
 			0,
 			{ arrayFilters: [{ "high.value": { $gte: 90 } }] },
 		);
-		expect(clause).toBe("SET scores[WHERE value >= $p0].passed = $p1");
+		expect(clause).toBe("SET scores[WHERE `value` >= $p0].passed = $p1");
 		expect(bindings).toEqual({ p0: 90, p1: true });
 	});
 
