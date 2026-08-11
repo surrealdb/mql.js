@@ -7,9 +7,10 @@ on:
   push:
     branches:
       - main
+  # Every pull request, whatever its base. Restricting this to `main` meant a
+  # PR stacked on another branch got no CI at all, so a change could only be
+  # verified once it reached the bottom of the stack.
   pull_request:
-    branches:
-      - main
 
 jobs:
   lint:
