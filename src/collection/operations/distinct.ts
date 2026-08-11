@@ -2,6 +2,11 @@
  * `distinct` operation.
  */
 
+import { escapeFieldPath } from "../../surreal/sql/escape.ts";
+import {
+	isIdField,
+	SURREAL_ID_FIELD,
+} from "../../translators/filter/id-field.ts";
 import { translateFilter } from "../../translators/filter.ts";
 import type { Document, Filter } from "../../types.ts";
 import {
@@ -18,7 +23,9 @@ export async function distinct<
 		filterOptionsFor(ctx),
 	);
 
-	let sql = `SELECT array::distinct(${key}) AS vals FROM ${ctx.escapedTable}`;
+	// `_id` is stored as SurrealDB's `id` column.
+	const column = isIdField(key) ? SURREAL_ID_FIELD : escapeFieldPath(key);
+	let sql = `SELECT array::distinct(${column}) AS vals FROM ${ctx.escapedTable}`;
 	if (clause) sql += ` WHERE ${clause}`;
 	sql += " GROUP ALL";
 

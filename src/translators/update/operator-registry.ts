@@ -5,6 +5,7 @@
  * the dispatcher just looks them up by name.
  */
 
+import { MongoInvalidArgumentError } from "../../errors.ts";
 import type { UpdateContext } from "./update-context.ts";
 
 /** A single update operator, e.g. `$set` or `$inc`. */
@@ -30,7 +31,10 @@ export class UpdateOperatorRegistry {
 
 	get(name: string): UpdateOperator {
 		const op = this.ops.get(name);
-		if (!op) throw new Error(`Unsupported update operator: ${name}`);
+		if (!op)
+			throw new MongoInvalidArgumentError(
+				`Unsupported update operator: ${name}`,
+			);
 		return op;
 	}
 

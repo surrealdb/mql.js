@@ -21,41 +21,61 @@ export interface PreparedInsert {
 }
 
 /**
+ * Convert a MongoDB `_id` value into the `RecordId` that addresses the same
+ * record in SurrealDB.
+ *
+ * This is the single mapping shared by writes (`prepareInsert`) and reads
+ * (filter translation). Keeping one implementation is the point: if the two
+ * ever disagreed, a document could be inserted under an id that no query could
+ * then match — which is exactly the bug this function exists to prevent.
+ *
+ * Returns `undefined` for a value that cannot address a record, so callers can
+ * decide whether that means "no match" or "invalid argument".
+ */
+export function toRecordId(table: string, id: unknown): RecordId | undefined {
+	if (id instanceof RecordId) return id;
+	if (id instanceof ObjectId) return new RecordId(table, id.toHexString());
+	if (typeof id === "string") return new RecordId(table, id);
+	if (typeof id === "number") return new RecordId(table, id);
+	return undefined;
+}
+
+/**
  * Prepare a document for insertion into SurrealDB.
  *
- * - Extracts or generates `_id`
- * - Converts `_id` → RecordId
- * - Strips `_id` from the data payload
+ * - Extracts `_id`, or generates a fresh `ObjectId` when absent
+ * - Converts it to the `RecordId` that will carry the record's identity
+ * - Strips `_id` from the data payload, since SurrealDB stores it as `id`
  */
 export function prepareInsert(table: string, doc: Document): PreparedInsert {
 	const { _id, ...rest } = doc;
 
-	let insertedId: ObjectId | string | number;
-	let recordId: RecordId | undefined;
-
-	if (_id !== undefined && _id !== null) {
-		if (_id instanceof ObjectId) {
-			insertedId = _id;
-			recordId = new RecordId(table, _id.toHexString());
-		} else if (typeof _id === "string") {
-			insertedId = _id;
-			recordId = new RecordId(table, _id);
-		} else if (typeof _id === "number") {
-			insertedId = _id;
-			recordId = new RecordId(table, _id);
-		} else {
-			// Treat as string fallback
-			insertedId = String(_id);
-			recordId = new RecordId(table, String(_id));
-		}
-	} else {
-		// Generate a new ObjectId
+	if (_id === undefined || _id === null) {
 		const oid = new ObjectId();
-		insertedId = oid;
-		recordId = new RecordId(table, oid.toHexString());
+		return {
+			recordId: new RecordId(table, oid.toHexString()),
+			data: rest,
+			insertedId: oid,
+		};
 	}
 
-	return { recordId, data: rest, insertedId };
+	const recordId = toRecordId(table, _id);
+	if (recordId) {
+		return {
+			recordId,
+			data: rest,
+			insertedId: _id as ObjectId | string | number,
+		};
+	}
+
+	// Anything else (a plain object, a boolean, …) is stringified so it still
+	// addresses a stable record rather than being dropped.
+	const asString = String(_id);
+	return {
+		recordId: new RecordId(table, asString),
+		data: rest,
+		insertedId: asString,
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -119,8 +139,82 @@ function stringToMongoId(value: string): ObjectId | string {
 }
 
 /**
+ * Is this a plain data object we may descend into and copy with a spread?
+ *
+ * Class instances (`ObjectId`, `Date`, `RecordId`, …) are deliberately excluded:
+ * spreading one would produce a lookalike that has lost its prototype, and a
+ * projection path never addresses their internals anyway.
+ */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		return false;
+	}
+	const proto = Object.getPrototypeOf(value);
+	return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Delete the leaf addressed by `segments` from `container`, copy-on-write.
+ *
+ * `container` is assumed to be a copy the caller owns; every sub-document along
+ * the path is cloned before being modified so the original document handed to
+ * `applyProjection` is never mutated.
+ *
+ * Nothing is thrown when the path does not resolve: a missing key, or a segment
+ * that turns out to be a scalar, simply means there is no leaf to remove —
+ * which is what MongoDB does for a path absent from a document.
+ */
+function excludePath(
+	container: Record<string, unknown>,
+	segments: string[],
+): void {
+	const [head, ...rest] = segments;
+
+	if (rest.length === 0) {
+		delete container[head];
+		return;
+	}
+
+	const next = container[head];
+
+	// MongoDB applies a dotted exclusion to *every* element of an array, so
+	// `{ "users.pw": 0 }` strips `pw` from each entry of `users`. Skipping arrays
+	// here would leak exactly the field the caller asked to hide.
+	if (Array.isArray(next)) {
+		let changed = false;
+		const copy = next.map((element) => {
+			if (!isPlainObject(element)) return element;
+			const elementCopy = { ...element };
+			excludePath(elementCopy, rest);
+			changed = true;
+			return elementCopy;
+		});
+		if (changed) container[head] = copy;
+		return;
+	}
+
+	if (!isPlainObject(next)) return;
+
+	const copy = { ...next };
+	excludePath(copy, rest);
+	container[head] = copy;
+}
+
+/**
  * Apply projection post-processing to a document.
  * Handles exclusion projections and _id suppression.
+ *
+ * Two defects were fixed here:
+ *
+ *  1. Exclusion only ever did `delete result[field]`, so a dotted path such as
+ *     `auth.pw` matched no key and was a silent no-op — the excluded field was
+ *     still returned to the caller. That is a data-exposure bug: excluding a
+ *     password hash is the canonical use of a nested exclusion. Dotted paths now
+ *     delete the addressed leaf and leave the rest of the sub-document intact.
+ *
+ *  2. Suppressing `_id` assigned `undefined` instead of deleting the key, so
+ *     `"_id" in doc` stayed true and `Object.keys(doc)` still listed `_id`.
+ *     MongoDB omits the key entirely.
  */
 export function applyProjection(
 	doc: Document,
@@ -130,11 +224,15 @@ export function applyProjection(
 	const result = { ...doc };
 
 	for (const field of excludeFields) {
-		delete result[field];
+		if (field.includes(".")) {
+			excludePath(result, field.split("."));
+		} else {
+			delete result[field];
+		}
 	}
 
 	if (!includeId) {
-		result._id = undefined;
+		delete result._id;
 	}
 
 	return result;

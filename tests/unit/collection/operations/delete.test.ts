@@ -15,7 +15,7 @@ describe("deleteOne", () => {
 		const result = await deleteOne(ctx, { name: "Alice" });
 
 		expect(executor.queries[0].sql).toBe(
-			"SELECT id FROM users WHERE name = $p0 LIMIT 1",
+			"SELECT id FROM users WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0)) LIMIT 1",
 		);
 		expect(executor.queries[1].sql).toBe("DELETE $__rid RETURN BEFORE");
 		expect(executor.queries[1].bindings).toEqual({ __rid: rid });
@@ -45,7 +45,7 @@ describe("deleteMany", () => {
 
 		expect(executor.queries.length).toBe(1);
 		expect(executor.queries[0].sql).toBe(
-			"DELETE FROM users WHERE status = $p0 RETURN BEFORE",
+			"DELETE FROM users WHERE (status = $p0 OR (type::is_array(status) AND status CONTAINS $p0)) RETURN BEFORE",
 		);
 		expect(result.deletedCount).toBe(2);
 	});

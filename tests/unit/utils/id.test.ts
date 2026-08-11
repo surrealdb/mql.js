@@ -135,9 +135,13 @@ describe("applyProjection", () => {
 		expect(out).toEqual({ b: 2 });
 	});
 
-	test("sets _id to undefined when includeId is false", () => {
+	test("removes the _id key entirely when includeId is false", () => {
+		// Previously this assigned `undefined`, which left an explicit `_id` key:
+		// `"_id" in doc` was true and `Object.keys` still listed it. MongoDB omits
+		// the key altogether.
 		const out = applyProjection({ _id: "x", a: 1 }, [], false);
-		expect(out._id).toBeUndefined();
+		expect("_id" in out).toBe(false);
+		expect(Object.keys(out)).toEqual(["a"]);
 		expect(out.a).toBe(1);
 	});
 
@@ -150,5 +154,77 @@ describe("applyProjection", () => {
 	test("excluding a missing field is a no-op", () => {
 		const out = applyProjection({ a: 1 }, ["doesNotExist"], true);
 		expect(out).toEqual({ a: 1 });
+	});
+
+	// -----------------------------------------------------------------------
+	// Dotted exclusion paths. `delete result["auth.pw"]` matched no key, so a
+	// nested exclusion was a silent no-op and returned the field anyway — a
+	// data-exposure bug, since that is how a caller hides a password hash.
+	// -----------------------------------------------------------------------
+
+	test("dotted path deletes the leaf and keeps its siblings", () => {
+		const out = applyProjection(
+			{ _id: "x", auth: { pw: "secret", user: "u" }, a: 1 },
+			["auth.pw"],
+			true,
+		);
+		expect(out).toEqual({ _id: "x", auth: { user: "u" }, a: 1 });
+	});
+
+	test("dotted path works at arbitrary depth", () => {
+		const out = applyProjection(
+			{ auth: { deep: { x: 1, y: 2 }, pw: "p" } },
+			["auth.deep.x"],
+			true,
+		);
+		expect(out).toEqual({ auth: { deep: { y: 2 }, pw: "p" } });
+	});
+
+	test("dotted path strips the leaf from every element of an array", () => {
+		const out = applyProjection(
+			{ users: [{ name: "a", pw: "1" }, { name: "b", pw: "2" }, 7] },
+			["users.pw"],
+			true,
+		);
+		expect(out).toEqual({ users: [{ name: "a" }, { name: "b" }, 7] });
+	});
+
+	test("a missing or scalar path segment is a no-op, not a throw", () => {
+		const doc = { a: 1, auth: { user: "u" } };
+		expect(() =>
+			applyProjection(doc, ["nope.x", "a.b.c", "auth.deep.x"], true),
+		).not.toThrow();
+		expect(
+			applyProjection(doc, ["nope.x", "a.b.c", "auth.deep.x"], true),
+		).toEqual(doc);
+	});
+
+	test("does not mutate nested sub-documents of the input", () => {
+		const input = {
+			auth: { pw: "secret", user: "u" },
+			users: [{ pw: "q", name: "n" }],
+		};
+		applyProjection(input, ["auth.pw", "users.pw"], true);
+		expect(input).toEqual({
+			auth: { pw: "secret", user: "u" },
+			users: [{ pw: "q", name: "n" }],
+		});
+	});
+
+	test("mixes top-level and dotted exclusions", () => {
+		const out = applyProjection(
+			{ _id: "x", a: 1, auth: { pw: "p", user: "u" } },
+			["a", "auth.pw"],
+			false,
+		);
+		expect(out).toEqual({ auth: { user: "u" } });
+	});
+
+	test("leaves class instances in the path untouched", () => {
+		// Spreading an ObjectId would produce a prototype-less lookalike; a
+		// projection path never addresses its internals, so it must be skipped.
+		const oid = new ObjectId();
+		const out = applyProjection({ ref: oid, a: 1 }, ["ref.id"], true);
+		expect(out.ref).toBe(oid);
 	});
 });

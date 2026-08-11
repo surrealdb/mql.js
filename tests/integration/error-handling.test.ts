@@ -9,8 +9,8 @@ import {
 import type { Collection, ObjectId } from "../../src/index.ts";
 import {
 	MongoClient,
+	MongoInvalidArgumentError,
 	MongoNotConnectedError,
-	MongoServerError,
 } from "../../src/index.ts";
 import {
 	type SurrealTestContext,
@@ -59,14 +59,14 @@ beforeEach(async () => {
 // ---------------------------------------------------------------------------
 
 describe("replaceOne errors", () => {
-	test("throws MongoServerError with empty filter", async () => {
+	test("throws MongoInvalidArgumentError with empty filter", async () => {
 		await col.insertOne({ name: "Alice", age: 30 });
 		try {
 			await col.replaceOne({}, { name: "Replacement" } as TestDoc);
 			// Should not reach here
 			expect(true).toBe(false);
 		} catch (err) {
-			expect(err).toBeInstanceOf(MongoServerError);
+			expect(err).toBeInstanceOf(MongoInvalidArgumentError);
 		}
 	});
 });
@@ -76,14 +76,14 @@ describe("replaceOne errors", () => {
 // ---------------------------------------------------------------------------
 
 describe("findOneAndReplace errors", () => {
-	test("throws MongoServerError with empty filter", async () => {
+	test("throws MongoInvalidArgumentError with empty filter", async () => {
 		await col.insertOne({ name: "Alice", age: 30 });
 		try {
 			await col.findOneAndReplace({}, { name: "Replacement" } as TestDoc);
 			// Should not reach here
 			expect(true).toBe(false);
 		} catch (err) {
-			expect(err).toBeInstanceOf(MongoServerError);
+			expect(err).toBeInstanceOf(MongoInvalidArgumentError);
 		}
 	});
 });

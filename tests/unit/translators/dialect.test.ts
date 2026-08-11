@@ -1,77 +1,82 @@
 import { describe, expect, test } from "bun:test";
+import { MongoCompatibilityError } from "../../../src/errors.ts";
 import {
-	BSON_TYPE_NAMES_V2,
-	isV3Dialect,
+	BSON_TYPE_CHECK_FNS,
+	isUnsupportedVersion,
+	MINIMUM_SURREALDB_VERSION,
+	majorVersionOf,
 	resolveDialect,
-	V2Dialect,
 	V3Dialect,
 } from "../../../src/translators/dialect/index.ts";
 
-describe("resolveDialect", () => {
-	test("undefined version → v3 (assume latest)", () => {
-		expect(resolveDialect(undefined).id).toBe("v3");
+describe("majorVersionOf", () => {
+	test("extracts the major version", () => {
+		expect(majorVersionOf("3.0.5")).toBe(3);
+		expect(majorVersionOf("4.99.0")).toBe(4);
+		expect(majorVersionOf("2.3.7")).toBe(2);
 	});
 
-	test("garbage / non-numeric major → v3 fallback", () => {
+	test("returns undefined for absent or unparseable versions", () => {
+		expect(majorVersionOf(undefined)).toBeUndefined();
+		expect(majorVersionOf("")).toBeUndefined();
+		expect(majorVersionOf("not-a-version")).toBeUndefined();
+	});
+});
+
+describe("isUnsupportedVersion", () => {
+	test("flags SurrealDB 2.x and older", () => {
+		expect(isUnsupportedVersion("2.3.7")).toBe(true);
+		expect(isUnsupportedVersion("2.0.0")).toBe(true);
+		expect(isUnsupportedVersion("1.5.0")).toBe(true);
+	});
+
+	test("accepts 3.x and newer", () => {
+		expect(isUnsupportedVersion("3.0.0")).toBe(false);
+		expect(isUnsupportedVersion("3.2.0")).toBe(false);
+		expect(isUnsupportedVersion("4.99.0")).toBe(false);
+	});
+
+	test("treats an unknown version as supported, not unsupported", () => {
+		expect(isUnsupportedVersion(undefined)).toBe(false);
+		expect(isUnsupportedVersion("not-a-version")).toBe(false);
+	});
+});
+
+describe("resolveDialect", () => {
+	test("resolves the v3 dialect for supported versions", () => {
+		expect(resolveDialect("3.0.0").id).toBe("v3");
+		expect(resolveDialect("3.2.0").id).toBe("v3");
+		expect(resolveDialect("4.99.0").id).toBe("v3");
+	});
+
+	test("defaults to the latest dialect when the version is unknown", () => {
+		expect(resolveDialect(undefined).id).toBe("v3");
 		expect(resolveDialect("not-a-version").id).toBe("v3");
 		expect(resolveDialect("").id).toBe("v3");
 	});
 
-	test("major < 3 → v2", () => {
-		expect(resolveDialect("2.0.0").id).toBe("v2");
-		expect(resolveDialect("2.3.7").id).toBe("v2");
-		expect(resolveDialect("1.5.0").id).toBe("v2");
+	test("rejects SurrealDB 2.x and older", () => {
+		expect(() => resolveDialect("2.3.7")).toThrow(MongoCompatibilityError);
+		expect(() => resolveDialect("1.0.0")).toThrow(MongoCompatibilityError);
 	});
 
-	test("major >= 3 → v3", () => {
-		expect(resolveDialect("3.0.0").id).toBe("v3");
-		expect(resolveDialect("3.0.4").id).toBe("v3");
-		expect(resolveDialect("4.99.0").id).toBe("v3");
-	});
-});
-
-describe("isV3Dialect", () => {
-	test("matches resolveDialect().id === 'v3'", () => {
-		for (const v of [undefined, "2.0.0", "3.0.0", "garbage"]) {
-			expect(isV3Dialect(v)).toBe(resolveDialect(v).id === "v3");
-		}
-	});
-});
-
-describe("V2Dialect", () => {
-	const v2 = new V2Dialect();
-
-	test("regex match uses the legacy `~` operator", () => {
-		expect(v2.regexMatch("name", "$p0")).toBe("name ~ $p0");
-	});
-
-	test("type-check uses the namespaced `type::is::*` form", () => {
-		expect(v2.typeCheckFn("string")).toBe("type::is::string");
-		expect(v2.typeCheckFn(2)).toBe("type::is::string");
-		expect(v2.typeCheckFn("number")).toBe("type::is::number");
-	});
-
-	test("typeCheckFn returns undefined for unsupported BSON aliases", () => {
-		expect(v2.typeCheckFn("binData")).toBeUndefined();
-	});
-
-	test("full-text keyword is SEARCH", () => {
-		expect(v2.fullTextKeyword).toBe("SEARCH");
-	});
-
-	test("ensureBlankAnalyzerSql() returns null on v2 (built-in)", () => {
-		expect(v2.ensureBlankAnalyzerSql()).toBeNull();
+	test("the rejection names the offending and the minimum version", () => {
+		expect(() => resolveDialect("2.3.7")).toThrow(
+			new RegExp(
+				`2\\.3\\.7.*${MINIMUM_SURREALDB_VERSION.replace(/\./g, "\\.")}`,
+			),
+		);
 	});
 });
 
 describe("V3Dialect", () => {
 	const v3 = new V3Dialect();
 
-	test("regex match uses string::matches()", () => {
+	test("regexMatch uses string::matches()", () => {
 		expect(v3.regexMatch("name", "$p0")).toBe("string::matches(name, $p0)");
 	});
 
-	test("type-check renames namespace to `type::is_*`", () => {
+	test("typeCheckFn uses the type::is_* spelling", () => {
 		expect(v3.typeCheckFn("string")).toBe("type::is_string");
 		expect(v3.typeCheckFn(2)).toBe("type::is_string");
 		expect(v3.typeCheckFn("number")).toBe("type::is_number");
@@ -82,47 +87,34 @@ describe("V3Dialect", () => {
 		expect(v3.typeCheckFn("binData")).toBeUndefined();
 	});
 
-	test("full-text keyword is FULLTEXT", () => {
+	test("fullTextKeyword is FULLTEXT", () => {
 		expect(v3.fullTextKeyword).toBe("FULLTEXT");
 	});
 
-	test("ensureBlankAnalyzerSql() emits the analyzer DDL on v3", () => {
+	test("ensureBlankAnalyzerSql emits the analyzer DDL", () => {
 		expect(v3.ensureBlankAnalyzerSql()).toBe(
 			"DEFINE ANALYZER IF NOT EXISTS blank TOKENIZERS blank FILTERS lowercase",
 		);
 	});
 });
 
-describe("BSON_TYPE_NAMES_V2 table", () => {
-	test("covers all documented MongoDB type aliases", () => {
-		const aliases = [
-			"double",
-			"string",
-			"object",
-			"array",
-			"bool",
-			"date",
-			"null",
-			"int",
-			"long",
-			"decimal",
-			"number",
-		];
-		for (const alias of aliases) {
-			expect(BSON_TYPE_NAMES_V2[alias]).toMatch(/^type::is::/);
+describe("BSON_TYPE_CHECK_FNS table", () => {
+	test("every entry uses the 3.x type::is_* spelling", () => {
+		for (const name of Object.values(BSON_TYPE_CHECK_FNS)) {
+			expect(name).toMatch(/^type::is_/);
 		}
 	});
 
-	test("numeric BSON codes mirror the named aliases", () => {
-		expect(BSON_TYPE_NAMES_V2[1]).toBe(BSON_TYPE_NAMES_V2.double);
-		expect(BSON_TYPE_NAMES_V2[2]).toBe(BSON_TYPE_NAMES_V2.string);
-		expect(BSON_TYPE_NAMES_V2[3]).toBe(BSON_TYPE_NAMES_V2.object);
-		expect(BSON_TYPE_NAMES_V2[4]).toBe(BSON_TYPE_NAMES_V2.array);
-		expect(BSON_TYPE_NAMES_V2[8]).toBe(BSON_TYPE_NAMES_V2.bool);
-		expect(BSON_TYPE_NAMES_V2[9]).toBe(BSON_TYPE_NAMES_V2.date);
-		expect(BSON_TYPE_NAMES_V2[10]).toBe(BSON_TYPE_NAMES_V2.null);
-		expect(BSON_TYPE_NAMES_V2[16]).toBe(BSON_TYPE_NAMES_V2.int);
-		expect(BSON_TYPE_NAMES_V2[18]).toBe(BSON_TYPE_NAMES_V2.long);
-		expect(BSON_TYPE_NAMES_V2[19]).toBe(BSON_TYPE_NAMES_V2.decimal);
+	test("numeric BSON codes alias their string counterparts", () => {
+		expect(BSON_TYPE_CHECK_FNS[1]).toBe(BSON_TYPE_CHECK_FNS.double);
+		expect(BSON_TYPE_CHECK_FNS[2]).toBe(BSON_TYPE_CHECK_FNS.string);
+		expect(BSON_TYPE_CHECK_FNS[3]).toBe(BSON_TYPE_CHECK_FNS.object);
+		expect(BSON_TYPE_CHECK_FNS[4]).toBe(BSON_TYPE_CHECK_FNS.array);
+		expect(BSON_TYPE_CHECK_FNS[8]).toBe(BSON_TYPE_CHECK_FNS.bool);
+		expect(BSON_TYPE_CHECK_FNS[9]).toBe(BSON_TYPE_CHECK_FNS.date);
+		expect(BSON_TYPE_CHECK_FNS[10]).toBe(BSON_TYPE_CHECK_FNS.null);
+		expect(BSON_TYPE_CHECK_FNS[16]).toBe(BSON_TYPE_CHECK_FNS.int);
+		expect(BSON_TYPE_CHECK_FNS[18]).toBe(BSON_TYPE_CHECK_FNS.long);
+		expect(BSON_TYPE_CHECK_FNS[19]).toBe(BSON_TYPE_CHECK_FNS.decimal);
 	});
 });

@@ -1,5 +1,5 @@
 import { DEFAULT_NAMESPACE, RPC_PATH } from "../constants.ts";
-import { MongoClientError } from "../errors.ts";
+import { MongoParseError } from "../errors.ts";
 
 /**
  * Parsed connection information extracted from a MongoDB-style URL.
@@ -52,7 +52,7 @@ export function parseConnectionString(
 	try {
 		parsed = new URL(normalised);
 	} catch {
-		throw new MongoClientError(`Invalid connection string: ${url}`);
+		throw new MongoParseError(`Invalid connection string: ${url}`);
 	}
 
 	const protocol = parsed.protocol; // "ws:" or "wss:" or "http:" / "https:"

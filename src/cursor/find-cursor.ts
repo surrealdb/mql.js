@@ -11,7 +11,7 @@
  * (Liskov-safe; the previous `MappedCursor` cast is gone).
  */
 
-import { MongoClientError, MongoCursorExhaustedError } from "../errors.ts";
+import { MongoCursorExhaustedError, MongoCursorInUseError } from "../errors.ts";
 import { translateProjection } from "../translators/projection.ts";
 import type { Document, FindOptions, Projection, Sort } from "../types.ts";
 
@@ -225,7 +225,7 @@ export class FindCursor<TSchema extends Document = Document> {
 
 	private _throwIfExecuted(): void {
 		if (this._results !== null) {
-			throw new MongoClientError(
+			throw new MongoCursorInUseError(
 				"Cursor options cannot be changed after execution",
 			);
 		}
