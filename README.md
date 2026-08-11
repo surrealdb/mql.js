@@ -41,6 +41,7 @@ A drop-in MongoDB driver replacement powered by SurrealDB. Use the MongoDB API y
 - **Geospatial queries** - $geoWithin, $geoIntersects, $near, $nearSphere with full GeoJSON support
 - **Full-text search** - $text queries with createIndex for text indexes
 - **Positional array updates** - $[] and $[identifier] with arrayFilters
+- **Sessions and transactions** - startSession, startTransaction, commit/abort and withTransaction, backed by real SurrealDB transactions
 - **Cursor chaining** - sort, limit, skip, project, plus `for await...of` async iteration
 - **ObjectId support** - MongoDB-compatible ObjectId generation and parsing
 - **TypeScript generics** - Typed collections with full type inference
@@ -200,13 +201,14 @@ effect, or rejected with a reason. Nothing is accepted and silently dropped.
 | `maxPoolSize`, `minPoolSize`, `maxConnecting`, `maxIdleTimeMS`, `waitQueueTimeoutMS` | accepted, no effect | operations are multiplexed over a single connection |
 | `readPreference`, `maxStalenessSeconds`, `readPreferenceTags` | accepted, no effect | reading the only node is stronger than any secondary read |
 | `readConcern`/`readConcernLevel` of `local`, `majority`, `available` | accepted, no effect | identical on one node |
+| `readConcern`/`readConcernLevel` of `snapshot` | accepted, no effect | asks that reads come from one consistent point in time, which every SurrealDB statement and transaction is — the same answer the per-operation gate gives |
 | `writeConcern`, `w`, `journal`, `wtimeoutMS` | accepted, no effect | writes always wait for SurrealDB to acknowledge |
 | `retryWrites`, `retryReads`, `maxAdaptiveRetries`, `enableOverloadRetargeting` | accepted, no effect | nothing is retried, so `false` is exact and `true` is a no-op |
 | `compressors`, `zlibCompressionLevel`, `noDelay` | accepted, no effect | transport tuning, invisible in results |
 | `appName`, `driverInfo`, `mongodbLog*` | accepted, no effect | no client-metadata channel and no logger |
 | `serverApi` | accepted, no effect | there is no MongoDB command surface to version |
 | `authMechanism` of `DEFAULT`, `SCRAM-SHA-*`, `PLAIN`, and `authMechanismProperties` | accepted, no effect | all describe a username/password exchange SurrealDB settles its own way |
-| `readConcern`/`readConcernLevel` of `linearizable` or `snapshot` | throws `123` | needs a replica set, as it does in MongoDB |
+| `readConcern`/`readConcernLevel` of `linearizable` | throws `123` | needs a replica set, as it does in MongoDB |
 | `w: 0` | throws | asks for an unacknowledged write |
 | `w > 1` | throws `2` | `cannot use 'w' > 1 when a host is not replicated` |
 | `socketTimeoutMS` | throws | no per-socket inactivity limit exists; use `timeoutMS` |
@@ -362,7 +364,7 @@ no effect, or rejected with a reason. Nothing is accepted and silently dropped.
 | --- | --- | --- |
 | `maxTimeMS`, `timeoutMS` | honoured | becomes a SurrealQL `TIMEOUT`; the tightest of the two and the client's `timeoutMS` binds. `0` means no limit, and a value above MongoDB's 32-bit ceiling is refused as MongoDB refuses it. Not available on index operations — SurrealDB's DDL takes no `TIMEOUT` clause |
 | `hint` | honoured | becomes `WITH INDEX <name>`, or `WITH NOINDEX` for `{$natural: …}`. Validated against the collection's real indexes first: SurrealDB *silently ignores* a `WITH INDEX` naming an index that does not exist, so an unmatched hint raises `2` (`BadValue`) as MongoDB does rather than scanning unnoticed |
-| `sort` | honoured | orders the id lookup, which is what decides *which* document a `findOneAnd*`/`replaceOne` modifies |
+| `sort` | honoured | orders the subquery that names the record a `findOneAnd*`/`replaceOne` writes to, which is what decides *which* document is modified |
 | `projection` | honoured | a field list in the `SELECT` for `find`/`findOne`, applied to the returned document for the `findOneAnd*` methods |
 | `upsert`, `returnDocument`, `includeResultMetadata`, `arrayFilters` | honoured | the created document is seeded from the filter's equalities, as MongoDB seeds it |
 | `ignoreUndefined` | honoured | decides whether an `undefined` property is dropped or stored as `null`; overrides the client's setting, including with an explicit `false` |
@@ -370,8 +372,9 @@ no effect, or rejected with a reason. Nothing is accepted and silently dropped.
 | `readPreference`, `readConcern` of `local`/`majority`/`available` | accepted, no effect | reading the only node is at least what they ask for |
 | `writeConcern`, other than `w: 0` and `w > 1` | accepted, no effect | every write waits for SurrealDB to acknowledge |
 | `batchSize`, `maxAwaitTimeMS`, `noCursorTimeout`, `allowDiskUse`, `allowPartialResults`, `oplogReplay`, `ordered: true` | accepted, no effect | server-cursor and sharding mechanics; results are materialised in one round trip |
-| `session` | throws `MongoTransactionError` | there are no sessions or transactions yet, so the operation would run outside the session while the caller believed it could be rolled back |
-| `readConcern` of `linearizable` or `snapshot` | throws `123` | needs a replica set, as it does in MongoDB |
+| `session` | honoured | while the session has a transaction in progress, the operation's statements run inside it and are committed or rolled back with it — see [Sessions and transactions](#sessions-and-transactions) |
+| `readConcern` of `snapshot` | accepted, no effect | asks that every read come from one consistent point in time, which is what a SurrealDB transaction is: a statement is a transaction, and a read inside an open one does not observe a commit another connection made after it began |
+| `readConcern` of `linearizable` | throws `123` | needs a replica set, as it does in MongoDB: it asks the server to confirm no newer primary was elected before answering, and there is no election to confirm |
 | `writeConcern: {w: 0}` | throws | asks for an unacknowledged write |
 | `writeConcern: {w: >1}` | throws `2` | `cannot use 'w' > 1 when a host is not replicated` |
 | `collation` | throws | SurrealDB compares strings by code point, so a locale-aware comparison would match and order differently |
@@ -751,7 +754,9 @@ await db.dropDatabase();
 
 Every `Db` method runs its options through the same gate as the collection
 operations, so an unsupported option is refused here too rather than dropped a
-layer above the code that would have applied it — `session` most importantly.
+layer above the code that would have applied it. `session` matters most: pass one
+and the statement runs in that transaction, so a `createCollection` or a
+`dropCollection` is rolled back with the rest of it.
 
 `listCollections` filters the *reply*, so its predicate applies to the
 `{name, type}` documents rather than to stored rows. `name` and `type` are
@@ -765,6 +770,95 @@ counterpart for — `capped`, `size`, `max`, `validator`, `validationLevel`,
 `clusteredIndex`. Handing back an ordinary table for a request that asked for a
 capped one, a view, or a time-series collection would misrepresent the storage
 being written to, rather than merely omitting a refinement.
+
+## Sessions and transactions
+
+A session carries a real SurrealDB transaction. Operations given one run inside
+it, see its uncommitted writes, and are committed or rolled back together.
+
+```typescript
+const session = client.startSession();
+
+try {
+  session.startTransaction();
+
+  await accounts.updateOne({ _id: "a" }, { $inc: { balance: -100 } }, { session });
+  await accounts.updateOne({ _id: "b" }, { $inc: { balance: 100 } }, { session });
+
+  await session.commitTransaction();
+} catch (error) {
+  await session.abortTransaction();
+  throw error;
+} finally {
+  await session.endSession();
+}
+```
+
+`withTransaction` does the same thing and retries the callback when the failure
+says it may be retried — which is what a write conflict says, and why it is the
+recommended form:
+
+```typescript
+await session.withTransaction(async (s) => {
+  const job = await jobs.findOneAndUpdate(
+    { state: "pending" },
+    { $set: { state: "claimed" } },
+    { session: s, returnDocument: "after" },
+  );
+  if (job) await audit.insertOne({ job: job._id }, { session: s });
+});
+```
+
+The callback may run more than once, so it must await everything it starts: an
+error it swallows is an error `withTransaction` cannot see. `client.withSession`
+and `await using session = client.startSession()` both end the session for you,
+aborting an open transaction on the way out — a caller who ends a session without
+committing has not committed.
+
+Every method that issues a statement takes `session`, including the `Db` methods
+and the index methods: SurrealDB's DDL is transactional, so a `createIndex` in a
+transaction is rolled back with it.
+
+### Session behaviour that differs from MongoDB
+
+- **Sessions need a transactional transport.** `startSession()` throws over
+  `http://` and `https://`, because SurrealDB's HTTP engine has no transactions
+  and nothing done in such a session could be rolled back as a unit. Connect
+  with `mongodb://`, `ws://` or `wss://`.
+- **`startSession({snapshot: true})` throws `123`**, as it does off a replica
+  set. A snapshot session pins one point in time for every read the session
+  makes, transaction or not, and outside a transaction a statement is its own —
+  so the pin has nothing to hold. `readConcern: 'snapshot'` *is* honoured, per
+  operation or client-wide, where the scope of the promise is the operation or the
+  caller's transaction.
+- **A failed commit is not retried.** SurrealDB's transaction handle is consumed
+  by the attempt, so a second `commitTransaction()` reports the original failure
+  rather than pretending to try again. MongoDB's retry of the commit alone, on
+  `UnknownTransactionCommitResult`, has nothing to retry against here — the label
+  is still attached, so a caller can see that the outcome is genuinely unknown.
+- **`maxCommitTimeMS` is honoured by racing the commit**, and losing that race is
+  reported as `50` labelled `UnknownTransactionCommitResult`: the request is
+  already with the server, so the commit may yet apply.
+- **Nothing is retried inside a transaction.** Outside one, a write conflict is
+  re-issued for you, because MongoDB resolves the same contention by serialising
+  rather than by failing. Inside one, the conflict belongs to a transaction the
+  server has already given up on, and only re-running the whole of it can clear
+  it — which is what `withTransaction` does.
+- **Concurrent operations on one session are serialised** rather than
+  interleaved, so two overlapping writes apply in call order and a commit never
+  lands between a statement and its reply. MongoDB forbids the overlap outright.
+- **A failed operation does not abandon the transaction.** MongoDB's server
+  aborts a transaction whose operation failed — every later statement and the
+  commit itself then report `251` — while SurrealDB keeps it open, so a caller who
+  catches the error can carry on and commit the rest. Letting the error out of a
+  `withTransaction` callback aborts the transaction either way, which is why that
+  is the form to write.
+- **A full-text index needs its analyzer outside the transaction.** SurrealDB does
+  not show a `DEFINE INDEX` an analyzer defined in the same transaction, so
+  `createIndex({ field: "text" }, { session })` establishes the shared `blank`
+  analyzer on the connection and keeps the index itself inside the transaction,
+  where an abort still removes it. A `$text` search issued inside that same
+  transaction cannot read the new analyzer; from the commit onwards it can.
 
 ## Contributing
 
