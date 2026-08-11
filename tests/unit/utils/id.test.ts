@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { RecordId } from "surrealdb";
+import { RecordId, StringRecordId } from "surrealdb";
 import { ObjectId } from "../../../src/object-id.ts";
 import {
 	applyProjection,
+	parseRecordIdString,
 	prepareInsert,
 	recordToDocument,
 } from "../../../src/utils/id.ts";
@@ -13,7 +14,9 @@ describe("prepareInsert", () => {
 		expect(out.insertedId).toBeInstanceOf(ObjectId);
 		expect(out.recordId).toBeInstanceOf(RecordId);
 		expect(out.recordId?.table.name).toBe("users");
-		expect(out.recordId?.id).toBe((out.insertedId as ObjectId).toHexString());
+		expect(out.recordId?.id).toEqual({
+			$oid: (out.insertedId as ObjectId).toHexString(),
+		});
 		expect(out.data).toEqual({ name: "Alice" });
 	});
 
@@ -41,7 +44,40 @@ describe("prepareInsert", () => {
 		const oid = new ObjectId();
 		const out = prepareInsert("users", { _id: oid, name: "Alice" });
 		expect(out.insertedId).toBe(oid);
-		expect(out.recordId?.id).toBe(oid.toHexString());
+		expect(out.recordId?.id).toEqual({ $oid: oid.toHexString() });
+	});
+
+	// mongoose and anything else built on the `bson` package hands over its own
+	// ObjectId class, which has to be stored as an id rather than as an object.
+	test("stores an ObjectId from another BSON implementation as an id", () => {
+		const hex = "507f1f77bcf86cd799439011";
+		const foreign = {
+			_bsontype: "ObjectId",
+			id: new Uint8Array(12),
+			toHexString: () => hex,
+		};
+		const out = prepareInsert("users", { _id: foreign });
+		expect(out.recordId?.id).toEqual({ $oid: hex });
+		expect(out.insertedId).toBe(foreign as never);
+	});
+
+	test("a string _id that looks like hex is stored as a string", () => {
+		const hex = "507f1f77bcf86cd799439011";
+		const out = prepareInsert("users", { _id: hex });
+		expect(out.recordId?.id).toBe(hex);
+		expect(out.insertedId).toBe(hex);
+	});
+
+	test("an _id containing colons is stored whole", () => {
+		const out = prepareInsert("users", { _id: "urn:uuid:1234" });
+		expect(out.recordId?.id).toBe("urn:uuid:1234");
+	});
+
+	test("the stored form of an id is accepted as that id", () => {
+		const hex = "507f1f77bcf86cd799439011";
+		const out = prepareInsert("users", { _id: { $oid: hex } });
+		expect(out.insertedId).toBeInstanceOf(ObjectId);
+		expect(out.recordId?.id).toEqual({ $oid: hex });
 	});
 
 	test("falls back to String(_id) for non-string/number/ObjectId types", () => {
@@ -63,20 +99,34 @@ describe("prepareInsert", () => {
 });
 
 describe("recordToDocument", () => {
-	test("RecordId with hex id becomes an ObjectId _id", () => {
-		const rid = new RecordId("users", "507f1f77bcf86cd799439011");
+	test("RecordId holding the stored form becomes an ObjectId _id", () => {
+		const hex = "507f1f77bcf86cd799439011";
+		const rid = new RecordId("users", { $oid: hex });
 		const doc = recordToDocument({ id: rid, name: "Alice" });
 		expect(doc._id).toBeInstanceOf(ObjectId);
-		expect((doc._id as ObjectId).toHexString()).toBe(
-			"507f1f77bcf86cd799439011",
-		);
+		expect((doc._id as ObjectId).toHexString()).toBe(hex);
 		expect(doc.name).toBe("Alice");
 	});
 
-	test("RecordId with non-hex string keeps the raw id string", () => {
+	test("RecordId with a string id keeps the raw id string", () => {
 		const rid = new RecordId("users", "alice-1");
 		const doc = recordToDocument({ id: rid });
 		expect(doc._id).toBe("alice-1");
+	});
+
+	// The caller supplied a string; MongoDB would hand back a string. Promoting it
+	// would change the type of a key its owner chose.
+	test("a string id that looks like an ObjectId stays a string", () => {
+		const hex = "507f1f77bcf86cd799439011";
+		const doc = recordToDocument({ id: new RecordId("users", hex) });
+		expect(doc._id).toBe(hex);
+	});
+
+	test("an id containing colons is returned whole", () => {
+		const doc = recordToDocument({
+			id: new RecordId("users", "urn:uuid:1234"),
+		});
+		expect(doc._id).toBe("urn:uuid:1234");
 	});
 
 	test("RecordId with numeric id becomes a number _id", () => {
@@ -85,24 +135,48 @@ describe("recordToDocument", () => {
 		expect(doc._id).toBe(42);
 	});
 
-	test("string id 'table:hex' is unwrapped to ObjectId", () => {
+	test("a record id the wire carried as text is split on its table", () => {
 		const doc = recordToDocument({
-			id: "users:507f1f77bcf86cd799439011",
+			id: new StringRecordId("users:⟨urn:uuid:1234⟩"),
 		});
-		expect(doc._id).toBeInstanceOf(ObjectId);
-		expect((doc._id as ObjectId).toHexString()).toBe(
-			"507f1f77bcf86cd799439011",
-		);
+		expect(doc._id).toBe("urn:uuid:1234");
 	});
 
-	test("string id 'table:non-hex' falls back to plain string", () => {
-		const doc = recordToDocument({ id: "users:alice-1" });
-		expect(doc._id).toBe("alice-1");
+	test("a bare string id is left exactly as it arrived", () => {
+		// Nothing this driver writes produces one, and `'urn:uuid:1234'` is
+		// indistinguishable from a table-qualified id: guessing costs a primary key.
+		const doc = recordToDocument({ id: "urn:uuid:1234" });
+		expect(doc._id).toBe("urn:uuid:1234");
 	});
 
-	test("plain non-hex string id is returned as-is", () => {
-		const doc = recordToDocument({ id: "alice-1" });
-		expect(doc._id).toBe("alice-1");
+	test("stored ObjectIds inside the document are rebuilt", () => {
+		const hex = "507f1f77bcf86cd799439011";
+		const doc = recordToDocument({
+			id: new RecordId("posts", 1),
+			authorId: { $oid: hex },
+			editors: [{ $oid: hex }],
+			meta: { reviewers: [{ user: { $oid: hex } }] },
+		});
+
+		expect(doc.authorId).toBeInstanceOf(ObjectId);
+		expect((doc.editors as ObjectId[])[0]).toBeInstanceOf(ObjectId);
+		expect(
+			(doc.meta as { reviewers: { user: ObjectId }[] }).reviewers[0].user,
+		).toBeInstanceOf(ObjectId);
+	});
+
+	test("an object that is not the stored form is left alone", () => {
+		const doc = recordToDocument({
+			id: new RecordId("posts", 1),
+			labelled: { $oid: "507f1f77bcf86cd799439011", note: "mine" },
+			short: { $oid: "abc" },
+		});
+
+		expect(doc.labelled).toEqual({
+			$oid: "507f1f77bcf86cd799439011",
+			note: "mine",
+		});
+		expect(doc.short).toEqual({ $oid: "abc" });
 	});
 
 	test("numeric id passes through", () => {
@@ -121,6 +195,92 @@ describe("recordToDocument", () => {
 		const rid = new RecordId("users", ["a", "b"]);
 		const doc = recordToDocument({ id: rid });
 		expect(typeof doc._id).toBe("string");
+	});
+});
+
+// Every spelling here was taken from a live SurrealDB 3.x error message, or from
+// the SDK's own `RecordId.toString()`, which is the other place a record id
+// arrives as text.
+describe("parseRecordIdString", () => {
+	test("splits the table from the id", () => {
+		expect(parseRecordIdString("users:alice")).toEqual({
+			collection: "users",
+			id: "alice",
+		});
+	});
+
+	test("a backtick-quoted id keeps its colons", () => {
+		expect(parseRecordIdString("users:`urn:uuid:1234`")).toEqual({
+			collection: "users",
+			id: "urn:uuid:1234",
+		});
+	});
+
+	test("an angle-quoted id keeps its colons", () => {
+		expect(parseRecordIdString("users:⟨urn:uuid:1234⟩")).toEqual({
+			collection: "users",
+			id: "urn:uuid:1234",
+		});
+	});
+
+	test("escapes inside a quoted id are undone", () => {
+		expect(parseRecordIdString("users:`back\\`tick`").id).toBe("back`tick");
+	});
+
+	/**
+	 * The printed spellings here were taken from a live 3.x server. A control
+	 * character is escaped rather than emitted, so an id holding one is only
+	 * recovered by decoding the escape — dropping the backslash would report an
+	 * `_id` of `'tab\there'` back to its owner as `'tabthere'`.
+	 */
+	test("a control character in a quoted id is decoded, not flattened", () => {
+		expect(parseRecordIdString("users:`tab\\there`").id).toBe("tab\there");
+		expect(parseRecordIdString("users:`line\\none`").id).toBe("line\none");
+		expect(parseRecordIdString("users:`a\\u{8}b`").id).toBe("a\bb");
+		expect(parseRecordIdString("users:`a\\\\b`").id).toBe("a\\b");
+	});
+
+	test("a quoted table name is decoded the same way", () => {
+		expect(parseRecordIdString("`tab\\there`:alice").collection).toBe(
+			"tab\there",
+		);
+	});
+
+	test("a quoted table name is not mistaken for the id", () => {
+		expect(parseRecordIdString("`odd:table`:alice")).toEqual({
+			collection: "odd:table",
+			id: "alice",
+		});
+	});
+
+	test('quoting distinguishes the number 42 from the string "42"', () => {
+		expect(parseRecordIdString("n:42").id).toBe(42);
+		expect(parseRecordIdString("s:`42`").id).toBe("42");
+	});
+
+	test("the stored form of an ObjectId is read back as one", () => {
+		const hex = "507f1f77bcf86cd799439011";
+		for (const printed of [
+			`users:{ "$oid": '${hex}' }`,
+			`users:{ "$oid": s"${hex}" }`,
+			`users:{"$oid":"${hex}"}`,
+		]) {
+			const parsed = parseRecordIdString(printed);
+			expect(parsed.id).toBeInstanceOf(ObjectId);
+			expect((parsed.id as ObjectId).toHexString()).toBe(hex);
+		}
+	});
+
+	test("a hex-looking string id stays a string", () => {
+		const hex = "507f1f77bcf86cd799439011";
+		expect(parseRecordIdString(`users:${hex}`).id).toBe(hex);
+	});
+
+	test("text carrying no table reports none", () => {
+		expect(parseRecordIdString("alice")).toEqual({
+			collection: undefined,
+			id: "alice",
+		});
 	});
 });
 

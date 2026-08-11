@@ -28,6 +28,7 @@ interface Account extends Document {
 	email?: string;
 	tenant?: string;
 	slot?: number;
+	authorId?: ObjectId;
 }
 
 let proc: Subprocess;
@@ -123,6 +124,62 @@ describe("unique index violation", () => {
 		expect(err.keyValue).toEqual({ tenant: "acme", slot: 1 });
 	});
 
+	// A stored ObjectId is an object, so the server names the colliding value as an
+	// object literal — `{ "$oid": '…' }` — where a string would have been quoted.
+	test("a unique index over an ObjectId reports the id, not its stored form", async () => {
+		await defineUniqueIndex("acct_oid", "authorId_1", "authorId");
+		const col = db.collection<Account>("acct_oid");
+		const authorId = new ObjectId();
+
+		await col.insertOne({ authorId });
+		const err = await captureError(() => col.insertOne({ authorId }));
+
+		expect(err.code).toBe(11000);
+		expect(err.keyPattern).toEqual({ authorId: 1 });
+		expect(err.keyValue?.authorId).toBeInstanceOf(ObjectId);
+		expect((err.keyValue?.authorId as ObjectId).equals(authorId)).toBe(true);
+		expect(err.message).toContain(
+			`dup key: { authorId: ObjectId('${authorId.toHexString()}') }`,
+		);
+	});
+
+	test("a compound index mixing an ObjectId and a string reports both", async () => {
+		await defineUniqueIndex(
+			"acct_oid_compound",
+			"authorId_1_tenant_1",
+			"authorId, tenant",
+		);
+		const col = db.collection<Account>("acct_oid_compound");
+		const authorId = new ObjectId();
+
+		await col.insertOne({ authorId, tenant: "acme" });
+		const err = await captureError(() =>
+			col.insertOne({ authorId, tenant: "acme" }),
+		);
+
+		expect(err.keyPattern).toEqual({ authorId: 1, tenant: 1 });
+		expect(err.keyValue?.authorId).toBeInstanceOf(ObjectId);
+		expect(err.keyValue?.tenant).toBe("acme");
+	});
+
+	/**
+	 * The server names the value that collided as a SurrealQL literal, escaping the
+	 * characters it cannot print bare and switching quote style for a value holding
+	 * a quote. `keyValue` is what the caller compares against what they tried to
+	 * write, so it has to be their string rather than a rendering of it.
+	 */
+	test("a unique index reports the colliding string as the caller wrote it", async () => {
+		await defineUniqueIndex("dupidx_awkward", "email_1", "email");
+		const col = db.collection<Account>("dupidx_awkward");
+		const email = `a\tb'c"d, e`;
+		await col.insertOne({ email });
+
+		const err = await captureError(() => col.insertOne({ email }));
+
+		expect(err.code).toBe(11000);
+		expect(err.keyValue).toEqual({ email });
+	});
+
 	test("the originating SurrealDB error is preserved as `cause`", async () => {
 		await defineUniqueIndex("acct_cause", "email_1", "email");
 		const col = db.collection<Account>("acct_cause");
@@ -215,8 +272,8 @@ describe("duplicate _id", () => {
 		);
 	});
 
-	// The server names the record as a string, which cannot distinguish 42 from
-	// "42"; the insert still holds the typed id, and that is what is reported.
+	// The server names the record as text, quoting a string id and leaving a
+	// numeric one bare — which is what keeps 42 and "42" apart in the report.
 	test("a colliding numeric _id stays a number", async () => {
 		const col = db.collection<Account>("dupid_number");
 		await col.insertOne({ _id: 42 });
@@ -239,6 +296,36 @@ describe("duplicate _id", () => {
 		expect(err.code).toBe(11000);
 		expect(err.keyValue).toEqual({ _id: "taken" });
 	});
+
+	/**
+	 * The server names the record it rejected as a SurrealQL literal, so a value
+	 * holding a character it escapes is only recovered by decoding the escape. This
+	 * is the same fidelity the stored `_id` has: reporting `'tabthere'` for a key
+	 * written as `'tab\there'` tells the caller they collided with a key they never
+	 * wrote.
+	 */
+	const awkward: [string, string][] = [
+		["a tab", "tab\tid"],
+		["a newline", "line\nid"],
+		["a backslash", "back\\slash"],
+		["a backtick", "back`tick"],
+		["colons", "urn:uuid:1234"],
+		["both quote styles", `quote'and"quote`],
+	];
+
+	for (const [what, id] of awkward) {
+		test(`a duplicate _id containing ${what} is reported as itself`, async () => {
+			const col = db.collection<Account>(
+				`dupid_awkward_${awkward.findIndex(([name]) => name === what)}`,
+			);
+			await col.insertOne({ _id: id });
+
+			const err = await captureError(() => col.insertOne({ _id: id }));
+
+			expect(err.code).toBe(11000);
+			expect(err.keyValue).toEqual({ _id: id });
+		});
+	}
 
 	test("a generated _id never collides", async () => {
 		const col = db.collection<Account>("dupid_generated");

@@ -128,6 +128,101 @@ describe("caller-supplied _id types", () => {
 		// A numeric id must not be matched by its string spelling.
 		expect(await col.findOne({ _id: "42" })).toBeNull();
 	});
+
+	// A string `_id` is the caller's own primary key: every character of it has to
+	// come back, and it has to come back a string.
+	const awkward: [string, string][] = [
+		["colons", "urn:uuid:1234"],
+		["a leading colon", ":leading"],
+		["a trailing colon", "trailing:"],
+		["only a colon", ":"],
+		["24 lowercase hex characters", "507f1f77bcf86cd799439011"],
+		["24 uppercase hex characters", "507F1F77BCF86CD799439011"],
+		["spaces", "with space"],
+		["a backtick", "back`tick"],
+		["angle brackets", "an⟩gle⟨brackets"],
+		["a backslash", "back\\slash"],
+		["a quote", "it's mine"],
+		["braces", '{ "$oid": "507f1f77bcf86cd799439011" }'],
+		["unicode", "ключ-🔑"],
+	];
+
+	for (const [name, id] of awkward) {
+		test(`a string _id with ${name} round-trips exactly`, async () => {
+			const col = freshCollection();
+			await col.insertOne({ _id: id, name: "S" });
+
+			const viaFilter = await col.findOne({ _id: id });
+			expect(viaFilter?.name).toBe("S");
+
+			const viaRead = (await col.find({}).toArray())[0]?._id;
+			expect(typeof viaRead).toBe("string");
+			expect(viaRead).toBe(id);
+
+			// And the id a read handed back must address the same document again.
+			expect((await col.findOne({ _id: viaRead }))?.name).toBe("S");
+			expect((await col.deleteOne({ _id: id })).deletedCount).toBe(1);
+		});
+	}
+
+	test("a hex-looking string _id stays a string through every operation", async () => {
+		const col = freshCollection();
+		const hex = "507f1f77bcf86cd799439011";
+		await col.insertOne({ _id: hex, name: "S" });
+
+		expect((await col.findOne({ _id: hex }))?._id).toBe(hex);
+		expect(
+			(await col.findOneAndUpdate({ _id: hex }, { $set: { age: 1 } }))?._id,
+		).toBe(hex);
+		expect(await col.distinct("_id", {})).toEqual([hex]);
+
+		// The ObjectId of the same hex is a different id, and matches nothing.
+		expect(await col.findOne({ _id: new ObjectId(hex) })).toBeNull();
+	});
+
+	test("a string _id and an ObjectId of the same hex are different documents", async () => {
+		const col = freshCollection();
+		const hex = "507f1f77bcf86cd799439011";
+		await col.insertOne({ _id: hex, name: "string" });
+		await col.insertOne({ _id: new ObjectId(hex), name: "objectid" });
+
+		expect((await col.findOne({ _id: hex }))?.name).toBe("string");
+		expect((await col.findOne({ _id: new ObjectId(hex) }))?.name).toBe(
+			"objectid",
+		);
+		expect(await col.countDocuments({})).toBe(2);
+	});
+
+	test("a duplicate string _id reports the caller's own value", async () => {
+		const col = freshCollection();
+		const id = "urn:uuid:1234";
+		await col.insertOne({ _id: id, name: "first" });
+
+		const err = (await col
+			.insertOne({ _id: id, name: "second" })
+			.catch((error: unknown) => error)) as {
+			code: number;
+			keyValue?: Record<string, unknown>;
+		};
+
+		expect(err.code).toBe(11000);
+		expect(err.keyValue).toEqual({ _id: id });
+	});
+
+	test("a duplicate hex-looking string _id is reported as a string", async () => {
+		const col = freshCollection();
+		const hex = "507f1f77bcf86cd799439011";
+		await col.insertOne({ _id: hex, name: "first" });
+
+		const err = (await col
+			.insertOne({ _id: hex, name: "second" })
+			.catch((error: unknown) => error)) as {
+			keyValue?: Record<string, unknown>;
+		};
+
+		expect(err.keyValue?._id).toBe(hex);
+		expect(err.keyValue?._id).not.toBeInstanceOf(ObjectId);
+	});
 });
 
 describe("_id query operators", () => {
@@ -250,5 +345,37 @@ describe("_id is immutable", () => {
 		await expect(
 			col.updateOne({ _id: 1 }, { $inc: { _id: 1 } } as never),
 		).rejects.toBeInstanceOf(MongoInvalidArgumentError);
+	});
+});
+
+describe("an _id SurrealDB cannot address", () => {
+	/**
+	 * A non-integer number is accepted on the wire and then never answered — no
+	 * result, no error, no timeout — so it is refused before the statement is sent.
+	 * MongoDB would store it, which makes this a divergence, but a hung request is
+	 * the one outcome a caller cannot recover from.
+	 */
+	test("a fractional numeric _id is refused rather than hanging", async () => {
+		const col = freshCollection();
+		await expect(col.insertOne({ _id: 1.5 })).rejects.toThrow(
+			MongoInvalidArgumentError,
+		);
+		await expect(col.insertOne({ _id: 1.5 })).rejects.toThrow(/whole numbers/);
+	});
+
+	test("whole numbers, including negatives, are unaffected", async () => {
+		const col = freshCollection();
+		await col.insertOne({ _id: 7 });
+		await col.insertOne({ _id: -3 });
+		expect(await col.countDocuments({})).toBe(2);
+		expect((await col.findOne({ _id: -3 }))?._id).toBe(-3);
+	});
+
+	test("a fractional value in a filter is refused too, not silently unmatched", async () => {
+		const col = freshCollection();
+		await col.insertOne({ _id: 2 });
+		await expect(col.findOne({ _id: 1.5 })).rejects.toThrow(
+			MongoInvalidArgumentError,
+		);
 	});
 });

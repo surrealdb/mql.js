@@ -4,6 +4,7 @@ import {
 	escapeFieldPath,
 	escapeIdentifier,
 	quoteIdentifier,
+	unescapeSurrealString,
 } from "../../../../src/surreal/sql/escape.ts";
 
 describe("escapeIdentifier", () => {
@@ -148,5 +149,56 @@ describe("escapeFieldList", () => {
 
 	test("returns an empty string for no fields", () => {
 		expect(escapeFieldList([])).toBe("");
+	});
+});
+
+/**
+ * The spellings here are what a live 3.x server printed for a record id and for
+ * the value in a unique-index violation, character by character. They are the
+ * only evidence left of a value's exact bytes once the server has named it in an
+ * error, and that value is reported back to the caller as their own `_id` — so an
+ * escape read wrongly is a primary key altered in the report.
+ */
+describe("unescapeSurrealString", () => {
+	const escapes: [string, string][] = [
+		["a\\tb", "a\tb"],
+		["a\\nb", "a\nb"],
+		["a\\rb", "a\rb"],
+		["a\\fb", "a\fb"],
+		["a\\0b", "a\0b"],
+		["a\\u{8}b", "a\bb"],
+		["a\\u{1f600}b", "a\u{1f600}b"],
+		["a\\u0041b", "aAb"],
+		["a\\\\b", "a\\b"],
+		["a\\`b", "a`b"],
+		["a\\'b", "a'b"],
+		['a\\"b', 'a"b'],
+	];
+
+	for (const [printed, text] of escapes) {
+		test(`\`${printed}\` is ${JSON.stringify(text)}`, () => {
+			expect(unescapeSurrealString(printed)).toBe(text);
+		});
+	}
+
+	test("text with no escape in it is returned unchanged", () => {
+		const plain = "urn:uuid:1234";
+		expect(unescapeSurrealString(plain)).toBe(plain);
+	});
+
+	test("undoes exactly what quoteIdentifier does", () => {
+		for (const name of ["a`b", "a\\b", "back\\`tick", "plain"]) {
+			const quoted = quoteIdentifier(name);
+			expect(unescapeSurrealString(quoted.slice(1, -1))).toBe(name);
+		}
+	});
+
+	// An escape the table does not name means the character itself, which is what
+	// the quote escapes need; a malformed code point is not a code point.
+	test("keeps the character of an escape it does not recognise", () => {
+		expect(unescapeSurrealString("a\\zb")).toBe("azb");
+		expect(unescapeSurrealString("a\\u{zz}b")).toBe("au{zz}b");
+		expect(unescapeSurrealString("a\\u{110000}b")).toBe("au{110000}b");
+		expect(unescapeSurrealString("trailing\\")).toBe("trailing\\");
 	});
 });

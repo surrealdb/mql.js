@@ -79,6 +79,38 @@ describe("parseDuplicateKeyError", () => {
 		expect(info?.values).toEqual(["x, y", 2]);
 	});
 
+	/**
+	 * These are the spellings a live 3.x server produced. The value that collided
+	 * is reported to the caller as `keyValue`, which they compare against the value
+	 * they tried to write, so it has to be their string and not a rendering of it.
+	 */
+	test("decodes the escapes in a printed string value", () => {
+		const info = parseDuplicateKeyError(
+			"Database index `v_1` already contains 'a\\tb', with record `t:abc`",
+		);
+		expect(info?.keyValue).toEqual({ v: "a\tb" });
+	});
+
+	// SurrealDB switches to double quotes for a value containing a single one, and
+	// escapes any double quotes inside it.
+	test("reads a double-quoted value, escaped quotes and all", () => {
+		const info = parseDuplicateKeyError(
+			'Database index `v_1` already contains "a\'b\\"c", with record `t:abc`',
+		);
+		expect(info?.keyValue).toEqual({ v: "a'b\"c" });
+	});
+
+	// An escaped quote must not be read as the end of the string: taking it for the
+	// closing quote makes the next comma look like a separator, and a one-field
+	// index then reports two values and no `keyValue` at all.
+	test("an escaped quote does not end a compound element", () => {
+		const info = parseDuplicateKeyError(
+			'Database index `v_1` already contains ["a\'b\\"c, d"], with record `t:abc`',
+		);
+		expect(info?.values).toEqual(["a'b\"c, d"]);
+		expect(info?.keyValue).toEqual({ v: "a'b\"c, d" });
+	});
+
 	test("keeps a descending direction, which MongoDB reports in keyPattern", () => {
 		const info = parseDuplicateKeyError(
 			"Database index `age_-1` already contains 7, with record `t:abc`",
@@ -440,12 +472,42 @@ describe("mapQueryError – duplicate _id", () => {
 		expect(err.code).toBe(MongoErrorCode.NamespaceExists);
 	});
 
-	test("a hex record id comes back as an ObjectId, as a read would return it", () => {
+	// The reported `_id` has to be the value a read of that record would return,
+	// which for an ObjectId means the id and for a string means the string —
+	// however hex the string looks.
+	test("a stored ObjectId comes back as an ObjectId", () => {
 		const hex = "6a7b8f05d92a9d20e503de01";
-		const err = mapQueryError(recordExists(`docs:${hex}`)) as MongoServerError;
+		const err = mapQueryError(
+			recordExists(`docs:{ "$oid": '${hex}' }`),
+		) as MongoServerError;
 
 		expect(err.keyValue?._id).toBeInstanceOf(ObjectId);
 		expect(err.message).toContain(`dup key: { _id: ObjectId('${hex}') }`);
+	});
+
+	test("a hex-looking string id stays a string", () => {
+		const hex = "6a7b8f05d92a9d20e503de01";
+		const err = mapQueryError(recordExists(`docs:${hex}`)) as MongoServerError;
+
+		expect(err.keyValue).toEqual({ _id: hex });
+	});
+
+	test("an id containing colons keeps every segment", () => {
+		const err = mapQueryError(
+			recordExists("docs:`urn:uuid:1234`"),
+		) as MongoServerError;
+
+		expect(err.keyValue).toEqual({ _id: "urn:uuid:1234" });
+		expect(err.message).toContain('dup key: { _id: "urn:uuid:1234" }');
+	});
+
+	test('quoting is what separates the number 42 from the string "42"', () => {
+		expect(
+			(mapQueryError(recordExists("n:42")) as MongoServerError).keyValue,
+		).toEqual({ _id: 42 });
+		expect(
+			(mapQueryError(recordExists("s:`42`")) as MongoServerError).keyValue,
+		).toEqual({ _id: "42" });
 	});
 });
 
@@ -460,9 +522,7 @@ describe("withTypedDuplicateId", () => {
 		);
 	}
 
-	// A record id is a string on the wire, so 42 and "42" arrive identically; the
-	// caller's own value is the only way to tell them apart.
-	test("restores a numeric _id the server could only name as a string", () => {
+	test("reports the numeric _id the caller supplied", () => {
 		const restored = withTypedDuplicateId(
 			duplicate("n:42"),
 			[42],
@@ -473,11 +533,24 @@ describe("withTypedDuplicateId", () => {
 	});
 
 	test("keeps a string _id a string when that is what was supplied", () => {
-		const restored = withTypedDuplicateId(duplicate("s:42"), [
+		const restored = withTypedDuplicateId(duplicate("s:`42`"), [
 			"42",
 		]) as MongoServerError;
 
 		expect(restored.keyValue).toEqual({ _id: "42" });
+	});
+
+	// The caller's own instance is what `keyValue._id` has to hold: application
+	// code compares it against the id it tried to write, and an id from `bson` or
+	// mongoose has to survive that comparison.
+	test("reports the caller's own ObjectId instance", () => {
+		const oid = new ObjectId("6a7b8f05d92a9d20e503de01");
+		const restored = withTypedDuplicateId(
+			duplicate(`docs:{ "$oid": '${oid.toHexString()}' }`),
+			[oid],
+		) as MongoServerError;
+
+		expect(restored.keyValue?._id).toBe(oid);
 	});
 
 	test("picks the colliding id out of a batch", () => {
