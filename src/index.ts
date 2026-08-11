@@ -9,8 +9,11 @@ export { Collection } from "./collection/collection.ts";
 export { FindCursor } from "./cursor/find-cursor.ts";
 export { Db } from "./db/db.ts";
 export {
+	MongoAPIError,
 	MongoClientError,
+	MongoCompatibilityError,
 	MongoCursorExhaustedError,
+	MongoDriverError,
 	MongoError,
 	MongoNetworkError,
 	MongoNotConnectedError,

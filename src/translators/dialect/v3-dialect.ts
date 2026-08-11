@@ -1,18 +1,12 @@
 /**
- * SurrealDB 3.x dialect.
+ * SurrealDB 3.x dialect — the baseline dialect for this driver.
  *
- * v3 renamed the `type::is::*` namespace to `type::is_*`, replaced the
- * `~` regex operator with `string::matches()`, swapped `SEARCH` for
- * `FULLTEXT` in index definitions, and dropped the built-in `blank`
- * analyzer (it must be defined explicitly).
+ * Uses `type::is_*` type-check functions, `string::matches()` for regex
+ * comparison, and `FULLTEXT` in index definitions. The `blank` analyzer is
+ * not built in and must be defined explicitly.
  */
-import { BSON_TYPE_NAMES_V2 } from "./bson-types.ts";
+import { BSON_TYPE_CHECK_FNS } from "./bson-types.ts";
 import type { SurrealDialect } from "./dialect-strategy.ts";
-
-/** Convert a v2 type-check function name (`type::is::*`) to its v3 form. */
-function toV3(v2Name: string): string {
-	return v2Name.replace(/^type::is::/, "type::is_");
-}
 
 export class V3Dialect implements SurrealDialect {
 	readonly id = "v3";
@@ -23,8 +17,7 @@ export class V3Dialect implements SurrealDialect {
 	}
 
 	typeCheckFn(bson: string | number): string | undefined {
-		const v2Name = BSON_TYPE_NAMES_V2[bson as keyof typeof BSON_TYPE_NAMES_V2];
-		return v2Name ? toV3(v2Name) : undefined;
+		return BSON_TYPE_CHECK_FNS[bson as keyof typeof BSON_TYPE_CHECK_FNS];
 	}
 
 	ensureBlankAnalyzerSql(): string | null {

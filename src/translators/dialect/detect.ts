@@ -1,26 +1,55 @@
 /**
  * Single source of truth for "which SurrealDB dialect am I talking to?".
  *
- * Treats `undefined` as "latest" because unknown versions almost always
- * correspond to a fresh install; older v2 servers must be detected
- * explicitly via `MongoClient.serverVersion` after `connect()`.
+ * This driver requires **SurrealDB 3.0.0 or newer**. An older server speaks a
+ * grammar this driver no longer emits (`type::is::*` instead of `type::is_*`,
+ * `~` instead of `string::matches()`, `SEARCH` instead of `FULLTEXT`), so
+ * rather than silently generating queries it cannot run, `resolveDialect`
+ * rejects it.
+ *
+ * `undefined` is treated as "latest": version detection is best-effort, and an
+ * unknown version is far more likely to be a fresh install than a legacy one.
+ * `MongoClient.connect()` performs the authoritative check.
  */
+import { MongoCompatibilityError } from "../../errors.ts";
 import type { SurrealDialect } from "./dialect-strategy.ts";
-import { V2Dialect } from "./v2-dialect.ts";
 import { V3Dialect } from "./v3-dialect.ts";
 
-const V2 = new V2Dialect();
+/** Lowest SurrealDB version this driver supports. */
+export const MINIMUM_SURREALDB_VERSION = "3.0.0";
+
 const V3 = new V3Dialect();
 
-/** Pick the dialect strategy that matches a SurrealDB server version string. */
-export function resolveDialect(version: string | undefined): SurrealDialect {
-	if (!version) return V3;
-	const major = Number.parseInt(version.split(".")[0] ?? "0", 10);
-	if (!Number.isFinite(major)) return V3;
-	return major >= 3 ? V3 : V2;
+/** Parse the major version out of a version string, or `undefined`. */
+export function majorVersionOf(
+	version: string | undefined,
+): number | undefined {
+	if (!version) return undefined;
+	const major = Number.parseInt(version.split(".")[0] ?? "", 10);
+	return Number.isFinite(major) ? major : undefined;
 }
 
-/** Convenience predicate, kept for symmetry with the previous helper. */
-export function isV3Dialect(version: string | undefined): boolean {
-	return resolveDialect(version).id === "v3";
+/**
+ * Returns true when `version` is known to be older than the minimum supported
+ * SurrealDB release. An unparseable or absent version is not "unsupported" —
+ * it is simply unknown.
+ */
+export function isUnsupportedVersion(version: string | undefined): boolean {
+	const major = majorVersionOf(version);
+	return major !== undefined && major < 3;
+}
+
+/**
+ * Pick the dialect strategy for a SurrealDB server version string.
+ *
+ * @throws {MongoCompatibilityError} when the server predates
+ *   {@link MINIMUM_SURREALDB_VERSION}.
+ */
+export function resolveDialect(version: string | undefined): SurrealDialect {
+	if (isUnsupportedVersion(version)) {
+		throw new MongoCompatibilityError(
+			`SurrealDB ${version} is not supported: @surrealdb/mql requires SurrealDB ${MINIMUM_SURREALDB_VERSION} or newer.`,
+		);
+	}
+	return V3;
 }

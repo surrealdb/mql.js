@@ -10,9 +10,13 @@
 import { type ConnectOptions, type RootAuth, Surreal } from "surrealdb";
 import type { Db } from "../db/db.ts";
 import { createDb } from "../db/db.ts";
-import { MongoNotConnectedError } from "../errors.ts";
+import { MongoCompatibilityError, MongoNotConnectedError } from "../errors.ts";
 import type { QueryExecutor } from "../surreal/query-executor.ts";
 import { SurrealdbExecutor } from "../surreal/surrealdb-executor.ts";
+import {
+	isUnsupportedVersion,
+	MINIMUM_SURREALDB_VERSION,
+} from "../translators/dialect/index.ts";
 import type { MongoClientOptions } from "../types.ts";
 import { ConnectionManager } from "./connection-manager.ts";
 import { parseConnectionString } from "./connection-string.ts";
@@ -78,6 +82,18 @@ export class MongoClient {
 		);
 
 		this._serverVersion = await this._connectionManager.detectServerVersion();
+
+		// Fail fast on a server whose SurrealQL grammar this driver no longer
+		// emits, rather than letting every later query fail with a parse error.
+		// Detection is best-effort: an undetectable version is allowed through.
+		if (isUnsupportedVersion(this._serverVersion)) {
+			await this._executor.close().catch(() => {});
+			this._connected = false;
+			throw new MongoCompatibilityError(
+				`SurrealDB ${this._serverVersion} is not supported: @surrealdb/mql requires SurrealDB ${MINIMUM_SURREALDB_VERSION} or newer.`,
+			);
+		}
+
 		this._executor.setServerVersion(this._serverVersion);
 
 		return this;

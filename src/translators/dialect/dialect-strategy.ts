@@ -1,18 +1,18 @@
 /**
  * SurrealDB SQL dialect abstraction.
  *
- * Different SurrealDB major versions ship slightly different SurrealQL:
- *   - v2: `type::is::string`, `field ~ $p` (regex), `SEARCH ANALYZER ...`,
- *         the `blank` analyzer is built-in.
- *   - v3: `type::is_string`, `string::matches(field, $p)`,
- *         `FULLTEXT ANALYZER ...`, `blank` must be defined explicitly.
+ * SurrealDB majors ship slightly different SurrealQL, so each
+ * `SurrealDialect` implementation encodes one coherent set of those choices —
+ * `V3Dialect` (the current baseline) uses `type::is_string`,
+ * `string::matches(field, $p)` and `FULLTEXT ANALYZER ...`.
  *
- * Each `SurrealDialect` implementation encodes one set of those choices.
- * Resolving the dialect once at connect-time (Open/Closed) means new
- * versions can be added without touching the translators or operations.
+ * The seam exists so a future major can be added without touching the
+ * translators or operations: resolve the dialect once at connect-time
+ * (Open/Closed) and pass it through. SurrealDB 2.x is no longer supported —
+ * `resolveDialect` rejects it rather than emitting a grammar it cannot run.
  */
 export interface SurrealDialect {
-	/** Human-readable identifier, mainly for diagnostics ("v2", "v3"). */
+	/** Human-readable identifier, mainly for diagnostics ("v3"). */
 	readonly id: string;
 
 	/**
@@ -28,7 +28,7 @@ export interface SurrealDialect {
 	typeCheckFn(bson: string | number): string | undefined;
 
 	/** Keyword to use for full-text search index definitions. */
-	readonly fullTextKeyword: "FULLTEXT" | "SEARCH";
+	readonly fullTextKeyword: "FULLTEXT";
 
 	/**
 	 * SurrealQL statement to ensure the default `blank` analyzer exists,

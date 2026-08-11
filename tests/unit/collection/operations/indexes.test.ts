@@ -5,10 +5,7 @@ import {
 	dropIndex,
 	listIndexes,
 } from "../../../../src/collection/operations/indexes.ts";
-import {
-	V2Dialect,
-	V3Dialect,
-} from "../../../../src/translators/dialect/index.ts";
+import { V3Dialect } from "../../../../src/translators/dialect/index.ts";
 import { makeContext } from "../../../helpers/operation-context.ts";
 
 describe("createIndex – regular (non-text) index", () => {
@@ -63,19 +60,6 @@ describe("createIndex – text indexes (dialect-driven)", () => {
 		);
 		expect(executor.queries[1].sql).toBe(
 			"DEFINE INDEX title_text ON users FIELDS title FULLTEXT ANALYZER blank BM25 HIGHLIGHTS",
-		);
-		expect(indexes.textFields).toEqual(["title"]);
-	});
-
-	test("v2 dialect: skips analyzer DDL and uses SEARCH keyword", async () => {
-		const { ctx, executor, indexes } = makeContext({
-			dialect: new V2Dialect(),
-		});
-		await createIndex(ctx, { title: "text" });
-
-		expect(executor.queries.length).toBe(1); // no analyzer DDL on v2
-		expect(executor.queries[0].sql).toBe(
-			"DEFINE INDEX title_text ON users FIELDS title SEARCH ANALYZER blank BM25 HIGHLIGHTS",
 		);
 		expect(indexes.textFields).toEqual(["title"]);
 	});

@@ -54,6 +54,18 @@ bun add @surrealdb/mql
 npm install @surrealdb/mql
 ```
 
+### Requirements
+
+**SurrealDB 3.0.0 or newer.** Every supported minor is tested in CI against its
+latest patch release (currently 3.0.5, 3.1.5 and 3.2.4), plus SurrealDB
+`nightly` as an early-warning signal.
+
+SurrealDB 2.x is not supported: it speaks a different SurrealQL grammar
+(`type::is::*` rather than `type::is_*`, `~` rather than `string::matches()`,
+`SEARCH` rather than `FULLTEXT`). `connect()` detects the server version and
+fails with a `MongoCompatibilityError` rather than emitting queries the server
+cannot run.
+
 ## Quick start
 
 ```typescript

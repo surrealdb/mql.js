@@ -29,7 +29,13 @@ export interface SurrealDbDockerProviderOptions {
 	readonly readinessTimeoutMs?: number;
 }
 
-const DEFAULT_IMAGE = "surrealdb/surrealdb:latest";
+/**
+ * Pinned so a SurrealDB release cannot silently change what the parity suite
+ * proves. Override with `MQL_SURREALDB_IMAGE` (CI matrixes this across every
+ * supported 3.x minor plus `nightly`).
+ */
+const DEFAULT_IMAGE =
+	process.env.MQL_SURREALDB_IMAGE ?? "surrealdb/surrealdb:v3.2.4";
 const DEFAULT_DATABASE = "e2e_parity";
 const SURREALDB_INTERNAL_PORT = 8000;
 

@@ -33,12 +33,12 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lockb', '**/bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-bun-
 
       - name: Install dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Run lint checks
         run: bun run quality:check
@@ -64,12 +64,12 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lockb', '**/bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-bun-
 
       - name: Install dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Run TypeScript type check
         run: bun run type-check
@@ -95,12 +95,12 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lockb', '**/bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-bun-
 
       - name: Install dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Build distributable
         run: bun run build
@@ -133,27 +133,41 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lockb', '**/bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-bun-
 
       - name: Install dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Run unit tests
         run: bun run test:unit
 
   integration-tests:
-    name: Integration Tests (SurrealDB ${{ matrix.surrealdb.version }})
+    name: Integration Tests (SurrealDB ${{ matrix.surrealdb.name }})
     runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.surrealdb.experimental || false }}
     strategy:
       fail-fast: false
       matrix:
+        # The latest patch of every supported SurrealDB minor, plus nightly.
+        # `target` feeds MQL_SURREAL_VERSION so version-gated tests know what
+        # they are talking to; nightly leaves it unset so the helpers fall back
+        # to "latest", which satisfies every `>=` range.
         surrealdb:
-          - version: v2.3.7
-            target: 2.3.7
-          - version: v3.0.4
-            target: 3.0.4
+          - name: "3.0.5"
+            tag: v3.0.5
+            target: 3.0.5
+          - name: "3.1.5"
+            tag: v3.1.5
+            target: 3.1.5
+          - name: "3.2.4"
+            tag: v3.2.4
+            target: 3.2.4
+          - name: nightly
+            tag: nightly
+            target: ""
+            experimental: true
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
@@ -168,24 +182,31 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Install SurrealDB
-        uses: surrealdb/setup-surreal@7c103070ba4f544240cd287432ba70d6f50163a5 # v2.0.1
-        with:
-          surrealdb_version: ${{ matrix.surrealdb.version }}
-          surrealdb_port: 8000
-          surrealdb_username: root
-          surrealdb_password: root
+      # The integration suite spawns its own `surreal` process per test file
+      # (see tests/integration/helpers.ts), so this installs the binary rather
+      # than starting a server. surrealdb/setup-surreal is not used because it
+      # always installs by `--version`, which the installer rejects alongside
+      # `--nightly`; invoking the installer directly covers every matrix entry
+      # with one mechanism.
+      - name: Install SurrealDB ${{ matrix.surrealdb.name }}
+        run: |
+          if [ "${{ matrix.surrealdb.tag }}" = "nightly" ]; then
+            curl --proto '=https' --tlsv1.2 -sSf https://install.surrealdb.com | sh -s -- --nightly
+          else
+            curl --proto '=https' --tlsv1.2 -sSf https://install.surrealdb.com | sh -s -- --version "${{ matrix.surrealdb.name }}"
+          fi
+          surreal version
 
       - name: Cache dependencies
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lockb', '**/bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-bun-
 
       - name: Install dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Run integration tests
         run: bun run test:integration
@@ -213,12 +234,12 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lockb', '**/bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-bun-
 
       - name: Install dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Pre-pull MongoDB image
         run: docker pull mongo:7.0
@@ -227,8 +248,26 @@ jobs:
         run: bun run test:e2e:mongodb
 
   e2e-mql:
-    name: E2E (mql.js / SurrealDB / Docker)
+    name: E2E (mql.js / SurrealDB ${{ matrix.surrealdb.name }} / Docker)
     runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.surrealdb.experimental || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        surrealdb:
+          - name: "3.0.5"
+            tag: v3.0.5
+            target: 3.0.5
+          - name: "3.1.5"
+            tag: v3.1.5
+            target: 3.1.5
+          - name: "3.2.4"
+            tag: v3.2.4
+            target: 3.2.4
+          - name: nightly
+            tag: nightly
+            target: ""
+            experimental: true
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
@@ -247,15 +286,18 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lockb', '**/bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-bun-
 
       - name: Install dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
 
       - name: Pre-pull SurrealDB image
-        run: docker pull surrealdb/surrealdb:latest
+        run: docker pull "surrealdb/surrealdb:${{ matrix.surrealdb.tag }}"
 
       - name: Run E2E tests against mql.js + SurrealDB
         run: bun run test:e2e:mql
+        env:
+          MQL_SURREALDB_IMAGE: surrealdb/surrealdb:${{ matrix.surrealdb.tag }}
+          MQL_SURREAL_VERSION: ${{ matrix.surrealdb.target }}
