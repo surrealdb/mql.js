@@ -22,6 +22,7 @@ import type {
 	WithSessionCallback,
 } from "../session/client-session.ts";
 import { ClientSession } from "../session/client-session.ts";
+import { BSON_CODEC_OPTIONS } from "../surreal/bson-codec.ts";
 import type { QueryExecutor } from "../surreal/query-executor.ts";
 import { SurrealdbExecutor } from "../surreal/surrealdb-executor.ts";
 import type { TransactionScope } from "../surreal/transaction-executor.ts";
@@ -71,7 +72,9 @@ export class MongoClient {
 	constructor(url: string, options?: MongoClientOptions) {
 		this._parsed = parseConnectionString(url, options);
 		this._settings = this._parsed.settings;
-		this._surreal = new Surreal();
+		// Every value crossing this connection passes through the BSON codec, which
+		// is what makes an `ObjectId` come back an `ObjectId` and a `Date` a `Date`.
+		this._surreal = new Surreal({ codecOptions: BSON_CODEC_OPTIONS });
 		this._inner = new SurrealdbExecutor(this._surreal);
 		this._executor = new ClientExecutor(this._inner, {
 			ensureConnected: () => this.ensureConnected(),
