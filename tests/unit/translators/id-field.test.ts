@@ -21,11 +21,16 @@ describe("isIdField", () => {
 });
 
 describe("coerceIdCondition", () => {
-	test("an ObjectId becomes a RecordId holding its hex string", () => {
+	test("an ObjectId becomes a RecordId holding its stored form", () => {
 		const out = coerceIdCondition(TABLE, new ObjectId(HEX)) as RecordId;
 		expect(out).toBeInstanceOf(RecordId);
 		expect(String(out.table)).toBe(TABLE);
-		expect(out.id).toBe(HEX);
+		expect(out.id).toEqual({ $oid: HEX });
+	});
+
+	// A filter has to encode an id exactly as the write did, or it matches nothing.
+	test("a string id keeps the string form an ObjectId does not use", () => {
+		expect((coerceIdCondition(TABLE, HEX) as RecordId).id).toBe(HEX);
 	});
 
 	test("string and numeric ids are preserved verbatim, not stringified", () => {
@@ -50,7 +55,7 @@ describe("coerceIdCondition", () => {
 		}) as { $in: RecordId[] };
 		expect(out.$in).toHaveLength(3);
 		for (const item of out.$in) expect(item).toBeInstanceOf(RecordId);
-		expect(out.$in.map((r) => r.id)).toEqual([HEX, "abc", 7]);
+		expect(out.$in.map((r) => r.id)).toEqual([{ $oid: HEX }, "abc", 7]);
 	});
 
 	test("operators that do not compare identity are left untouched", () => {
@@ -79,7 +84,7 @@ describe("translateFilter with _id", () => {
 		const bound = bindings.p0 as RecordId;
 		expect(bound).toBeInstanceOf(RecordId);
 		expect(String(bound.table)).toBe(TABLE);
-		expect(bound.id).toBe(HEX);
+		expect(bound.id).toEqual({ $oid: HEX });
 	});
 
 	test("$in produces a bound array of RecordIds", () => {

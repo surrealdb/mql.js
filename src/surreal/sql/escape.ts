@@ -1,9 +1,14 @@
 /**
- * SurrealQL identifier escaping.
+ * SurrealQL identifier escaping, and the inverse.
  *
  * Every identifier this driver splices into SQL — table names, database names,
  * index names and document field paths — goes through here. Values never do;
  * they are always sent as bound parameters.
+ *
+ * The reverse direction lives here too (`unescapeSurrealString`), because it is
+ * the same knowledge read backwards: SurrealDB names values in its error
+ * messages as SurrealQL literals, so recovering the text one stands for means
+ * undoing exactly the escaping described below.
  *
  * Escaping field paths is not cosmetic. Without it:
  *   - a legal MongoDB field name containing a space (`{'first name': 'x'}`)
@@ -118,4 +123,94 @@ export function escapeFieldPath(field: string): string {
  */
 export function escapeFieldList(fields: readonly string[]): string {
 	return fields.map(escapeFieldPath).join(", ");
+}
+
+/**
+ * The single-character escapes SurrealDB emits inside a quoted string or
+ * identifier, verified against 3.x by round-tripping each control character
+ * through a record id and through a unique-index violation message.
+ *
+ * A backspace is *not* in the table: SurrealDB prints it as `\u{8}`, which the
+ * code-point form below covers.
+ */
+const STRING_ESCAPES: Readonly<Record<string, string>> = {
+	"0": "\0",
+	b: "\b",
+	f: "\f",
+	n: "\n",
+	r: "\r",
+	t: "\t",
+};
+
+/** A `\u{1f600}` or `\uXXXX` escape's code point, and where it ends. */
+interface CodePointEscape {
+	/** The character the escape stands for. */
+	char: string;
+	/** Index of the escape's last character. */
+	end: number;
+}
+
+/** Read the code point of a `\u{…}` or `\uXXXX` escape whose digits start at `from`. */
+function readCodePoint(
+	text: string,
+	from: number,
+): CodePointEscape | undefined {
+	const braced = text[from] === "{";
+	const start = braced ? from + 1 : from;
+	const close = braced ? text.indexOf("}", start) : start + 4;
+
+	if (close < 0 || close > text.length) return undefined;
+
+	const digits = text.slice(start, close);
+	if (!/^[0-9a-fA-F]{1,6}$/.test(digits)) return undefined;
+
+	const code = Number.parseInt(digits, 16);
+	if (code > 0x10ffff) return undefined;
+
+	return { char: String.fromCodePoint(code), end: braced ? close : close - 1 };
+}
+
+/**
+ * Recover the text a quoted SurrealQL string or identifier stands for.
+ *
+ * The escaping matters because it is the only thing that survives of a value's
+ * exact bytes once SurrealDB has printed it: a duplicate-key failure names the
+ * record it rejected and a unique-index violation names the value that collided,
+ * and both are reported back to the caller as their own `_id` or field value.
+ * Merely dropping the backslashes turns an `_id` of `'tab\there'` into
+ * `'tabthere'` — the caller's primary key, silently altered in the report they
+ * are told it collided with.
+ *
+ * An unrecognised escape yields the character itself, which is exactly right for
+ * the quote and backslash escapes (`\\`, `` \` ``, `\'`, `\"`).
+ */
+export function unescapeSurrealString(text: string): string {
+	if (!text.includes("\\")) return text;
+
+	let out = "";
+	for (let i = 0; i < text.length; i += 1) {
+		const char = text[i];
+
+		// A trailing backslash escapes nothing, so it is its own character.
+		if (char !== "\\" || i === text.length - 1) {
+			out += char;
+			continue;
+		}
+
+		i += 1;
+		const escaped = text[i];
+
+		if (escaped === "u") {
+			const point = readCodePoint(text, i + 1);
+			if (point) {
+				out += point.char;
+				i = point.end;
+				continue;
+			}
+		}
+
+		out += STRING_ESCAPES[escaped] ?? escaped;
+	}
+
+	return out;
 }

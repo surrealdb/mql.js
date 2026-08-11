@@ -43,7 +43,7 @@ A drop-in MongoDB driver replacement powered by SurrealDB. Use the MongoDB API y
 - **Positional array updates** - $[] and $[identifier] with arrayFilters
 - **Sessions and transactions** - startSession, startTransaction, commit/abort and withTransaction, backed by real SurrealDB transactions
 - **Cursor chaining** - sort, limit, skip, project, plus `for await...of` async iteration
-- **ObjectId support** - MongoDB-compatible ObjectId generation and parsing
+- **BSON identities that round-trip** - ObjectIds and Dates come back as ObjectIds and Dates, nested and in arrays, and ids from `bson`/mongoose interoperate with this driver's own
 - **TypeScript generics** - Typed collections with full type inference
 - **MongoDB connection strings** - Use `mongodb://` connection strings that map to SurrealDB
 
@@ -402,6 +402,163 @@ collection and a `deleteOne` reports `deletedCount: 0`. The read paths
 (`find`, `findOne`, `countDocuments`, `estimatedDocumentCount`, `distinct`) and
 the multi-document writes (`updateMany`, `deleteMany`) still raise `26`
 (`NamespaceNotFound`) where MongoDB would return nothing.
+
+## BSON types
+
+MongoDB documents carry BSON values; SurrealDB carries SurrealQL values. The two
+types that matter for everyday use round-trip as themselves — write an `ObjectId`
+or a `Date`, read the same class back:
+
+| Value | Stored as | Read back as |
+| --- | --- | --- |
+| `ObjectId` | the object `{ "$oid": "<24 hex characters>" }` | `ObjectId` |
+| `Date` | a SurrealDB `datetime` | `Date`, to the millisecond |
+| string, number, boolean, `null`, array, sub-document | the SurrealQL equivalent | as written |
+
+That holds everywhere a value can appear: as `_id`, as a field, nested in a
+sub-document, as an array element, inside an array of sub-documents, in a filter
+(including `$in`), in a `$set` or `$push` operand, in a replacement or an upsert,
+in `distinct`, and in what `findOneAndUpdate` hands back.
+
+```typescript
+const authorId = new ObjectId();
+await posts.insertOne({ authorId, tags: [authorId], publishedAt: new Date() });
+
+const post = await posts.findOne({ authorId });
+post.authorId instanceof ObjectId; // true
+post.publishedAt instanceof Date; // true
+```
+
+### What an ObjectId is stored as
+
+An ObjectId is stored as the single-field object `{ "$oid": "<hex>" }`, both as a
+record id and as a value inside a document. `$oid` is MongoDB Extended JSON's own
+spelling for an ObjectId, so the value says what it is to anyone reading it in
+SurrealDB's tooling, and a `$`-prefixed field name is one MongoDB's own tooling
+treats as reserved — which keeps the form from colliding with a document you
+wrote yourself.
+
+- A record whose `_id` is an ObjectId is addressed as
+  ``users:{ "$oid": '6a7b933c2627a1d7fdb21827' }``. In hand-written SurrealQL the
+  field name has to be quoted, since a bare `$oid` reads as a parameter — which is
+  how SurrealDB prints it back to you, so a copied id pastes straight into a query.
+- Equality, `INSIDE` (from `$in`), `ORDER BY` and unique indexes all work on it.
+  Ordering stays chronological, because comparing the objects compares the hex
+  inside them and the leading bytes of an ObjectId are its timestamp.
+- Reconstruction is deliberately narrow: **exactly one field, named `$oid`,
+  holding exactly 24 lowercase hex characters**. `{ "$oid": "…", note: "mine" }`
+  and `{ "$oid": "not-an-id" }` are documents, and come back as documents.
+- A **document** is never read as an id, however much it looks like one: a
+  document of exactly that shape comes back as itself, with its field intact. The
+  one ambiguity left is a *value* — a sub-document or array element — that is
+  exactly that shape, which comes back as an `ObjectId`. That is the same trade
+  Extended JSON itself makes.
+
+### `_id` and record ids
+
+MongoDB's `_id` is SurrealDB's `id` column, so it is stored as a `RecordId` whose
+table is the collection and whose id part is the `_id` itself:
+
+| `_id` | Record id | Read back as |
+| --- | --- | --- |
+| `ObjectId` | `users:{ "$oid": '6a7b…' }` | `ObjectId` |
+| string | `users:⟨the string, verbatim⟩` | the same string |
+| number | `users:42` | the same number |
+| anything else | `users:⟨String(value)⟩` | that string |
+
+The consequences worth knowing:
+
+- **A string `_id` is stored exactly as given**, colons and all: `'urn:uuid:1234'`
+  reads back as `'urn:uuid:1234'`. Nothing is split or stripped, because
+  SurrealDB's `RecordId` carries the table separately from the id.
+- **A string that looks like an ObjectId stays a string.** `_id: '6a7b933c…'` is
+  read back as a string, and `_id: new ObjectId('6a7b933c…')` as an `ObjectId` —
+  they are *different records*, and each is matched only by a filter of its own
+  type. That is what the tagged form buys: MongoDB never promotes a string `_id`
+  to an ObjectId, and neither does this.
+- **A duplicate `_id` reports the value you supplied**, with its type intact, in
+  `err.keyValue._id` (code `11000`).
+- **An `_id` that is not a string, number or ObjectId is stringified**, since a
+  record id has to be one of SurrealDB's own id types. MongoDB would store the
+  document, array or boolean as itself.
+
+### Dates
+
+`Date` is stored as a SurrealDB `datetime` and read back as a `Date`, with
+milliseconds preserved. Comparison operators (`$gt`, `$lt`, …), sorting and
+`$type: "date"` all work against it.
+
+SurrealDB's `datetime` is nanosecond-precise, and a `Date` is not: a datetime
+written by SurrealDB itself — or by any other client — with sub-millisecond
+digits arrives here **rounded to the millisecond**. That is the deliberate trade
+for handing back a real `Date`, which is the only date type MongoDB has.
+
+### The ObjectId class
+
+`ObjectId` is this driver's own implementation rather than a re-export of `bson`:
+this package has exactly one runtime dependency (`surrealdb`), speaks CBOR rather
+than BSON, and `bson` cannot even be imported under Bun without patching
+`v8.startupSnapshot`. Its behaviour is pinned against the real class member by
+member — construction, `isValid`, `equals`, `getTimestamp`, `createFromTime`,
+`toString`, `toJSON`, `inspect` and the messages of every rejection — in
+`tests/unit/object-id-parity.test.ts`.
+
+Two consequences for code that mixes drivers:
+
+- **Ids from `bson` and mongoose are accepted anywhere an id is** — in a
+  document, a filter, or as an `_id` — and are stored as ids. Ids compare equal
+  across implementations in both directions, and `new ObjectId(otherId)` works
+  either way round. Reads return this driver's class.
+- **Handing this driver's `ObjectId` to the official driver's BSON serialiser is
+  refused** by `bson`'s own version check (`bson types must be from bson 7.x.x`),
+  because this class does not claim to be a `bson` value. Wrap it —
+  `new bson.ObjectId(id)` — if a document has to cross over.
+
+Where the class deliberately differs from `bson`'s:
+
+- **The twelve bytes are hidden.** `Object.keys(id)` is empty and `{...id}` is
+  `{}`, where `bson` exposes an own `buffer` property that a spread copies. An id
+  is one opaque value, and spreading a document must not turn one into a
+  sub-document of driver internals.
+- **The bytes are copied, not aliased**, so mutating the `Uint8Array` you
+  constructed an id from cannot change the id afterwards.
+- **`new ObjectId(1700000000)` throws.** `bson` removed the
+  timestamp-from-number constructor, so accepting a number would let code work
+  here and fail against the official driver. Use
+  `ObjectId.createFromTime(seconds)`.
+- **Rejections are `MongoInvalidArgumentError`** (this driver's hierarchy)
+  carrying `bson`'s wording, so message matching behaves the same.
+
+### BSON types with no representation
+
+Everything else in BSON has no SurrealDB counterpart. A value of one of these
+types **throws a `MongoCompatibilityError` naming the type** rather than being
+written: it is an object on the wire, so it would otherwise be stored as
+whatever its internals happen to be — a `Decimal128` as `{bytes: …}` — and read
+back as a plain object that is no longer a decimal.
+
+This asks what a value *is*, not what its fields are called: a document of your
+own with a `_bsontype` field in it is data, and is stored as written.
+
+| BSON type | Use instead |
+| --- | --- |
+| `Decimal128` | a `number`, a decimal string, or SurrealDB's own `Decimal` from the `surrealdb` package |
+| `Long`, `Int32`, `Double` | a `number`, or a `bigint` — which round-trips as a `bigint` and is queryable as one |
+| `Binary` | a `Uint8Array`, which is stored as SurrealDB `bytes` and read back as an `ArrayBuffer` |
+| `UUID` (a `Binary` subtype, and reported as one) | a string, or SurrealDB's own `Uuid` |
+| `Timestamp` | a `Date`, or a number of milliseconds |
+| `Code` | nothing: server-side JavaScript has no equivalent here |
+| `MinKey`, `MaxKey` | nothing: there are no sentinel bounds to sort against |
+| `DBRef` | the fields themselves — an `ObjectId` plus the collection name |
+
+A value from the `surrealdb` package (`Decimal`, `Uuid`, `Duration`, `RecordId`,
+a geometry) passes through untouched in both directions, so a document can hold
+SurrealDB-native values as long as your own code expects them back.
+
+The BSON serialisation options — `raw`, `promoteValues`, `promoteLongs`,
+`promoteBuffers`, `useBigInt64`, `bsonRegExp`, `serializeFunctions`, `checkKeys`,
+`fieldsAsRaw`, `enableUtf8Validation` — throw for the same reason: there is no
+BSON serialiser here whose behaviour they could select.
 
 ## Query filters
 

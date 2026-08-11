@@ -49,8 +49,11 @@ import {
 	MongoServerError,
 	type WriteError,
 } from "../errors.ts";
-import { ObjectId } from "../object-id.ts";
-import { stringToMongoId } from "../utils/id.ts";
+import type { ObjectIdLike } from "../object-id.ts";
+import { isObjectId, ObjectId } from "../object-id.ts";
+import { parseRecordIdString } from "../utils/id.ts";
+import { objectIdFromPrintedForm } from "./bson-codec.ts";
+import { unescapeSurrealString } from "./sql/escape.ts";
 
 /** Normalise an unknown thrown value to a string message. */
 function messageOf(err: unknown): string {
@@ -68,9 +71,14 @@ function messageOf(err: unknown): string {
  *   Database index `email_1` already contains 'a@b.c', with record `users:abc`
  *   Database index `ab` already contains [1, 'x'], with record `c:abc`
  *   Database index `ni` already contains 42, with record `n:abc`
+ *
+ * The record group is greedy to the last backtick rather than stopping at the
+ * first, because SurrealDB quotes an id part that is not a bare identifier with
+ * backticks of its own: an `_id` of `'urn:uuid:1234'` is named as
+ * ``users:`urn:uuid:1234` ``.
  */
 const DUPLICATE_INDEX_PATTERN =
-	/Database index `(?<index>[^`]+)` already contains (?<value>.+), with record `(?<record>[^`]+)`/s;
+	/Database index `(?<index>[^`]+)` already contains (?<value>.+), with record `(?<record>.+)`/s;
 
 /**
  * Index-lifecycle rejections, matched by message for the same reason as
@@ -141,11 +149,28 @@ const VALIDATION_PATTERNS = [
 	/^Found .* for field .*, with record/,
 ];
 
-/** Parse a SurrealQL scalar literal (`'str'`, `42`, `true`, `NONE`). */
+/**
+ * Parse a SurrealQL scalar literal (`'str'`, `42`, `true`, `NONE`).
+ *
+ * An `ObjectId` is one of these too: it is stored as a tagged object, so the
+ * value a unique index rejected is named as `{ "$oid": '6a7b…' }` and has to be
+ * reported back as the id the caller indexed.
+ */
 function parseScalar(literal: string): unknown {
 	const text = literal.trim();
-	if (text.startsWith("'") && text.endsWith("'")) return text.slice(1, -1);
-	if (text.startsWith('"') && text.endsWith('"')) return text.slice(1, -1);
+	const objectId = objectIdFromPrintedForm(text);
+	if (objectId) return objectId;
+
+	// A string literal's contents are unescaped, not just unwrapped: SurrealDB
+	// prints a tab as `\t` and switches to double quotes (escaping any it
+	// contains) for a value holding a single one, so the caller's own value is
+	// only recovered by undoing that.
+	for (const quote of ["'", '"']) {
+		if (text.length > 1 && text.startsWith(quote) && text.endsWith(quote)) {
+			return unescapeSurrealString(text.slice(1, -1));
+		}
+	}
+
 	if (text === "true") return true;
 	if (text === "false") return false;
 	if (text === "NONE" || text === "NULL") return null;
@@ -155,26 +180,57 @@ function parseScalar(literal: string): unknown {
 
 /**
  * Split a compound index value (`[1, 'x, y']`) into its elements, respecting
- * quoted segments so a comma inside a string is not treated as a separator.
+ * quoted segments and nested object or array literals, so neither a comma inside
+ * a string nor one inside `{ "$oid": … }` is treated as a separator.
  */
 function parseValueList(literal: string): unknown[] {
-	const inner = literal.trim().slice(1, -1);
+	return splitTopLevel(literal.trim().slice(1, -1)).map(parseScalar);
+}
+
+/** Where a scan through a printed list currently is. */
+interface ScanState {
+	/** The quote character the scan is inside, if any. */
+	quote: string | undefined;
+	/** How many object or array literals deep the scan is. */
+	depth: number;
+	/** Whether the previous character was a backslash inside a string. */
+	escaped: boolean;
+}
+
+/** Advance `state` over `char`, and say whether it separates two elements. */
+function isSeparator(char: string, state: ScanState): boolean {
+	if (state.quote) {
+		// An escaped quote does not end the string, so the scan must step over it:
+		// treating the `"` of `"a\"b, c"` as the closing quote would make the comma
+		// after it look like a separator and split one value into two.
+		if (state.escaped) {
+			state.escaped = false;
+			return false;
+		}
+		if (char === "\\") {
+			state.escaped = true;
+			return false;
+		}
+		if (char === state.quote) state.quote = undefined;
+		return false;
+	}
+	if (char === "'" || char === '"') {
+		state.quote = char;
+		return false;
+	}
+	if (char === "{" || char === "[") state.depth += 1;
+	if (char === "}" || char === "]") state.depth -= 1;
+	return char === "," && state.depth === 0;
+}
+
+/** Split on commas that are outside any quoted string, object or array. */
+function splitTopLevel(text: string): string[] {
+	const state: ScanState = { quote: undefined, depth: 0, escaped: false };
 	const parts: string[] = [];
 	let current = "";
-	let quote: string | undefined;
 
-	for (const char of inner) {
-		if (quote) {
-			if (char === quote) quote = undefined;
-			current += char;
-			continue;
-		}
-		if (char === "'" || char === '"') {
-			quote = char;
-			current += char;
-			continue;
-		}
-		if (char === ",") {
+	for (const char of text) {
+		if (isSeparator(char, state)) {
 			parts.push(current);
 			current = "";
 			continue;
@@ -183,7 +239,7 @@ function parseValueList(literal: string): unknown[] {
 	}
 	if (current.trim() !== "") parts.push(current);
 
-	return parts.map(parseScalar);
+	return parts;
 }
 
 /**
@@ -254,9 +310,7 @@ export function parseDuplicateKeyError(
 		? parseValueList(rawValue)
 		: [parseScalar(rawValue)];
 
-	const collection = record.includes(":")
-		? record.slice(0, record.indexOf(":"))
-		: undefined;
+	const collection = parseRecordIdString(record).collection;
 
 	const fields = keyFromIndexName(indexName);
 	let keyPattern: Record<string, number> | undefined;
@@ -282,7 +336,7 @@ export function parseDuplicateKeyError(
  * expects to see.
  */
 function formatDuplicateValue(value: unknown): string {
-	return value instanceof ObjectId
+	return isObjectId(value)
 		? `ObjectId('${value.toHexString()}')`
 		: JSON.stringify(value);
 }
@@ -308,23 +362,22 @@ const ID_INDEX = "_id_";
 /**
  * Describe an `_id` collision, given the record SurrealDB says already exists.
  *
- * `knownId` is the `_id` the caller actually supplied. It is preferred when
- * available because the error only carries the record as a string, which cannot
- * distinguish the number `42` from the string `"42"` — the driver's own insert
- * path still holds the typed value and can report it exactly.
+ * The record arrives as text, so the `_id` is recovered from the way SurrealDB
+ * printed it — quoting distinguishes the string `"42"` from the number `42`, and
+ * an id containing a colon survives intact. `knownId` overrides that when the
+ * caller's own value is to hand, so the reported id is the very object they
+ * passed in.
  */
 export function duplicateIdInfo(
 	recordId: string,
 	knownId?: unknown,
 ): DuplicateKeyInfo {
-	const separator = recordId.indexOf(":");
-	const collection =
-		separator >= 0 ? recordId.slice(0, separator) : recordId || undefined;
-	const value = knownId !== undefined ? knownId : stringToMongoId(recordId);
+	const parsed = parseRecordIdString(recordId);
+	const value = knownId !== undefined ? knownId : parsed.id;
 
 	return {
 		indexName: ID_INDEX,
-		collection,
+		collection: parsed.collection,
 		values: [value],
 		keyPattern: { _id: 1 },
 		keyValue: { _id: value },
@@ -332,13 +385,12 @@ export function duplicateIdInfo(
 }
 
 /**
- * Restate a duplicate `_id` using the typed value the caller supplied.
+ * Restate a duplicate `_id` using the value the caller supplied.
  *
- * The server names the offending record as a string, so `duplicateIdInfo` cannot
- * tell the number `42` from the string `"42"` and reports the string. An insert
- * still holds the `_id` it prepared, so passing the candidates through here
- * recovers the original type — which matters because `keyValue._id` is what
- * application code compares against the id it tried to write.
+ * The server names the offending record as text, and while that text is enough to
+ * recover the id's type, it is not the caller's own instance: an `ObjectId` from
+ * `bson` or mongoose has to be reported back as itself, because `keyValue._id` is
+ * what application code compares against the id it tried to write.
  *
  * Any error that is not an `_id` collision, and any collision whose record does
  * not match a candidate, is returned untouched.
@@ -353,14 +405,24 @@ export function withTypedDuplicateId(
 	const cause = err.cause;
 	if (!(cause instanceof AlreadyExistsError) || !cause.recordId) return err;
 
-	const recordId = cause.recordId;
-	const separator = recordId.indexOf(":");
-	const idPart = separator >= 0 ? recordId.slice(separator + 1) : recordId;
-
-	const typed = candidates.find((candidate) => String(candidate) === idPart);
+	const rejected = parseRecordIdString(cause.recordId).id;
+	const typed = candidates.find((candidate) =>
+		namesSameId(candidate, rejected),
+	);
 	if (typed === undefined) return err;
 
-	return duplicateKeyError(duplicateIdInfo(recordId, typed), cause);
+	return duplicateKeyError(duplicateIdInfo(cause.recordId, typed), cause);
+}
+
+/** True when a candidate `_id` is the one the server rejected. */
+function namesSameId(candidate: unknown, rejected: unknown): boolean {
+	if (rejected instanceof ObjectId) {
+		if (typeof candidate === "string" || isObjectId(candidate)) {
+			return rejected.equals(candidate as string | ObjectIdLike);
+		}
+		return false;
+	}
+	return candidate === rejected;
 }
 
 /** Build the `MongoServerError` for a duplicate-key violation. */

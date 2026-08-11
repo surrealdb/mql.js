@@ -2,6 +2,7 @@
  * `distinct` operation.
  */
 
+import { reviveBsonValues } from "../../surreal/bson-codec.ts";
 import { escapeFieldPath } from "../../surreal/sql/escape.ts";
 import { statement } from "../../surreal/sql/statement.ts";
 import {
@@ -10,6 +11,7 @@ import {
 } from "../../translators/filter/id-field.ts";
 import { translateFilter } from "../../translators/filter.ts";
 import type { DistinctOptions, Document, Filter } from "../../types.ts";
+import { toMongoId } from "../../utils/id.ts";
 import { applyUndefinedPolicy } from "../../utils/undefined.ts";
 import {
 	filterOptionsFor,
@@ -46,5 +48,13 @@ export async function distinct<
 	const rows = await ctx.executor.query<{ vals: T[] }[]>(sql, bindings);
 
 	if (!rows || rows.length === 0) return [];
-	return rows[0].vals ?? [];
+	const values = rows[0].vals ?? [];
+
+	// `distinct` hands raw column values to the caller rather than documents, so
+	// it has to do for itself what `recordToDocument` does for a read: turn the
+	// `id` column's `RecordId`s back into `_id` values, and rebuild any stored
+	// `ObjectId` into the id it was written as.
+	return values.map((value) =>
+		isIdField(key) ? (toMongoId(value) as T) : reviveBsonValues(value),
+	);
 }

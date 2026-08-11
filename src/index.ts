@@ -43,6 +43,7 @@ export {
 	MongoTransactionError,
 	MongoWriteConcernError,
 } from "./errors.ts";
+export type { ObjectIdLike } from "./object-id.ts";
 export { ObjectId } from "./object-id.ts";
 export type {
 	ClientSessionId,
