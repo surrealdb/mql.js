@@ -12,6 +12,7 @@
 
 import { escapeFieldPath } from "../surreal/sql/escape.ts";
 import type { Sort } from "../types.ts";
+import { isIdField, SURREAL_ID_FIELD } from "./filter/id-field.ts";
 
 /**
  * Translate a MongoDB sort specification into a SurrealQL ORDER BY clause.
@@ -22,20 +23,20 @@ export function translateSort(sort?: Sort | null): string {
 
 	// String shorthand: single field ascending
 	if (typeof sort === "string") {
-		return `ORDER BY ${escapeFieldPath(sort)} ASC`;
+		return `ORDER BY ${escapeSortField(sort)} ASC`;
 	}
 
 	// Array of tuples: [["name", 1], ["age", -1]]
 	if (Array.isArray(sort)) {
 		const parts = sort.map(([field, dir]) => {
-			return `${escapeFieldPath(field)} ${normaliseDirection(dir)}`;
+			return `${escapeSortField(field)} ${normaliseDirection(dir)}`;
 		});
 		return parts.length > 0 ? `ORDER BY ${parts.join(", ")}` : "";
 	}
 
 	// Object: { name: 1, age: -1 }
 	const parts = Object.entries(sort).map(([field, dir]) => {
-		return `${escapeFieldPath(field)} ${normaliseDirection(dir)}`;
+		return `${escapeSortField(field)} ${normaliseDirection(dir)}`;
 	});
 	return parts.length > 0 ? `ORDER BY ${parts.join(", ")}` : "";
 }
@@ -43,4 +44,14 @@ export function translateSort(sort?: Sort | null): string {
 function normaliseDirection(dir: 1 | -1 | "asc" | "desc"): "ASC" | "DESC" {
 	if (dir === 1 || dir === "asc") return "ASC";
 	return "DESC";
+}
+
+/**
+ * Escape a sort key, mapping `_id` onto SurrealDB's `id` column.
+ *
+ * Only the field is rewritten: a sort compares no value, so unlike a filter
+ * this needs no table name to build a `RecordId` from.
+ */
+function escapeSortField(field: string): string {
+	return isIdField(field) ? SURREAL_ID_FIELD : escapeFieldPath(field);
 }

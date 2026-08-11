@@ -51,6 +51,15 @@ export interface TranslateFilterOptions {
 	 * Override the operator registry (advanced – typically left to default).
 	 */
 	registry?: FilterOperatorRegistry;
+	/**
+	 * Collection (table) the filter runs against.
+	 *
+	 * Required to translate `_id`: SurrealDB identities are `RecordId`s, which
+	 * are scoped to a table, so `{_id: "abc"}` can only become `id = users:abc`
+	 * if the table is known. Without it an `_id` condition is left alone and
+	 * cannot match, so every caller inside the driver supplies it.
+	 */
+	collection?: string;
 }
 
 /**
@@ -75,6 +84,7 @@ export function translateFilter(
 	const ctx: TranslateContext = {
 		dialect,
 		textFields: options?.textFields,
+		collection: options?.collection,
 		bindings,
 		nextParam: () => `p${counter++}`,
 		bind(value) {
@@ -165,7 +175,14 @@ function translateFieldCondition(
 	ctx: TranslateContext,
 	registry: FilterOperatorRegistry,
 ): string {
-	const f = escapeFieldPath(field);
+	let f = escapeFieldPath(field);
+
+	// `_id` lives in SurrealDB's `id` column as a RecordId; rewrite the field
+	// and coerce the compared values so the comparison can actually be true.
+	if (isIdField(field) && ctx.collection) {
+		f = SURREAL_ID_FIELD;
+		value = coerceIdCondition(ctx.collection, value);
+	}
 
 	if (value instanceof RegExp) {
 		return registry.get("$regex").translate(f, value, ctx);
@@ -237,5 +254,6 @@ export {
 
 import { MongoInvalidArgumentError } from "../../errors.ts";
 import { escapeFieldPath } from "../../surreal/sql/escape.ts";
+import { coerceIdCondition, isIdField, SURREAL_ID_FIELD } from "./id-field.ts";
 
 export type { TranslateContext } from "./translate-context.ts";

@@ -27,35 +27,55 @@ export interface PreparedInsert {
  * - Converts `_id` → RecordId
  * - Strips `_id` from the data payload
  */
+/**
+ * Convert a MongoDB `_id` value into the `RecordId` that addresses the same
+ * record in SurrealDB.
+ *
+ * This is the single mapping shared by writes (`prepareInsert`) and reads
+ * (filter translation). Keeping one implementation is the point: if the two
+ * ever disagreed, a document could be inserted under an id that no query could
+ * then match — which is exactly the bug this function exists to prevent.
+ *
+ * Returns `undefined` for a value that cannot address a record, so callers can
+ * decide whether that means "no match" or "invalid argument".
+ */
+export function toRecordId(table: string, id: unknown): RecordId | undefined {
+	if (id instanceof RecordId) return id;
+	if (id instanceof ObjectId) return new RecordId(table, id.toHexString());
+	if (typeof id === "string") return new RecordId(table, id);
+	if (typeof id === "number") return new RecordId(table, id);
+	return undefined;
+}
+
 export function prepareInsert(table: string, doc: Document): PreparedInsert {
 	const { _id, ...rest } = doc;
 
-	let insertedId: ObjectId | string | number;
-	let recordId: RecordId | undefined;
-
-	if (_id !== undefined && _id !== null) {
-		if (_id instanceof ObjectId) {
-			insertedId = _id;
-			recordId = new RecordId(table, _id.toHexString());
-		} else if (typeof _id === "string") {
-			insertedId = _id;
-			recordId = new RecordId(table, _id);
-		} else if (typeof _id === "number") {
-			insertedId = _id;
-			recordId = new RecordId(table, _id);
-		} else {
-			// Treat as string fallback
-			insertedId = String(_id);
-			recordId = new RecordId(table, String(_id));
-		}
-	} else {
-		// Generate a new ObjectId
+	if (_id === undefined || _id === null) {
 		const oid = new ObjectId();
-		insertedId = oid;
-		recordId = new RecordId(table, oid.toHexString());
+		return {
+			recordId: new RecordId(table, oid.toHexString()),
+			data: rest,
+			insertedId: oid,
+		};
 	}
 
-	return { recordId, data: rest, insertedId };
+	const recordId = toRecordId(table, _id);
+	if (recordId) {
+		return {
+			recordId,
+			data: rest,
+			insertedId: _id as ObjectId | string | number,
+		};
+	}
+
+	// Anything else (a plain object, a boolean, …) is stringified so it still
+	// addresses a stable record rather than being dropped.
+	const asString = String(_id);
+	return {
+		recordId: new RecordId(table, asString),
+		data: rest,
+		insertedId: asString,
+	};
 }
 
 // ---------------------------------------------------------------------------
