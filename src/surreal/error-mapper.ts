@@ -49,6 +49,8 @@ import {
 	MongoServerError,
 	type WriteError,
 } from "../errors.ts";
+import { ObjectId } from "../object-id.ts";
+import { stringToMongoId } from "../utils/id.ts";
 
 /** Normalise an unknown thrown value to a string message. */
 function messageOf(err: unknown): string {
@@ -272,16 +274,93 @@ export function parseDuplicateKeyError(
 	return { indexName, collection, values, keyPattern, keyValue };
 }
 
+/**
+ * Render one colliding value as MongoDB renders it in the message.
+ *
+ * An `ObjectId` prints as `ObjectId('…')` rather than as its JSON string, which
+ * is what the server writes and therefore what anything matching on the message
+ * expects to see.
+ */
+function formatDuplicateValue(value: unknown): string {
+	return value instanceof ObjectId
+		? `ObjectId('${value.toHexString()}')`
+		: JSON.stringify(value);
+}
+
 /** Render a duplicate key the way MongoDB renders it, for message parity. */
 function formatDuplicateKeyMessage(info: DuplicateKeyInfo): string {
 	const namespace = info.collection ? ` collection: ${info.collection}` : "";
 	const dupKey = info.keyValue
 		? Object.entries(info.keyValue)
-				.map(([field, value]) => `${field}: ${JSON.stringify(value)}`)
+				.map(([field, value]) => `${field}: ${formatDuplicateValue(value)}`)
 				.join(", ")
-		: info.values.map((value) => JSON.stringify(value)).join(", ");
+		: info.values.map(formatDuplicateValue).join(", ");
 
 	return `E11000 duplicate key error${namespace} index: ${info.indexName} dup key: { ${dupKey} }`;
+}
+
+/**
+ * Name of the index MongoDB reports for an `_id` collision. Every collection
+ * has it implicitly, so it is the index a duplicate `_id` is attributed to.
+ */
+const ID_INDEX = "_id_";
+
+/**
+ * Describe an `_id` collision, given the record SurrealDB says already exists.
+ *
+ * `knownId` is the `_id` the caller actually supplied. It is preferred when
+ * available because the error only carries the record as a string, which cannot
+ * distinguish the number `42` from the string `"42"` — the driver's own insert
+ * path still holds the typed value and can report it exactly.
+ */
+export function duplicateIdInfo(
+	recordId: string,
+	knownId?: unknown,
+): DuplicateKeyInfo {
+	const separator = recordId.indexOf(":");
+	const collection =
+		separator >= 0 ? recordId.slice(0, separator) : recordId || undefined;
+	const value = knownId !== undefined ? knownId : stringToMongoId(recordId);
+
+	return {
+		indexName: ID_INDEX,
+		collection,
+		values: [value],
+		keyPattern: { _id: 1 },
+		keyValue: { _id: value },
+	};
+}
+
+/**
+ * Restate a duplicate `_id` using the typed value the caller supplied.
+ *
+ * The server names the offending record as a string, so `duplicateIdInfo` cannot
+ * tell the number `42` from the string `"42"` and reports the string. An insert
+ * still holds the `_id` it prepared, so passing the candidates through here
+ * recovers the original type — which matters because `keyValue._id` is what
+ * application code compares against the id it tried to write.
+ *
+ * Any error that is not an `_id` collision, and any collision whose record does
+ * not match a candidate, is returned untouched.
+ */
+export function withTypedDuplicateId(
+	err: unknown,
+	candidates: readonly unknown[],
+): unknown {
+	if (!(err instanceof MongoServerError)) return err;
+	if (err.code !== MongoErrorCode.DuplicateKey) return err;
+
+	const cause = err.cause;
+	if (!(cause instanceof AlreadyExistsError) || !cause.recordId) return err;
+
+	const recordId = cause.recordId;
+	const separator = recordId.indexOf(":");
+	const idPart = separator >= 0 ? recordId.slice(separator + 1) : recordId;
+
+	const typed = candidates.find((candidate) => String(candidate) === idPart);
+	if (typed === undefined) return err;
+
+	return duplicateKeyError(duplicateIdInfo(recordId, typed), cause);
 }
 
 /** Build the `MongoServerError` for a duplicate-key violation. */
@@ -372,6 +451,22 @@ const QUERY_ERROR_RULES: ReadonlyArray<{
 			err instanceof NotFoundError ||
 			err instanceof MissingNamespaceDatabaseError,
 		build: serverError(MongoErrorCode.NamespaceNotFound),
+	},
+	{
+		// A record that already exists is a duplicate *key*, not a duplicate
+		// namespace: it is `_id` colliding, which MongoDB reports as 11000 from
+		// the implicit `_id_` index. Discriminated structurally on the error's own
+		// `recordId`, which SurrealDB populates only for the record case — a
+		// duplicate table or namespace carries `tableName` or neither and stays
+		// `NamespaceExists`.
+		matches: (err) => err instanceof AlreadyExistsError && !!err.recordId,
+		// The server's own wording is discarded here: MongoDB's `E11000 …` message
+		// is what applications and mongoose match on, and it is rebuilt from the
+		// record id rather than translated from the SurrealDB text.
+		build: (_message, cause) => {
+			const recordId = (cause as AlreadyExistsError).recordId as string;
+			return duplicateKeyError(duplicateIdInfo(recordId), cause);
+		},
 	},
 	{
 		matches: (err) => err instanceof AlreadyExistsError,

@@ -126,8 +126,14 @@ function recordIdToMongoId(rid: RecordId): ObjectId | string | number {
 /**
  * If the string looks like a valid ObjectId (24-char hex), wrap it.
  * Otherwise return as-is.
+ *
+ * Exported because a duplicate-key error names the offending record as a
+ * *string* (`users:6a7b…`) rather than a typed `RecordId`, and the `_id` it
+ * reports back has to be the same value a read of that record would have
+ * produced. Two implementations would eventually disagree, and the caller would
+ * be told their write collided with an id they could not find.
  */
-function stringToMongoId(value: string): ObjectId | string {
+export function stringToMongoId(value: string): ObjectId | string {
 	// Strip "table:" prefix if present (stringified RecordId)
 	const colonIndex = value.indexOf(":");
 	const idStr = colonIndex >= 0 ? value.substring(colonIndex + 1) : value;
