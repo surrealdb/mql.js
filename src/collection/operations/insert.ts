@@ -8,6 +8,7 @@
  */
 
 import type { ObjectId } from "../../object-id.ts";
+import { withTypedDuplicateId } from "../../surreal/error-mapper.ts";
 import { statement } from "../../surreal/sql/statement.ts";
 import type {
 	BulkWriteOptions,
@@ -39,10 +40,16 @@ export async function insertOne<TSchema extends Document>(
 		applyUndefinedPolicy(doc as Document, plan.ignoreUndefined),
 	);
 
-	await ctx.executor.query(
-		statement("CREATE $__rid CONTENT $__doc", plan.timeout),
-		{ __rid: prepared.recordId, __doc: prepared.data },
-	);
+	try {
+		await ctx.executor.query(
+			statement("CREATE $__rid CONTENT $__doc", plan.timeout),
+			{ __rid: prepared.recordId, __doc: prepared.data },
+		);
+	} catch (err) {
+		// A collision reports the record as a string, which loses whether the `_id`
+		// was `42` or `"42"`. The prepared id is the typed original.
+		throw withTypedDuplicateId(err, [prepared.insertedId]);
+	}
 	return makeInsertOneResult(prepared.insertedId);
 }
 
@@ -65,9 +72,13 @@ export async function insertMany<TSchema extends Document>(
 		docsWithId.push({ ...prepared.data, id: prepared.recordId });
 	}
 
-	await ctx.executor.query(
-		statement(`INSERT INTO ${ctx.escapedTable} $__docs`, plan.timeout),
-		{ __docs: docsWithId },
-	);
+	try {
+		await ctx.executor.query(
+			statement(`INSERT INTO ${ctx.escapedTable} $__docs`, plan.timeout),
+			{ __docs: docsWithId },
+		);
+	} catch (err) {
+		throw withTypedDuplicateId(err, insertedIds);
+	}
 	return makeInsertManyResult(insertedIds);
 }
