@@ -16,6 +16,7 @@
  * field list. Exclusion is handled via a post-processing flag.
  */
 
+import { MongoInvalidArgumentError } from "../errors.ts";
 import { escapeFieldPath } from "../surreal/sql/escape.ts";
 import type { Projection } from "../types.ts";
 
@@ -65,15 +66,32 @@ export function translateProjection(
 		return { fields: "", isExclusion: false, excludeFields: [], includeId };
 	}
 
-	// Determine if this is inclusion or exclusion
-	const firstValue = Boolean(otherEntries[0][1]);
-	const isInclusion = firstValue;
+	// Partition the non-`_id` keys by mode.
+	//
+	// This used to pick the mode from `otherEntries[0]` alone and then silently
+	// ignore every key of the opposite mode, which made the result depend on key
+	// *order*: `{ a: 1, b: 0 }` projected `{ a }` while `{ b: 0, a: 1 }` was read
+	// as an exclusion and returned every field except `b` — leaking `a`'s
+	// siblings. MongoDB rejects such a projection outright, and `_id` is the only
+	// key exempt from the rule (`{ a: 1, _id: 0 }` and `{ a: 0, _id: 1 }` are both
+	// legal). Enforcing that removes the order-dependence entirely.
+	const included = otherEntries.filter(([_, v]) => Boolean(v));
+	const excluded = otherEntries.filter(([_, v]) => !v);
 
-	if (isInclusion) {
+	if (included.length > 0 && excluded.length > 0) {
+		// Report against the mode of the first key, as MongoDB's message does.
+		const inclusionFirst = Boolean(otherEntries[0][1]);
+		const offender = inclusionFirst ? excluded[0][0] : included[0][0];
+		throw new MongoInvalidArgumentError(
+			inclusionFirst
+				? `Cannot do exclusion on field ${offender} in inclusion projection`
+				: `Cannot do inclusion on field ${offender} in exclusion projection`,
+		);
+	}
+
+	if (included.length > 0) {
 		// Inclusion: SELECT specific fields
-		const fieldNames = otherEntries
-			.filter(([_, v]) => Boolean(v))
-			.map(([key]) => key);
+		const fieldNames = included.map(([key]) => key);
 		return {
 			// Escaped for SurrealQL; `excludeFields` below stays unescaped
 			// because it is used for in-memory post-processing, not SQL.
@@ -84,12 +102,12 @@ export function translateProjection(
 		};
 	}
 
-	// Exclusion: must be applied as post-processing
-	const excludeFields = otherEntries.filter(([_, v]) => !v).map(([key]) => key);
+	// Exclusion: must be applied as post-processing. `excludeFields` stays
+	// unescaped — `applyProjection` walks it as document keys, not as SQL.
 	return {
 		fields: "",
 		isExclusion: true,
-		excludeFields,
+		excludeFields: excluded.map(([key]) => key),
 		includeId,
 	};
 }

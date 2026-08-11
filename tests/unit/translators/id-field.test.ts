@@ -97,12 +97,16 @@ describe("translateFilter with _id", () => {
 			{ $or: [{ _id: "a" }, { name: "x" }] },
 			options,
 		);
-		expect(clause).toBe("(id = $p0 OR name = $p1)");
+		expect(clause).toBe(
+			"(id = $p0 OR (name = $p1 OR (type::is_array(name) AND name CONTAINS $p1)))",
+		);
 	});
 
 	test("other fields are unaffected", () => {
 		const { clause } = translateFilter({ _id: "a", name: "x" }, options);
-		expect(clause).toBe("id = $p0 AND name = $p1");
+		expect(clause).toBe(
+			"id = $p0 AND (name = $p1 OR (type::is_array(name) AND name CONTAINS $p1))",
+		);
 	});
 
 	test("without a collection the condition is left alone rather than mis-bound", () => {

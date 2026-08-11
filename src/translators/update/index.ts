@@ -26,6 +26,12 @@ export interface TranslateUpdateOptions {
 	startIndex?: number;
 	/** Array filters for positional filtered operators ($[identifier]). */
 	arrayFilters?: Document[];
+	/**
+	 * True when the caller will run the resulting clause as an upsert, so the
+	 * statement may insert. Only `$setOnInsert` depends on it, and MongoDB
+	 * applies that operator solely on the inserting path.
+	 */
+	upsert?: boolean;
 	/** Override the operator registry (advanced). */
 	registry?: UpdateOperatorRegistry;
 }
@@ -50,6 +56,7 @@ export function translateUpdate(
 		bindings,
 		parts,
 		arrayFilters: options?.arrayFilters,
+		upsert: options?.upsert === true,
 		nextParam: () => `p${counter++}`,
 		bind(value) {
 			const name = ctx.nextParam();

@@ -15,6 +15,12 @@ export interface UpdateContext {
 	readonly parts: string[];
 	/** Optional arrayFilters (used by `$[identifier]` positional updates). */
 	readonly arrayFilters: Document[] | undefined;
+	/**
+	 * True when the statement being built can insert, i.e. it is on the upsert
+	 * path. `$setOnInsert` needs this: MongoDB applies it only when the operation
+	 * actually inserts, so on a plain update it must contribute nothing.
+	 */
+	readonly upsert: boolean;
 
 	/** Allocate a new parameter name (`p0`, `p1`, …). */
 	nextParam(): string;

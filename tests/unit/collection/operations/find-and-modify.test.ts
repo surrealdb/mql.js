@@ -108,7 +108,7 @@ describe("findOneAndDelete", () => {
 		const out = await findOneAndDelete<User>(ctx, { name: "Alice" });
 
 		expect(executor.queries[0].sql).toBe(
-			"SELECT id FROM users WHERE name = $p0 LIMIT 1",
+			"SELECT id FROM users WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0)) LIMIT 1",
 		);
 		expect(executor.queries[1].sql).toBe("DELETE $__rid RETURN BEFORE");
 		expect(out).toMatchObject({ name: "Alice" });
