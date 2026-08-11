@@ -16,12 +16,10 @@ interface User extends Document {
 }
 
 describe("findOneAndUpdate", () => {
-	test("default returnDocument=before emits RETURN BEFORE and returns the pre-image", async () => {
+	test("chooses, updates and returns its one record in a single statement", async () => {
 		const { ctx, executor } = makeContext({ collectionName: "users" });
 		const rid = new RecordId("users", "alice");
-		executor
-			.enqueue([{ id: rid }]) // SELECT id LIMIT 1
-			.enqueue([{ id: rid, name: "Alice", age: 30 }]); // UPDATE $__rid RETURN BEFORE
+		executor.enqueue([{ id: rid, name: "Alice", age: 30 }]);
 
 		const out = (await findOneAndUpdate<User>(
 			ctx,
@@ -29,16 +27,23 @@ describe("findOneAndUpdate", () => {
 			{ $inc: { age: 1 } },
 		)) as User;
 
-		expect(executor.queries[1].sql).toBe(
-			"UPDATE $__rid SET age += $p0 RETURN BEFORE",
+		// The lookup that decides *which* document is modified is a subquery of the
+		// `UPDATE`, so no other client can act between the choice and the write —
+		// one statement is one transaction. See `modify-one.ts` for what the same
+		// pair costs when it is split over two round trips.
+		expect(executor.queries.length).toBe(1);
+		expect(executor.queries[0].sql).toBe(
+			"UPDATE (SELECT VALUE id FROM (SELECT id FROM users WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0)) LIMIT 1)) SET age += $p1 RETURN BEFORE",
 		);
+		// `RETURN BEFORE` on the same statement is also what makes the pre-image
+		// available at all: fetching it separately afterwards would read the
+		// document the update had already changed.
 		expect(out.age).toBe(30);
 	});
 
 	test("returnDocument=after emits RETURN AFTER", async () => {
 		const { ctx, executor } = makeContext();
-		const rid = new RecordId("users", "alice");
-		executor.enqueue([{ id: rid }]).enqueue([{ id: rid, age: 31 }]);
+		executor.enqueue([{ id: new RecordId("users", "alice"), age: 31 }]);
 
 		await findOneAndUpdate<User>(
 			ctx,
@@ -47,12 +52,12 @@ describe("findOneAndUpdate", () => {
 			{ returnDocument: "after" },
 		);
 
-		expect(executor.queries[1].sql).toContain("RETURN AFTER");
+		expect(executor.queries[0].sql).toContain("RETURN AFTER");
 	});
 
 	test("returns null when no match (no metadata)", async () => {
 		const { ctx, executor } = makeContext();
-		executor.enqueue([]); // SELECT id empty
+		executor.enqueue([]); // the statement modified nothing
 		expect(
 			await findOneAndUpdate<User>(ctx, { _id: "x" }, { $set: { age: 1 } }),
 		).toBeNull();
@@ -77,8 +82,7 @@ describe("findOneAndUpdate", () => {
 
 	test("includeResultMetadata reports updatedExisting when the document is found", async () => {
 		const { ctx, executor } = makeContext();
-		const rid = new RecordId("users", "a");
-		executor.enqueue([{ id: rid }]).enqueue([{ id: rid, age: 10 }]);
+		executor.enqueue([{ id: new RecordId("users", "a"), age: 10 }]);
 		const r = (await findOneAndUpdate<User>(
 			ctx,
 			{ _id: "a" },
@@ -92,21 +96,19 @@ describe("findOneAndUpdate", () => {
 
 	test("forwards arrayFilters into the SET clause", async () => {
 		const { ctx, executor } = makeContext();
-		const rid = new RecordId("users", "a");
-		executor.enqueue([{ id: rid }]).enqueue([{ id: rid }]);
+		executor.enqueue([{ id: new RecordId("users", "a") }]);
 		await findOneAndUpdate<User>(
 			ctx,
 			{ _id: "a" },
 			{ $set: { "grades.$[g].adjusted": true } },
 			{ arrayFilters: [{ "g.score": { $gte: 90 } }] },
 		);
-		expect(executor.queries[1].sql).toContain("grades[WHERE score >= $p0]");
+		expect(executor.queries[0].sql).toContain("grades[WHERE score >= $p1]");
 	});
 
-	test("sort decides which document is modified, by ordering the id lookup", async () => {
+	test("sort decides which document is modified, by ordering the subquery that names it", async () => {
 		const { ctx, executor } = makeContext({ collectionName: "users" });
-		const rid = new RecordId("users", "a");
-		executor.enqueue([{ id: rid }]).enqueue([{ id: rid }]);
+		executor.enqueue([{ id: new RecordId("users", "a") }]);
 
 		await findOneAndUpdate<User>(
 			ctx,
@@ -117,19 +119,23 @@ describe("findOneAndUpdate", () => {
 			},
 		);
 
+		// `UPDATE` takes neither `ORDER BY` nor `LIMIT`, so the sort belongs to the
+		// subquery that names the target — and stays inside the one statement with
+		// it, rather than deciding a target that a separate write then re-resolves.
 		// The sort's column is selected alongside `id` because SurrealDB rejects an
-		// `ORDER BY` naming an idiom the field list does not carry.
+		// `ORDER BY` naming an idiom the field list does not carry, and the enclosing
+		// `SELECT VALUE id` drops it again.
+		expect(executor.queries.length).toBe(1);
 		expect(executor.queries[0].sql).toBe(
-			"SELECT id, age FROM users ORDER BY age DESC LIMIT 1",
+			"UPDATE (SELECT VALUE id FROM (SELECT id, age FROM users ORDER BY age DESC LIMIT 1)) SET age = $p0 RETURN BEFORE",
 		);
 	});
 
 	test("projection is applied to the returned document", async () => {
 		const { ctx, executor } = makeContext();
-		const rid = new RecordId("users", "a");
-		executor
-			.enqueue([{ id: rid }])
-			.enqueue([{ id: rid, name: "Alice", password: "hunter2" }]);
+		executor.enqueue([
+			{ id: new RecordId("users", "a"), name: "Alice", password: "hunter2" },
+		]);
 
 		const out = (await findOneAndUpdate<User>(
 			ctx,
@@ -204,17 +210,19 @@ describe("findOneAndUpdate", () => {
 });
 
 describe("findOneAndDelete", () => {
-	test("performs SELECT id LIMIT 1 then DELETE $__rid RETURN BEFORE", async () => {
+	test("chooses, deletes and returns its one record in a single statement", async () => {
 		const { ctx, executor } = makeContext();
-		const rid = new RecordId("users", "a");
-		executor.enqueue([{ id: rid }]).enqueue([{ id: rid, name: "Alice" }]);
+		executor.enqueue([{ id: new RecordId("users", "a"), name: "Alice" }]);
 
 		const out = await findOneAndDelete<User>(ctx, { name: "Alice" });
 
+		// One statement, so the document returned is provably the document deleted.
+		// A `SELECT` followed by a `DELETE` could return a document another client
+		// had already removed — and report it as this call's deletion.
+		expect(executor.queries.length).toBe(1);
 		expect(executor.queries[0].sql).toBe(
-			"SELECT id FROM users WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0)) LIMIT 1",
+			"DELETE (SELECT VALUE id FROM (SELECT id FROM users WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0)) LIMIT 1)) RETURN BEFORE",
 		);
-		expect(executor.queries[1].sql).toBe("DELETE $__rid RETURN BEFORE");
 		expect(out).toMatchObject({ name: "Alice" });
 	});
 
@@ -235,12 +243,11 @@ describe("findOneAndDelete", () => {
 		expect(r).toEqual({ lastErrorObject: { n: 0 }, value: null, ok: 1 });
 	});
 
-	test("sort and projection reach the lookup and the returned document", async () => {
+	test("sort orders the subquery, and the projection shapes what comes back", async () => {
 		const { ctx, executor } = makeContext({ collectionName: "users" });
-		const rid = new RecordId("users", "a");
-		executor
-			.enqueue([{ id: rid }])
-			.enqueue([{ id: rid, name: "Alice", password: "x" }]);
+		executor.enqueue([
+			{ id: new RecordId("users", "a"), name: "Alice", password: "x" },
+		]);
 
 		const out = await findOneAndDelete<User>(
 			ctx,
@@ -251,8 +258,12 @@ describe("findOneAndDelete", () => {
 			},
 		);
 
+		// The sort decides which document is deleted, so it has to be inside the
+		// statement that deletes it; the projection shapes the pre-image the same
+		// statement returned, since `RETURN BEFORE` hands back the whole record.
+		expect(executor.queries.length).toBe(1);
 		expect(executor.queries[0].sql).toBe(
-			"SELECT id, age FROM users ORDER BY age ASC LIMIT 1",
+			"DELETE (SELECT VALUE id FROM (SELECT id, age FROM users ORDER BY age ASC LIMIT 1)) RETURN BEFORE",
 		);
 		expect(out).toEqual({ _id: "a", name: "Alice" } as unknown as User);
 	});
@@ -268,7 +279,7 @@ describe("findOneAndReplace", () => {
 
 	test("returns null when no match", async () => {
 		const { ctx, executor } = makeContext();
-		executor.enqueue([]); // SELECT id LIMIT 1
+		executor.enqueue([]); // the statement replaced nothing
 		const out = await findOneAndReplace<User>(ctx, { name: "ghost" }, {
 			name: "x",
 			age: 1,
@@ -278,10 +289,9 @@ describe("findOneAndReplace", () => {
 
 	test("default returnDocument=before returns the pre-image", async () => {
 		const { ctx, executor } = makeContext();
-		const rid = new RecordId("users", "a");
-		executor
-			.enqueue([{ id: rid }]) // SELECT id LIMIT 1
-			.enqueue([{ id: rid, name: "Old", age: 10 }]); // UPDATE … RETURN BEFORE
+		executor.enqueue([
+			{ id: new RecordId("users", "a"), name: "Old", age: 10 },
+		]);
 
 		const out = (await findOneAndReplace<User>(ctx, { name: "Old" }, {
 			name: "New",
@@ -293,8 +303,7 @@ describe("findOneAndReplace", () => {
 
 	test("returnDocument=after returns the post-image", async () => {
 		const { ctx, executor } = makeContext();
-		const rid = new RecordId("users", "a");
-		executor.enqueue([{ id: rid }]).enqueue([{ id: rid, name: "New", age: 1 }]);
+		executor.enqueue([{ id: new RecordId("users", "a"), name: "New", age: 1 }]);
 
 		const out = (await findOneAndReplace<User>(
 			ctx,
@@ -306,21 +315,25 @@ describe("findOneAndReplace", () => {
 		expect(out.name).toBe("New");
 	});
 
-	test("UPDATE statement uses CONTENT $… and binds the rid", async () => {
+	test("chooses and replaces its one record in a single CONTENT statement", async () => {
 		const { ctx, executor } = makeContext();
-		const rid = new RecordId("users", "a");
-		executor.enqueue([{ id: rid }]).enqueue([{ id: rid, name: "New" }]);
+		executor.enqueue([{ id: new RecordId("users", "a"), name: "New" }]);
 
 		await findOneAndReplace<User>(ctx, { name: "Old" }, {
 			name: "New",
 			age: 1,
 		} as User);
 
-		expect(executor.queries[1].sql).toBe(
-			"UPDATE $__rid CONTENT $p0 RETURN BEFORE",
+		// `CONTENT` is SurrealQL's whole-document write, which is what MongoDB's
+		// replace means — and it applies to the record the subquery named, in the
+		// same statement, so the document replaced is the document that matched.
+		expect(executor.queries.length).toBe(1);
+		expect(executor.queries[0].sql).toBe(
+			"UPDATE (SELECT VALUE id FROM (SELECT id FROM users WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0)) LIMIT 1)) CONTENT $p1 RETURN BEFORE",
 		);
-		expect(executor.queries[1].bindings?.__rid).toBe(rid);
-		expect(executor.queries[1].bindings?.p0).toEqual({
+		// The replacement travels as a bound value, so a field named like SurrealQL
+		// syntax cannot become syntax.
+		expect(executor.queries[0].bindings?.p1).toEqual({
 			name: "New",
 			age: 1,
 		});

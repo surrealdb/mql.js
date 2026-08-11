@@ -180,7 +180,12 @@ async function defineIndex(
 
 	if (definition.kind === "fulltext") {
 		const ensureAnalyzer = ctx.dialect.ensureBlankAnalyzerSql();
-		if (ensureAnalyzer) await ctx.executor.query(ensureAnalyzer);
+		// On the connection rather than the caller's transaction: SurrealDB does not
+		// show a `DEFINE INDEX` an analyzer defined earlier in the same transaction,
+		// so the index below would fail with "the analyzer does not exist" for every
+		// caller whose first text index is created inside one. See
+		// `OperationContext.connection` for why committing it separately is sound.
+		if (ensureAnalyzer) await ctx.connection.query(ensureAnalyzer);
 	}
 
 	const fullTextClause = `${ctx.dialect.fullTextKeyword} ANALYZER blank BM25 HIGHLIGHTS`;

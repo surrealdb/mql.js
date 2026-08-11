@@ -64,6 +64,8 @@ export const MongoErrorCode = {
 	MaxTimeMSExpired: 50,
 	/** The command is not recognised by the server. */
 	CommandNotFound: 59,
+	/** A concurrent transaction wrote the same data first. */
+	WriteConflict: 112,
 	/** The deployment is not a replica set, so the requested guarantee is unavailable. */
 	NotAReplicaSet: 123,
 	/** A unique index rejected the write. */
@@ -76,6 +78,36 @@ export const MongoErrorCode = {
 
 export type MongoErrorCodeValue =
 	(typeof MongoErrorCode)[keyof typeof MongoErrorCode];
+
+/**
+ * Labels a `MongoError` can carry, as `MongoErrorLabel` in the official driver.
+ *
+ * A label says what a caller may *do* about a failure, which is why the
+ * transaction retry loop keys off labels rather than classes. Only the two
+ * transaction labels are produced by this driver — the rest describe replica-set
+ * and change-stream mechanics that have no referent here — but the whole set is
+ * declared so `hasErrorLabel(MongoErrorLabel.RetryableWriteError)` still
+ * type-checks against code written for `mongodb`.
+ */
+export const MongoErrorLabel = {
+	/** The write may be retried as-is. */
+	RetryableWriteError: "RetryableWriteError",
+	/** The whole transaction may be retried from the beginning. */
+	TransientTransactionError: "TransientTransactionError",
+	/** The commit may or may not have been applied. */
+	UnknownTransactionCommitResult: "UnknownTransactionCommitResult",
+	/** A change stream may be resumed after this failure. */
+	ResumableChangeStreamError: "ResumableChangeStreamError",
+	/** The failure happened during the connection handshake. */
+	HandshakeError: "HandshakeError",
+	/** The connection pool should be cleared. */
+	ResetPool: "ResetPool",
+	/** No write was performed, so a retry cannot duplicate one. */
+	NoWritesPerformed: "NoWritesPerformed",
+} as const;
+
+export type MongoErrorLabel =
+	(typeof MongoErrorLabel)[keyof typeof MongoErrorLabel];
 
 /** Human-readable `codeName` for each numeric code, as MongoDB reports it. */
 const CODE_NAMES: Record<number, string> = {
@@ -91,6 +123,7 @@ const CODE_NAMES: Record<number, string> = {
 	72: "InvalidOptions",
 	85: "IndexOptionsConflict",
 	86: "IndexKeySpecsConflict",
+	112: "WriteConflict",
 	11000: "DuplicateKey",
 	121: "DocumentValidationFailure",
 	123: "NotAReplicaSet",

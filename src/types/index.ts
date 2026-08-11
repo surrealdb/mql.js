@@ -48,6 +48,7 @@ export type {
 	IndexInformationOptions,
 	IndexKey,
 	IndexSpecification,
+	IndexSpecificationOptions,
 	InsertOneOptions,
 	ListCollectionsOptions,
 	ListIndexesOptions,

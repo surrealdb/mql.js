@@ -30,6 +30,7 @@ import {
 	MissingNamespaceDatabaseError,
 	NotAllowedError,
 	NotFoundError,
+	QueryError,
 	ReconnectExhaustionError,
 	ServerError,
 	ThrownError,
@@ -43,6 +44,7 @@ import {
 	MongoCompatibilityError,
 	MongoError,
 	MongoErrorCode,
+	MongoErrorLabel,
 	MongoNetworkError,
 	MongoServerError,
 	type WriteError,
@@ -105,6 +107,30 @@ const INDEX_LIFECYCLE_PATTERNS: ReadonlyArray<{
  */
 const QUERY_TIMEOUT_PATTERN =
 	/^The query was not executed because it exceeded the timeout/;
+
+/**
+ * A concurrent transaction having written the same data first.
+ *
+ * SurrealDB's transactions are optimistic: both writers' statements succeed, and
+ * whichever commits second is rejected. 3.2 and later report it as a
+ * `QueryError` carrying `details.kind === "TransactionConflict"`, so the class is
+ * asked first; 3.0 and 3.1 report the same event as a bare `InternalError` whose
+ * message is the only evidence, which is what the pattern is for. Both wordings
+ * were verified against live 3.0.5 and 3.2.3 servers.
+ */
+const TRANSACTION_CONFLICT_PATTERN = /\bTransaction conflict: /;
+
+/** True when `err` is a write/write conflict the caller may retry. */
+function isTransactionConflict(err: unknown, message: string): boolean {
+	if (err instanceof QueryError && err.isTransactionConflict) return true;
+	return TRANSACTION_CONFLICT_PATTERN.test(message);
+}
+
+/**
+ * The transaction handle naming a transaction the server no longer holds — the
+ * SDK's wording when a statement, commit or cancel reaches a spent handle.
+ */
+const TRANSACTION_GONE_PATTERN = /^Transaction not found$/;
 
 /** Assertion / type-coercion rejections, which MongoDB reports as code 121. */
 const VALIDATION_PATTERNS = [
@@ -397,6 +423,30 @@ export function mapQueryError(err: unknown): MongoError {
 	// applications branch on (`err.code === 11000`).
 	const duplicate = parseDuplicateKeyError(message);
 	if (duplicate) return duplicateKeyError(duplicate, err);
+
+	// A write/write conflict is the one server failure a caller can do something
+	// about, so it carries the code MongoDB reports for it and the label the
+	// transaction retry loop reads. The label is attached whether or not the
+	// statement ran inside an explicit transaction, because a lone SurrealQL
+	// statement is itself a transaction: re-running it is exactly as safe.
+	if (isTransactionConflict(err, message)) {
+		const conflict = new MongoServerError(
+			"WriteConflict error: this operation conflicted with another operation. Please retry your operation or multi-document transaction.",
+			{ code: MongoErrorCode.WriteConflict, cause: err },
+		);
+		conflict.addErrorLabel(MongoErrorLabel.TransientTransactionError);
+		return conflict;
+	}
+
+	// A statement, commit or cancel that reached a handle the server has already
+	// released. MongoDB reports the same mistake as `NoSuchTransaction`, which is
+	// what a caller branches on; the SDK's wording stays reachable as the cause.
+	if (TRANSACTION_GONE_PATTERN.test(message)) {
+		return new MongoServerError("Transaction is not in progress", {
+			code: MongoErrorCode.NoSuchTransaction,
+			cause: err,
+		});
+	}
 
 	// A `TIMEOUT` clause firing is the caller's own `maxTimeMS` expiring, so it
 	// carries MongoDB's `MaxTimeMSExpired` code and message rather than being

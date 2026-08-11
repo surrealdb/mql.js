@@ -31,8 +31,43 @@ export interface ClientDefaults {
 }
 
 export interface OperationContext {
-	/** Driver port used for every read/write. */
+	/**
+	 * Driver port used for every read/write.
+	 *
+	 * Resolved per operation from the caller's `session`, so it is either the
+	 * client's connection or a transaction opened on it. Nothing below this point
+	 * knows which — routing the statement *is* what honouring a session means.
+	 */
 	readonly executor: QueryExecutor;
+	/**
+	 * True when `executor` is a transaction the caller opened.
+	 *
+	 * The one thing an operation has to treat differently, and only because of who
+	 * resolves a write conflict: outside a transaction this driver re-issues the
+	 * statement, while inside one the conflict belongs to the caller's transaction
+	 * and only re-running the whole of it can clear the conflict.
+	 */
+	readonly inTransaction: boolean;
+	/**
+	 * The client's connection, for the one statement that must not join the
+	 * caller's transaction.
+	 *
+	 * Only the full-text analyzer needs it. SurrealDB does not show a `DEFINE
+	 * INDEX` an analyzer defined earlier in the same transaction, so a text index
+	 * created inside one could never name the analyzer it requires. That
+	 * definition is a database-level `IF NOT EXISTS` prerequisite shared by every
+	 * text index rather than any caller's data, so establishing it immediately
+	 * costs nothing if the transaction that asked for it rolls back — while the
+	 * index itself stays inside the transaction and is rolled back with it.
+	 *
+	 * One case remains unserved: a `$text` search issued inside the very
+	 * transaction that defined the index, whose snapshot predates the analyzer and
+	 * so cannot read it. The `DEFINE INDEX` can, and the search works from the
+	 * commit onwards.
+	 *
+	 * Equal to `executor` outside a transaction, where the distinction is moot.
+	 */
+	readonly connection: QueryExecutor;
 	/** The user-facing collection (table) name. */
 	readonly collectionName: string;
 	/** Pre-escaped table identifier ready for SurrealQL splicing. */

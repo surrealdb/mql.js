@@ -7,7 +7,9 @@
  * Every method that takes options runs them through the same gate the
  * collection operations use, so an option this driver cannot honour is refused
  * here too rather than being dropped one layer above the code that would have
- * applied it.
+ * applied it — and a `session` reaches the statement rather than merely being
+ * validated, so dropping a database inside a transaction is part of that
+ * transaction.
  */
 
 import type { MongoClient } from "../client/mongo-client.ts";
@@ -17,6 +19,9 @@ import {
 	assertSupportedCollectionOptions,
 	assertSupportedOptions,
 } from "../collection/operation-options.ts";
+import type { ClientSession } from "../session/client-session.ts";
+import { sessionExecutor } from "../session/client-session.ts";
+import type { QueryExecutor } from "../surreal/query-executor.ts";
 import type {
 	CollectionInfo,
 	CollectionOptions,
@@ -50,6 +55,10 @@ export class Db {
 	 * Returns a `Collection` instance for the given name.
 	 * Does not create the underlying SurrealDB table – that happens
 	 * implicitly on first write, matching MongoDB behaviour.
+	 *
+	 * A `session` here is validated and then dropped, because there is no statement
+	 * to route: MongoDB's `CollectionOptions` carries one only through the shared
+	 * option shape, and every operation on the returned collection takes its own.
 	 */
 	collection<TSchema extends Document = Document>(
 		name: string,
@@ -72,7 +81,7 @@ export class Db {
 		options?: ListCollectionsOptions,
 	): Promise<CollectionInfo[]> {
 		assertSupportedOptions(options);
-		return listCollections(this._client._executor, filter);
+		return listCollections(await this.executor(options), filter);
 	}
 
 	/**
@@ -84,7 +93,7 @@ export class Db {
 		options?: CreateCollectionOptions,
 	): Promise<Collection<TSchema>> {
 		assertSupportedCollectionOptions(options);
-		await createCollectionTable(this._client._executor, name);
+		await createCollectionTable(await this.executor(options), name);
 		return createCollection<TSchema>(this, name);
 	}
 
@@ -94,13 +103,27 @@ export class Db {
 		options?: DropCollectionOptions,
 	): Promise<boolean> {
 		assertSupportedOptions(options);
-		return dropCollectionTable(this._client._executor, name);
+		return dropCollectionTable(await this.executor(options), name);
 	}
 
 	/** Drops the entire database. */
 	async dropDatabase(options?: DropDatabaseOptions): Promise<boolean> {
 		assertSupportedOptions(options);
-		return dropDatabase(this._client._executor, this.databaseName);
+		return dropDatabase(await this.executor(options), this.databaseName);
+	}
+
+	/**
+	 * The executor this call's statements run through: the caller's transaction
+	 * when they passed a session in one, the client's connection otherwise.
+	 */
+	private executor(
+		options: { readonly session?: ClientSession } | undefined,
+	): Promise<QueryExecutor> {
+		return sessionExecutor(
+			options?.session,
+			this._client,
+			this._client._executor,
+		);
 	}
 }
 

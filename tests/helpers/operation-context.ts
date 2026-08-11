@@ -21,6 +21,13 @@ export interface FakeContextOptions {
 	indexes?: IndexRegistry;
 	executor?: FakeQueryExecutor;
 	defaults?: ClientDefaults;
+	/** Treat the executor as a caller-opened transaction. */
+	inTransaction?: boolean;
+	/**
+	 * The connection behind that transaction, when a test needs to see which of
+	 * the two a statement reached. Defaults to the executor itself.
+	 */
+	connection?: FakeQueryExecutor;
 }
 
 export interface FakeContextResult {
@@ -39,6 +46,8 @@ export function makeContext(
 
 	const ctx: OperationContext = {
 		executor,
+		inTransaction: options.inTransaction ?? false,
+		connection: options.connection ?? executor,
 		collectionName,
 		escapedTable: escapeIdentifier(collectionName),
 		dialect,

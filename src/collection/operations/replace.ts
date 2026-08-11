@@ -1,8 +1,10 @@
 /**
  * `replaceOne` operation.
  *
- * SurrealQL has no equivalent of MongoDB's "replace document" mode on
- * `UPDATE`, so we look up the matching id first and `UPDATE $rid CONTENT`.
+ * SurrealQL has no equivalent of MongoDB's "replace document" mode on `UPDATE`,
+ * so the matching record is named in a subquery and given new `CONTENT` — one
+ * statement, so nothing can change the document between the match and the
+ * replacement (see `modify-one.ts`).
  */
 
 import { MongoInvalidArgumentError } from "../../errors.ts";
@@ -23,7 +25,7 @@ import {
 	type OperationContext,
 } from "../operation-context.ts";
 import { resolveOperationPlan } from "../operation-options.ts";
-import { selectOneId } from "./find.ts";
+import { oneRecordTarget, writeOneRecord } from "./modify-one.ts";
 import { insertUpsertedReplacement } from "./upsert.ts";
 
 export async function replaceOne<TSchema extends Document>(
@@ -53,33 +55,25 @@ export async function replaceOne<TSchema extends Document>(
 		);
 	}
 
-	const rid = await selectOneId(
-		ctx,
-		whereClause,
-		plan,
-		filterBindings,
-		options?.sort,
-	);
-
-	if (rid === undefined) {
-		if (options?.upsert) {
-			const inserted = await insertUpsertedReplacement(
-				ctx,
-				criteria,
-				document,
-				plan,
-			);
-			return makeUpdateResult([], inserted.insertedId);
-		}
-		return makeUpdateResult([]);
-	}
-
 	const { clause: contentClause, bindings: contentBindings } =
-		translateReplacement(document, 0);
+		translateReplacement(document, Object.keys(filterBindings).length);
 
-	const rows = await ctx.executor.query<Record<string, unknown>[]>(
-		statement(`UPDATE $__rid ${contentClause}`, plan.timeout),
-		{ ...contentBindings, __rid: rid },
+	const rows = await writeOneRecord(
+		ctx,
+		statement(
+			`UPDATE ${oneRecordTarget(ctx, whereClause, plan, options?.sort)} ${contentClause}`,
+			plan.timeout,
+		),
+		{ ...filterBindings, ...contentBindings },
 	);
-	return makeUpdateResult(rows || []);
+
+	if (rows.length > 0 || !options?.upsert) return makeUpdateResult(rows);
+
+	const inserted = await insertUpsertedReplacement(
+		ctx,
+		criteria,
+		document,
+		plan,
+	);
+	return makeUpdateResult([], inserted.insertedId);
 }

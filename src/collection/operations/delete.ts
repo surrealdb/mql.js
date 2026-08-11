@@ -1,5 +1,9 @@
 /**
  * `deleteOne` / `deleteMany` operations.
+ *
+ * `deleteMany` is a single `DELETE … WHERE`; `deleteOne` names its one record in
+ * a subquery, since SurrealQL takes no `LIMIT` on a delete — see
+ * `modify-one.ts` for why that is a subquery rather than a prior round trip.
  */
 
 import { statement } from "../../surreal/sql/statement.ts";
@@ -17,7 +21,7 @@ import {
 	type OperationContext,
 } from "../operation-context.ts";
 import { resolveOperationPlan } from "../operation-options.ts";
-import { selectOneId } from "./find.ts";
+import { oneRecordTarget, writeOneRecord } from "./modify-one.ts";
 
 export async function deleteOne<TSchema extends Document>(
 	ctx: OperationContext,
@@ -31,17 +35,16 @@ export async function deleteOne<TSchema extends Document>(
 		await filterOptionsFor(ctx, filter as Document),
 	);
 
-	const rid = await selectOneId(ctx, clause, plan, bindings);
-
-	if (rid === undefined) {
-		return makeDeleteResult(0);
-	}
-
-	const rows = await ctx.executor.query<Record<string, unknown>[]>(
-		statement("DELETE $__rid RETURN BEFORE", plan.timeout),
-		{ __rid: rid },
+	const rows = await writeOneRecord(
+		ctx,
+		statement(
+			`DELETE ${oneRecordTarget(ctx, clause, plan)}`,
+			"RETURN BEFORE",
+			plan.timeout,
+		),
+		bindings,
 	);
-	return makeDeleteResult(rows ? rows.length : 0);
+	return makeDeleteResult(rows.length);
 }
 
 export async function deleteMany<TSchema extends Document>(

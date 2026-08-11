@@ -7,29 +7,35 @@ import {
 import { makeContext } from "../../../helpers/operation-context.ts";
 
 describe("deleteOne", () => {
-	test("performs SELECT id LIMIT 1 then DELETE $__rid", async () => {
+	test("chooses and deletes its one record in a single statement", async () => {
 		const { ctx, executor } = makeContext();
-		const rid = new RecordId("users", "alice");
-		executor.enqueue([{ id: rid }]).enqueue([{ id: rid }]);
+		executor.enqueue([{ id: new RecordId("users", "alice") }]);
 
 		const result = await deleteOne(ctx, { name: "Alice" });
 
+		// The `LIMIT 1` lookup is a subquery of the `DELETE`, not a query of its own,
+		// and that is the operation's atomicity: split across two round trips,
+		// another client can change the document out of the filter in between and
+		// the delete lands anyway — 498 of 500 four-way races resolved wrongly that
+		// way, against 28 of 1000 as one statement (see `modify-one.ts`).
+		expect(executor.queries.length).toBe(1);
 		expect(executor.queries[0].sql).toBe(
-			"SELECT id FROM users WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0)) LIMIT 1",
+			"DELETE (SELECT VALUE id FROM (SELECT id FROM users WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0)) LIMIT 1)) RETURN BEFORE",
 		);
-		expect(executor.queries[1].sql).toBe("DELETE $__rid RETURN BEFORE");
-		expect(executor.queries[1].bindings).toEqual({ __rid: rid });
+		expect(executor.queries[0].bindings).toEqual({ p0: "Alice" });
+		// `RETURN BEFORE` is what makes the reply countable: one pre-image per
+		// record the statement removed.
 		expect(result.deletedCount).toBe(1);
 	});
 
 	test("returns deletedCount=0 when no document matches", async () => {
 		const { ctx, executor } = makeContext();
-		executor.enqueue([]); // empty SELECT id
+		executor.enqueue([]); // the statement deleted nothing
 
 		const result = await deleteOne(ctx, { name: "ghost" });
 
 		expect(result.deletedCount).toBe(0);
-		expect(executor.queries.length).toBe(1); // no DELETE
+		expect(executor.queries.length).toBe(1);
 	});
 });
 

@@ -12,6 +12,7 @@ import type { FindCursorState, FindRunner } from "../cursor/find-cursor.ts";
 import { FindCursor } from "../cursor/find-cursor.ts";
 import { ListIndexesCursor } from "../cursor/list-indexes-cursor.ts";
 import type { Db } from "../db/db.ts";
+import { sessionExecutor } from "../session/client-session.ts";
 import { escapeIdentifier } from "../surreal/sql/escape.ts";
 import {
 	resolveDialect,
@@ -51,6 +52,7 @@ import type {
 } from "../types.ts";
 import { IndexRegistry } from "./index-registry.ts";
 import type { OperationContext } from "./operation-context.ts";
+import type { AnyOperationOptions } from "./operation-options.ts";
 import {
 	countDocuments as countDocumentsOp,
 	estimatedDocumentCount as estimatedDocumentCountOp,
@@ -113,16 +115,42 @@ export class Collection<TSchema extends Document = Document> {
 		return [...this._indexRegistry.textFields];
 	}
 
-	/** Build the per-operation context once per call. */
-	private context(): OperationContext {
-		const dialect = this.resolveDialect();
+	/**
+	 * Build the per-operation context once per call.
+	 *
+	 * Asynchronous because of `session`: the executor an operation runs through is
+	 * whatever that session says, and for a session in a transaction the first such
+	 * question is what opens the transaction on the server. Resolving it here — per
+	 * call, from the caller's own options — is the whole of honouring a session, and
+	 * is why no operation module mentions one.
+	 */
+	private async context(
+		options?: AnyOperationOptions,
+	): Promise<OperationContext> {
+		const client = this._db._client;
+		const executor = await sessionExecutor(
+			options?.session,
+			client,
+			client._executor,
+		);
+		const inTransaction = executor !== client._executor;
 		return {
-			executor: this._db._client._executor,
+			executor,
+			inTransaction,
+			connection: client._executor,
 			collectionName: this.collectionName,
 			escapedTable: escapeIdentifier(this.collectionName),
-			dialect,
-			indexes: this._indexRegistry,
-			defaults: this._db._client.defaults,
+			// Read after the executor, which for a session has just brought the
+			// connection up: the dialect is chosen from the server's version.
+			dialect: this.resolveDialect(),
+			// A caller's transaction gets a throwaway registry. The index list it
+			// would cache is provisional — an index its `createIndex` defined may
+			// still be rolled back, and one its `dropIndex` removed may still come
+			// back — so writing it into the collection's own cache would leave a
+			// later `$text` expanding to fields that are not indexed, or refusing to
+			// expand to fields that are.
+			indexes: inTransaction ? new IndexRegistry() : this._indexRegistry,
+			defaults: client.defaults,
 		};
 	}
 
@@ -134,18 +162,18 @@ export class Collection<TSchema extends Document = Document> {
 	// INSERT
 	// -----------------------------------------------------------------------
 
-	insertOne(
+	async insertOne(
 		doc: OptionalId<TSchema>,
 		options?: InsertOneOptions,
 	): Promise<InsertOneResult> {
-		return insertOneOp(this.context(), doc, options);
+		return insertOneOp(await this.context(options), doc, options);
 	}
 
-	insertMany(
+	async insertMany(
 		docs: OptionalId<TSchema>[],
 		options?: BulkWriteOptions,
 	): Promise<InsertManyResult> {
-		return insertManyOp(this.context(), docs, options);
+		return insertManyOp(await this.context(options), docs, options);
 	}
 
 	// -----------------------------------------------------------------------
@@ -153,13 +181,17 @@ export class Collection<TSchema extends Document = Document> {
 	// -----------------------------------------------------------------------
 
 	find(filter?: Filter<TSchema>, options?: FindOptions): FindCursor<TSchema> {
-		const ctx = this.context();
 		// The cursor owns `sort`/`limit`/`skip`/`projection`, since its chaining
 		// methods can still change them; everything else the caller passed is
 		// captured here and reaches the query untouched.
-		const runner: FindRunner<TSchema> = (state: FindCursorState) =>
+		//
+		// The context is resolved inside the runner rather than here, because
+		// `find()` hands back a cursor without awaiting anything: a session's
+		// transaction is opened by the query, not by building the cursor — which is
+		// also what lets a rewound cursor re-read the transaction's current view.
+		const runner: FindRunner<TSchema> = async (state: FindCursorState) =>
 			executeFindOp<TSchema>(
-				ctx,
+				await this.context(options),
 				state.filter,
 				{
 					sort: state.sort,
@@ -178,112 +210,125 @@ export class Collection<TSchema extends Document = Document> {
 		);
 	}
 
-	findOne(
+	async findOne(
 		filter?: Filter<TSchema>,
 		options?: FindOptions,
 	): Promise<TSchema | null> {
-		return findOneOp<TSchema>(this.context(), filter, options);
+		return findOneOp<TSchema>(await this.context(options), filter, options);
 	}
 
 	// -----------------------------------------------------------------------
 	// UPDATE
 	// -----------------------------------------------------------------------
 
-	updateOne(
+	async updateOne(
 		filter: Filter<TSchema>,
 		update: UpdateFilter<TSchema>,
 		options?: UpdateOptions,
 	): Promise<UpdateResult> {
-		return updateOneOp(this.context(), filter, update, options);
+		return updateOneOp(await this.context(options), filter, update, options);
 	}
 
-	updateMany(
+	async updateMany(
 		filter: Filter<TSchema>,
 		update: UpdateFilter<TSchema>,
 		options?: UpdateOptions,
 	): Promise<UpdateResult> {
-		return updateManyOp(this.context(), filter, update, options);
+		return updateManyOp(await this.context(options), filter, update, options);
 	}
 
 	// -----------------------------------------------------------------------
 	// REPLACE
 	// -----------------------------------------------------------------------
 
-	replaceOne(
+	async replaceOne(
 		filter: Filter<TSchema>,
 		replacement: WithoutId<TSchema>,
 		options?: ReplaceOptions,
 	): Promise<UpdateResult> {
-		return replaceOneOp(this.context(), filter, replacement, options);
+		return replaceOneOp(
+			await this.context(options),
+			filter,
+			replacement,
+			options,
+		);
 	}
 
 	// -----------------------------------------------------------------------
 	// DELETE
 	// -----------------------------------------------------------------------
 
-	deleteOne(
+	async deleteOne(
 		filter: Filter<TSchema>,
 		options?: DeleteOptions,
 	): Promise<DeleteResult> {
-		return deleteOneOp(this.context(), filter, options);
+		return deleteOneOp(await this.context(options), filter, options);
 	}
 
-	deleteMany(
+	async deleteMany(
 		filter?: Filter<TSchema>,
 		options?: DeleteOptions,
 	): Promise<DeleteResult> {
-		return deleteManyOp(this.context(), filter, options);
+		return deleteManyOp(await this.context(options), filter, options);
 	}
 
 	// -----------------------------------------------------------------------
 	// COUNT / DISTINCT
 	// -----------------------------------------------------------------------
 
-	countDocuments(
+	async countDocuments(
 		filter?: Filter<TSchema>,
 		options?: CountDocumentsOptions,
 	): Promise<number> {
-		return countDocumentsOp(this.context(), filter, options);
+		return countDocumentsOp(await this.context(options), filter, options);
 	}
 
-	estimatedDocumentCount(
+	async estimatedDocumentCount(
 		options?: EstimatedDocumentCountOptions,
 	): Promise<number> {
-		return estimatedDocumentCountOp(this.context(), options);
+		return estimatedDocumentCountOp(await this.context(options), options);
 	}
 
-	distinct<T = unknown>(
+	async distinct<T = unknown>(
 		key: string,
 		filter?: Filter<TSchema>,
 		options?: DistinctOptions,
 	): Promise<T[]> {
-		return distinctOp<T, TSchema>(this.context(), key, filter, options);
+		return distinctOp<T, TSchema>(
+			await this.context(options),
+			key,
+			filter,
+			options,
+		);
 	}
 
 	// -----------------------------------------------------------------------
 	// INDEXES
 	// -----------------------------------------------------------------------
 
-	createIndex(
+	async createIndex(
 		spec: IndexSpecification,
 		options?: CreateIndexesOptions,
 	): Promise<string> {
-		return createIndexOp(this.context(), spec, options);
+		return createIndexOp(await this.context(options), spec, options);
 	}
 
-	createIndexes(
+	async createIndexes(
 		specs: IndexDescription[],
 		options?: CreateIndexesOptions,
 	): Promise<string[]> {
-		return createIndexesOp(this.context(), specs, options);
+		return createIndexesOp(await this.context(options), specs, options);
 	}
 
-	dropIndex(name: string, options?: DropIndexesOptions): Promise<Document> {
-		return dropIndexOp(this.context(), name, options);
+	async dropIndex(
+		name: string,
+		options?: DropIndexesOptions,
+	): Promise<Document> {
+		return dropIndexOp(await this.context(options), name, options);
 	}
 
-	dropIndexes(options?: DropIndexesOptions): Promise<boolean> {
-		return dropIndexesOp(this.context(), options);
+	async dropIndexes(options?: DropIndexesOptions): Promise<boolean> {
+		return dropIndexesOp(await this.context(options), options);
 	}
 
 	/**
@@ -293,11 +338,13 @@ export class Collection<TSchema extends Document = Document> {
 	 * consumers write against — `await col.listIndexes().toArray()`.
 	 */
 	listIndexes(options?: ListIndexesOptions): ListIndexesCursor {
-		const ctx = this.context();
-		// The gate runs inside the runner rather than here, so an option this driver
-		// refuses rejects the iteration the way MongoDB's cursor reports a bad
-		// option: `listIndexes()` itself only ever hands back a cursor.
-		return new ListIndexesCursor(() => listIndexesOp(ctx, options));
+		// The gate — and the session — are resolved inside the runner rather than
+		// here, so an option this driver refuses rejects the iteration the way
+		// MongoDB's cursor reports a bad option: `listIndexes()` itself only ever
+		// hands back a cursor.
+		return new ListIndexesCursor(async () =>
+			listIndexesOp(await this.context(options), options),
+		);
 	}
 
 	/**
@@ -318,17 +365,21 @@ export class Collection<TSchema extends Document = Document> {
 		options: IndexInformationOptions,
 	): Promise<IndexDescriptionCompact | IndexDescriptionInfo[]>;
 	indexes(options?: ListIndexesOptions): Promise<IndexDescriptionInfo[]>;
-	indexes(
+	async indexes(
 		options?: IndexInformationOptions,
 	): Promise<IndexDescriptionCompact | IndexDescriptionInfo[]> {
-		return indexInformationOp(this.context(), options?.full ?? true, options);
+		return indexInformationOp(
+			await this.context(options),
+			options?.full ?? true,
+			options,
+		);
 	}
 
-	indexExists(
+	async indexExists(
 		indexes: string | string[],
 		options?: ListIndexesOptions,
 	): Promise<boolean> {
-		return indexExistsOp(this.context(), indexes, options);
+		return indexExistsOp(await this.context(options), indexes, options);
 	}
 
 	indexInformation(
@@ -340,10 +391,14 @@ export class Collection<TSchema extends Document = Document> {
 	indexInformation(
 		options?: IndexInformationOptions,
 	): Promise<IndexDescriptionCompact | IndexDescriptionInfo[]>;
-	indexInformation(
+	async indexInformation(
 		options?: IndexInformationOptions,
 	): Promise<IndexDescriptionCompact | IndexDescriptionInfo[]> {
-		return indexInformationOp(this.context(), options?.full, options);
+		return indexInformationOp(
+			await this.context(options),
+			options?.full,
+			options,
+		);
 	}
 
 	// -----------------------------------------------------------------------
@@ -360,12 +415,17 @@ export class Collection<TSchema extends Document = Document> {
 		update: UpdateFilter<TSchema>,
 		options: FindOneAndUpdateOptions & { includeResultMetadata: true },
 	): Promise<ModifyResult<TSchema>>;
-	findOneAndUpdate(
+	async findOneAndUpdate(
 		filter: Filter<TSchema>,
 		update: UpdateFilter<TSchema>,
 		options?: FindOneAndUpdateOptions,
 	): Promise<TSchema | ModifyResult<TSchema> | null> {
-		return findOneAndUpdateOp(this.context(), filter, update, options);
+		return findOneAndUpdateOp(
+			await this.context(options),
+			filter,
+			update,
+			options,
+		);
 	}
 
 	findOneAndDelete(
@@ -376,11 +436,11 @@ export class Collection<TSchema extends Document = Document> {
 		filter: Filter<TSchema>,
 		options: FindOneAndDeleteOptions & { includeResultMetadata: true },
 	): Promise<ModifyResult<TSchema>>;
-	findOneAndDelete(
+	async findOneAndDelete(
 		filter: Filter<TSchema>,
 		options?: FindOneAndDeleteOptions,
 	): Promise<TSchema | ModifyResult<TSchema> | null> {
-		return findOneAndDeleteOp(this.context(), filter, options);
+		return findOneAndDeleteOp(await this.context(options), filter, options);
 	}
 
 	findOneAndReplace(
@@ -393,12 +453,17 @@ export class Collection<TSchema extends Document = Document> {
 		replacement: WithoutId<TSchema>,
 		options: FindOneAndReplaceOptions & { includeResultMetadata: true },
 	): Promise<ModifyResult<TSchema>>;
-	findOneAndReplace(
+	async findOneAndReplace(
 		filter: Filter<TSchema>,
 		replacement: WithoutId<TSchema>,
 		options?: FindOneAndReplaceOptions,
 	): Promise<TSchema | ModifyResult<TSchema> | null> {
-		return findOneAndReplaceOp(this.context(), filter, replacement, options);
+		return findOneAndReplaceOp(
+			await this.context(options),
+			filter,
+			replacement,
+			options,
+		);
 	}
 }
 

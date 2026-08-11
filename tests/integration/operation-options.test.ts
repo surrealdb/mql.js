@@ -5,10 +5,15 @@
  * confirm that the shape is the one the driver meant to emit — not that SurrealDB
  * accepts it. Two of them cannot be verified any other way:
  *
- *   - `sort` puts an `ORDER BY` on a `SELECT id …` lookup, and SurrealDB rejects
- *     an `ORDER BY` naming an idiom the field list does not carry;
- *   - an `upsert` runs that lookup against a collection that does not exist yet,
- *     which SurrealDB refuses to read while MongoDB treats it as "no match".
+ *   - `sort` puts an `ORDER BY` inside the subquery that names a single-document
+ *     write's target, and SurrealDB rejects an `ORDER BY` naming an idiom the
+ *     field list does not carry;
+ *   - an `upsert` runs that subquery against a collection that does not exist
+ *     yet, which SurrealDB refuses to read while MongoDB treats it as "no
+ *     match";
+ *   - `session` puts the statement in a transaction, and only a real server can
+ *     show that the transaction is real — that an index defined in one is
+ *     invisible outside it and gone after an abort.
  */
 
 import {
@@ -19,7 +24,7 @@ import {
 	expect,
 	test,
 } from "bun:test";
-import { MongoServerError, MongoTransactionError } from "../../src/errors.ts";
+import { MongoCompatibilityError, MongoServerError } from "../../src/errors.ts";
 import type { Collection } from "../../src/index.ts";
 import {
 	type SurrealTestContext,
@@ -227,23 +232,57 @@ describe("maxTimeMS", () => {
 });
 
 describe("the option gate", () => {
-	test("`session` is refused by the index operations too", async () => {
-		// The index option *types* do not declare the command-level fields, so this
-		// is the untyped caller — mongoose, injecting a session from an
-		// AsyncLocalStorage — that the gate exists for.
-		const withSession = { session: {} } as never;
-		await expect(col.createIndex({ k: 1 }, withSession)).rejects.toBeInstanceOf(
-			MongoTransactionError,
-		);
-		await expect(col.listIndexes(withSession).toArray()).rejects.toBeInstanceOf(
-			MongoTransactionError,
-		);
-		await expect(col.indexInformation(withSession)).rejects.toBeInstanceOf(
-			MongoTransactionError,
-		);
-		await expect(col.dropIndexes(withSession)).rejects.toBeInstanceOf(
-			MongoTransactionError,
-		);
+	test("`session` reaches the index operations, so their DDL rolls back too", async () => {
+		// A collection of its own: an index left behind would change how the
+		// statements in the other tests are planned.
+		const indexed = ctx.collection("op_options_indexed");
+		await indexed.insertOne({ k: 1 });
+
+		const session = ctx.client.startSession();
+		session.startTransaction();
+
+		expect(await indexed.createIndex({ k: 1 }, { session })).toBe("k_1");
+		// SurrealDB's `DEFINE INDEX` is transactional, so the index exists for the
+		// statements in this transaction and for nobody else — which is only true
+		// because the session reached the `DEFINE`, and reaches the reads as well.
+		expect(await indexed.indexInformation({ session })).toHaveProperty("k_1");
+		expect(
+			(await indexed.listIndexes({ session }).toArray()).map((i) => i.name),
+		).toEqual(["_id_", "k_1"]);
+		expect(await indexed.indexInformation()).not.toHaveProperty("k_1");
+
+		await session.abortTransaction();
+		await session.endSession();
+		// A session silently dropped on the way to `createIndex` would leave this
+		// index behind, which is exactly the damage the option exists to prevent.
+		expect(await indexed.indexInformation()).not.toHaveProperty("k_1");
+
+		// Removing an index is rolled back the same way.
+		await indexed.createIndex({ k: 1 });
+		const dropping = ctx.client.startSession();
+		dropping.startTransaction();
+
+		expect(await indexed.dropIndexes({ session: dropping })).toBe(true);
+		expect(
+			await indexed.indexInformation({ session: dropping }),
+		).not.toHaveProperty("k_1");
+
+		await dropping.abortTransaction();
+		await dropping.endSession();
+		expect(await indexed.indexInformation()).toHaveProperty("k_1");
+	});
+
+	test("an index operation still refuses an option it cannot serve", async () => {
+		// The index methods take the whole command surface, which is what makes
+		// `session` nameable on them — so they have to refuse the parts of that
+		// surface no `DEFINE INDEX` or `INFO FOR TABLE` could honour, rather than
+		// accepting them because the type admits them.
+		await expect(
+			col.createIndex({ k: 1 }, { collation: { locale: "en" } }),
+		).rejects.toBeInstanceOf(MongoCompatibilityError);
+		await expect(
+			col.listIndexes({ readConcern: "linearizable" }).toArray(),
+		).rejects.toBeInstanceOf(MongoServerError);
 	});
 
 	test("a 2d index's `min`/`max` are not read as a query's index bounds", async () => {

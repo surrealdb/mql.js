@@ -1,8 +1,9 @@
 /**
  * `updateOne` / `updateMany` operations.
  *
- * SurrealQL doesn't accept `LIMIT` on `UPDATE`, so `updateOne` finds the
- * matching record id first and updates it by id; `updateMany` operates on the
+ * SurrealQL doesn't accept `LIMIT` on `UPDATE`, so `updateOne` names its one
+ * record in a subquery of the update — one statement, so the match and the write
+ * cannot be separated (see `modify-one.ts`) — while `updateMany` operates on the
  * whole table through its `WHERE` clause.
  *
  * `upsert` also resolves the match itself rather than deferring to SurrealDB's
@@ -30,7 +31,11 @@ import {
 	type OperationPlan,
 	resolveOperationPlan,
 } from "../operation-options.ts";
-import { selectOneId } from "./find.ts";
+import {
+	matchesAnyRecord,
+	oneRecordTarget,
+	writeOneRecord,
+} from "./modify-one.ts";
 import { insertUpserted } from "./upsert.ts";
 
 export async function updateOne<TSchema extends Document>(
@@ -67,48 +72,70 @@ async function runUpdate(
 		await filterOptionsFor(ctx, filter),
 	);
 
-	// `updateOne` has to know which record to touch, and an upsert has to know
-	// whether to touch one at all, so both resolve the match before writing.
-	if (single || options?.upsert) {
-		const rid = await selectOneId(ctx, whereClause, plan, filterBindings);
+	if (single) {
+		const rows = await updateOneMatch(
+			ctx,
+			whereClause,
+			filterBindings,
+			document,
+			plan,
+			options,
+		);
+		if (rows.length > 0 || !options?.upsert) return makeUpdateResult(rows);
+		const inserted = await insertUpserted(
+			ctx,
+			criteria,
+			document,
+			plan,
+			options,
+		);
+		return makeUpdateResult([], inserted.insertedId);
+	}
 
-		if (rid === undefined) {
-			if (!options?.upsert) return makeUpdateResult([]);
-			const inserted = await insertUpserted(
-				ctx,
-				criteria,
-				document,
-				plan,
-				options,
-			);
-			return makeUpdateResult([], inserted.insertedId);
-		}
-
-		if (single) {
-			return updateById(ctx, rid, document, plan, options);
-		}
+	// An upsert has to know whether *anything* matches before it writes: MongoDB
+	// updates every match, or inserts exactly one document when there are none,
+	// and no single statement says both.
+	if (
+		options?.upsert &&
+		!(await matchesAnyRecord(ctx, whereClause, plan, filterBindings))
+	) {
+		const inserted = await insertUpserted(
+			ctx,
+			criteria,
+			document,
+			plan,
+			options,
+		);
+		return makeUpdateResult([], inserted.insertedId);
 	}
 
 	return updateWhere(ctx, whereClause, filterBindings, document, plan, options);
 }
 
-/** Update the one record `rid` addresses. */
-async function updateById(
+/** Update the single record the filter picks out, and report what it touched. */
+async function updateOneMatch(
 	ctx: OperationContext,
-	rid: unknown,
+	whereClause: string,
+	filterBindings: Record<string, unknown>,
 	update: Document,
 	plan: OperationPlan,
 	options?: UpdateOptions,
-): Promise<UpdateResult> {
-	const { clause, bindings } = translateUpdate(update, 0, {
-		arrayFilters: options?.arrayFilters,
-	});
-
-	const rows = await ctx.executor.query<Record<string, unknown>[]>(
-		statement("UPDATE $__rid", clause, plan.timeout),
-		{ ...bindings, __rid: rid },
+): Promise<Record<string, unknown>[]> {
+	const { clause, bindings } = translateUpdate(
+		update,
+		Object.keys(filterBindings).length,
+		{ arrayFilters: options?.arrayFilters },
 	);
-	return makeUpdateResult(rows || []);
+
+	return writeOneRecord(
+		ctx,
+		statement(
+			`UPDATE ${oneRecordTarget(ctx, whereClause, plan)}`,
+			clause,
+			plan.timeout,
+		),
+		{ ...filterBindings, ...bindings },
+	);
 }
 
 /** Update every record the filter matches. */

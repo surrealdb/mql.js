@@ -288,9 +288,12 @@ function readKeyValue(name: string, raw: string): TagSet {
  *   - `readPreference`, `maxStalenessSeconds`, `readPreferenceTags`: choose a
  *     replica-set member to read from. Reading from the only node is *stronger*
  *     than the secondary read any non-primary preference asks for.
- *   - `readConcern`/`readConcernLevel` of `local`, `majority` or `available`: on
- *     a single node these collapse into the same read. `linearizable` and
- *     `snapshot` do not, and are rejected below.
+ *   - `readConcern`/`readConcernLevel` of `local`, `majority`, `available` or
+ *     `snapshot`: on a single node the first three collapse into the same read,
+ *     and `snapshot` — every read coming from one consistent point in time — is
+ *     what a SurrealDB statement or transaction already is. `linearizable` is the
+ *     one level that asks for something no single node can establish, and is
+ *     rejected below.
  *   - `writeConcern` (and the `w`/`journal`/`wtimeoutMS` aliases) other than
  *     `w: 0` and `w > 1`: this driver always waits for SurrealDB to acknowledge,
  *     which is at least what `w: 1`, `w: 'majority'`, `journal` and `wtimeoutMS`
@@ -527,10 +530,19 @@ const REJECTED_OPTIONS: readonly RejectionRule[] = [
 	})),
 ];
 
-/** True for a read concern this driver cannot establish on one node. */
+/**
+ * True for a read concern this driver cannot establish on one node.
+ *
+ * A client-wide read concern is the same promise as a per-operation one, made
+ * once for every operation, so it is classified by the same rule: `linearizable`
+ * asks the server to confirm no newer primary has been elected, which nothing
+ * here does, while `snapshot` asks that reads come from one consistent point in
+ * time, which every SurrealDB statement and transaction already is. Splitting the
+ * two apart would mean refusing in the connection string what is honoured on the
+ * call.
+ */
 function isUnservableReadConcern(value: unknown): boolean {
-	const level = readConcernLevel(value);
-	return level === "linearizable" || level === "snapshot";
+	return readConcernLevel(value) === "linearizable";
 }
 
 /** MongoDB's own refusal for a read concern that needs a replica set. */
