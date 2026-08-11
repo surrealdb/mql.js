@@ -62,6 +62,31 @@ export interface TranslateFilterOptions {
 	collection?: string;
 }
 
+/** Top-level operators whose operand is an array of sub-filters. */
+const LOGICAL_OPERATORS = ["$and", "$or", "$nor"] as const;
+
+/**
+ * True when `filter` uses `$text` anywhere the translator would honour it.
+ *
+ * Callers use this to decide whether a query needs the collection's full-text
+ * field list loaded, which costs a round trip — so an ordinary filter must not
+ * pay for it.
+ */
+export function usesTextSearch(filter?: Document | null): boolean {
+	if (!filter || typeof filter !== "object") return false;
+	if ("$text" in filter) return true;
+
+	for (const operator of LOGICAL_OPERATORS) {
+		const branches = (filter as Document)[operator];
+		if (!Array.isArray(branches)) continue;
+		if (branches.some((branch) => usesTextSearch(branch as Document))) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 /**
  * Translate a MongoDB filter document to a SurrealQL WHERE clause.
  * Returns an empty clause when the filter is empty or undefined.
@@ -270,10 +295,13 @@ function translateTextSearch(textOp: Document, ctx: TranslateContext): string {
 	}
 
 	const p = ctx.bind(search);
+	// The field list is read back from index definitions, so it carries whatever
+	// paths the collection's indexes were defined on and needs escaping like any
+	// other identifier reaching SQL.
+	const clauses = fields.map((field) => `${escapeFieldPath(field)} @@ $${p}`);
 
-	if (fields.length === 1) return `${fields[0]} @@ $${p}`;
-	const fieldClauses = fields.map((f) => `${f} @@ $${p}`);
-	return `(${fieldClauses.join(" OR ")})`;
+	if (clauses.length === 1) return clauses[0];
+	return `(${clauses.join(" OR ")})`;
 }
 
 export { DEFAULT_FILTER_REGISTRY } from "./default-registry.ts";

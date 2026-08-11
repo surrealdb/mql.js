@@ -8,8 +8,13 @@
 
 import type { QueryExecutor } from "../surreal/query-executor.ts";
 import type { SurrealDialect } from "../translators/dialect/index.ts";
-import type { TranslateFilterOptions } from "../translators/filter.ts";
+import {
+	type TranslateFilterOptions,
+	usesTextSearch,
+} from "../translators/filter.ts";
+import type { Document } from "../types.ts";
 import type { IndexRegistry } from "./index-registry.ts";
+import { loadTextFields } from "./operations/indexes.ts";
 
 export interface OperationContext {
 	/** Driver port used for every read/write. */
@@ -24,10 +29,23 @@ export interface OperationContext {
 	readonly indexes: IndexRegistry;
 }
 
-/** Build the `translateFilter` options from the current operation context. */
-export function filterOptionsFor(
+/**
+ * Build the `translateFilter` options for `filter` in this context.
+ *
+ * Asynchronous because of `$text`: the fields a text search expands to belong to
+ * the collection, not to the `Collection` object in hand, and `Db.collection()`
+ * returns a new one every call — so a filter using `$text` has its field list
+ * read from the server. Filters that do not use `$text` cost no extra round
+ * trip, and the reading is cached on the context's registry for reuse.
+ */
+export async function filterOptionsFor(
 	ctx: OperationContext,
-): TranslateFilterOptions {
+	filter?: Document | null,
+): Promise<TranslateFilterOptions> {
+	if (!ctx.indexes.loaded && usesTextSearch(filter)) {
+		await loadTextFields(ctx);
+	}
+
 	const fields = ctx.indexes.textFields;
 	return {
 		textFields: fields.length > 0 ? [...fields] : undefined,

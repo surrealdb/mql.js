@@ -75,6 +75,21 @@ describe("parseDuplicateKeyError", () => {
 		expect(info?.values).toEqual(["x, y", 2]);
 	});
 
+	test("keeps a descending direction, which MongoDB reports in keyPattern", () => {
+		const info = parseDuplicateKeyError(
+			"Database index `age_-1` already contains 7, with record `t:abc`",
+		);
+		expect(info?.keyPattern).toEqual({ age: -1 });
+		expect(info?.keyValue).toEqual({ age: 7 });
+	});
+
+	test("keeps each direction of a mixed compound key", () => {
+		const info = parseDuplicateKeyError(
+			"Database index `a_1_b_-1` already contains [1, 2], with record `t:abc`",
+		);
+		expect(info?.keyPattern).toEqual({ a: 1, b: -1 });
+	});
+
 	test("omits keyPattern rather than guessing for a caller-named index", () => {
 		const info = parseDuplicateKeyError(DUP_CUSTOM_NAME);
 		expect(info?.indexName).toBe("my_custom_idx");
@@ -239,6 +254,40 @@ describe("mapQueryError – code mapping", () => {
 	test("existing MongoServerError passes through unchanged", () => {
 		const original = new MongoServerError("already mapped");
 		expect(mapQueryError(original)).toBe(original);
+	});
+});
+
+describe("mapQueryError – index lifecycle", () => {
+	// Captured verbatim from SurrealDB 3.x: `REMOVE INDEX` on a name that is not
+	// defined, and `DEFINE INDEX` reusing one that is.
+	test("a missing index becomes IndexNotFound (27) with MongoDB's wording", () => {
+		const e = mapQueryError(
+			new InternalError({
+				kind: "Internal",
+				message: "The index 'age_1' does not exist",
+			}),
+		);
+		expect(e.code).toBe(MongoErrorCode.IndexNotFound);
+		expect((e as MongoServerError).codeName).toBe("IndexNotFound");
+		expect(e.message).toBe("index not found with name [age_1]");
+	});
+
+	test("a duplicate index name becomes IndexKeySpecsConflict (86)", () => {
+		const e = mapQueryError(new Error("The index 'age_1' already exists"));
+		expect(e.code).toBe(MongoErrorCode.IndexKeySpecsConflict);
+		expect(e.message).toContain(
+			"An existing index has the same name as the requested index",
+		);
+	});
+
+	test("the original SurrealDB error is preserved as the cause", () => {
+		const original = new Error("The index 'x' does not exist");
+		expect(mapQueryError(original).cause).toBe(original);
+	});
+
+	test("a message merely mentioning an index is not misread", () => {
+		const e = mapQueryError(new Error("Something about The index 'x' maybe"));
+		expect(e.code).toBeUndefined();
 	});
 });
 

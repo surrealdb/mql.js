@@ -92,9 +92,7 @@ describe("legal MongoDB field names that previously failed", () => {
 		expect(Object.keys(projected[0] ?? {})).toContain("first name");
 
 		expect(await col.distinct("first name")).toEqual(["fn"]);
-		expect(await col.createIndex({ "first name": 1 } as never)).toBe(
-			"first name_1",
-		);
+		expect(await col.createIndex({ "first name": 1 })).toBe("first name_1");
 	});
 
 	test("an update can target such a name", async () => {

@@ -6,10 +6,18 @@
  *
  * The SDK exposes a structured taxonomy (`ServerError.kind`, `.details`,
  * `.code`, `.cause`), so most mappings key off the error class rather than its
- * message. Duplicate-key detection is the exception: SurrealDB reports a
- * unique-index violation as a generic `InternalError` whose only distinguishing
- * feature is its message, so that one case is matched by pattern. The
- * originating error is always preserved as `cause`.
+ * message. The index failures are the exception: SurrealDB reports a
+ * unique-index violation, a missing index and a duplicate index name as generic
+ * `InternalError`s whose only distinguishing feature is their message, so those
+ * are matched by pattern.
+ *
+ * Message matching is fragile by nature — a reworded server error stops being
+ * recognised and degrades to an uncoded `MongoServerError`. It is used only
+ * where the alternative is having no code at all, each pattern is anchored and
+ * verified against a live server, and the integration suite runs every
+ * supported SurrealDB minor so a rewording surfaces as a test failure rather
+ * than as silently missing `err.code`. The originating error is always preserved
+ * as `cause`.
  */
 
 import {
@@ -59,6 +67,34 @@ function messageOf(err: unknown): string {
  */
 const DUPLICATE_INDEX_PATTERN =
 	/Database index `(?<index>[^`]+)` already contains (?<value>.+), with record `(?<record>[^`]+)`/s;
+
+/**
+ * Index-lifecycle rejections, matched by message for the same reason as
+ * duplicate keys: SurrealDB reports them without a distinguishing error class.
+ *
+ * `createIndex` and `dropIndex` compare against the live index list before
+ * emitting DDL, so these fire only when the definitions change underneath them —
+ * a concurrent create or drop. Without them such a race would surface as an
+ * uncoded server error rather than the `27`/`86` a MongoDB caller branches on.
+ */
+const INDEX_LIFECYCLE_PATTERNS: ReadonlyArray<{
+	readonly pattern: RegExp;
+	readonly code: number;
+	/** MongoDB's own wording for the same failure. */
+	readonly message: (name: string) => string;
+}> = [
+	{
+		pattern: /^The index '(?<name>.*)' does not exist$/,
+		code: MongoErrorCode.IndexNotFound,
+		message: (name) => `index not found with name [${name}]`,
+	},
+	{
+		pattern: /^The index '(?<name>.*)' already exists$/,
+		code: MongoErrorCode.IndexKeySpecsConflict,
+		message: (name) =>
+			`An existing index has the same name as the requested index. Requested index name: ${name}`,
+	},
+];
 
 /** Assertion / type-coercion rejections, which MongoDB reports as code 121. */
 const VALIDATION_PATTERNS = [
@@ -113,24 +149,29 @@ function parseValueList(literal: string): unknown[] {
 }
 
 /**
- * Recover the indexed field names from an index name.
+ * Recover the indexed fields and their directions from an index name.
  *
  * Only works for the `field_1` / `field_-1` / `a_1_b_-1` convention this driver
  * generates itself (see `createIndex`). A caller-supplied `name` cannot be
  * decomposed, in which case `keyPattern` is omitted rather than guessed at.
+ *
+ * The direction is carried rather than assumed ascending: MongoDB's
+ * `keyPattern` reports the index's real direction, so a `{age: -1}` index has to
+ * come back as `{age: -1}` — and the name is where that survives.
  */
-function fieldsFromIndexName(indexName: string): string[] | undefined {
+function keyFromIndexName(indexName: string): [string, number][] | undefined {
 	const tokens = indexName.split("_");
-	const fields: string[] = [];
+	const fields: [string, number][] = [];
 	let current: string[] = [];
 
 	// Walk left to right accumulating name parts until a direction token closes
 	// the field. This keeps underscores inside field names intact, so
-	// `first_name_1` yields ["first_name"] and `a_1_b_-1` yields ["a", "b"].
+	// `first_name_1` yields ["first_name", 1] and `a_1_b_-1` yields
+	// [["a", 1], ["b", -1]].
 	for (const token of tokens) {
 		if (token === "1" || token === "-1") {
 			if (current.length === 0) return undefined;
-			fields.push(current.join("_"));
+			fields.push([current.join("_"), Number(token)]);
 			current = [];
 			continue;
 		}
@@ -151,7 +192,7 @@ export interface DuplicateKeyInfo {
 	collection: string | undefined;
 	/** Values that collided. */
 	values: unknown[];
-	/** `{ field: 1 }` shape, when derivable from the index name. */
+	/** `{ field: direction }` shape, when derivable from the index name. */
 	keyPattern: Record<string, number> | undefined;
 	/** `{ field: value }` shape, when derivable from the index name. */
 	keyValue: Record<string, unknown> | undefined;
@@ -179,15 +220,15 @@ export function parseDuplicateKeyError(
 		? record.slice(0, record.indexOf(":"))
 		: undefined;
 
-	const fields = fieldsFromIndexName(indexName);
+	const fields = keyFromIndexName(indexName);
 	let keyPattern: Record<string, number> | undefined;
 	let keyValue: Record<string, unknown> | undefined;
 
 	if (fields && fields.length === values.length) {
 		keyPattern = {};
 		keyValue = {};
-		for (const [i, field] of fields.entries()) {
-			keyPattern[field] = 1;
+		for (const [i, [field, direction]] of fields.entries()) {
+			keyPattern[field] = direction;
 			keyValue[field] = values[i];
 		}
 	}
@@ -346,6 +387,16 @@ export function mapQueryError(err: unknown): MongoError {
 	// applications branch on (`err.code === 11000`).
 	const duplicate = parseDuplicateKeyError(message);
 	if (duplicate) return duplicateKeyError(duplicate, err);
+
+	for (const rule of INDEX_LIFECYCLE_PATTERNS) {
+		const match = rule.pattern.exec(message);
+		if (match?.groups) {
+			return new MongoServerError(rule.message(match.groups.name as string), {
+				code: rule.code,
+				cause: err,
+			});
+		}
+	}
 
 	for (const rule of QUERY_ERROR_RULES) {
 		if (rule.matches(err)) return rule.build(message, err);
