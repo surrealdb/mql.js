@@ -21,7 +21,7 @@ describe("updateOne", () => {
 		);
 
 		expect(executor.queries[0].sql).toBe(
-			"SELECT id FROM users WHERE name = $p0 LIMIT 1",
+			"SELECT id FROM users WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0)) LIMIT 1",
 		);
 		expect(executor.queries[0].bindings).toEqual({ p0: "Alice" });
 
@@ -61,7 +61,7 @@ describe("updateOne", () => {
 
 		expect(executor.queries.length).toBe(1);
 		expect(executor.queries[0].sql).toBe(
-			"UPSERT users SET age = $p1 WHERE name = $p0",
+			"UPSERT users SET age = $p1 WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0))",
 		);
 		expect(executor.queries[0].bindings).toEqual({ p0: "X", p1: 1 });
 		expect(result.upsertedId).toBeTruthy();
@@ -85,7 +85,7 @@ describe("updateMany", () => {
 
 		expect(executor.queries.length).toBe(1);
 		expect(executor.queries[0].sql).toBe(
-			"UPDATE users SET tier = $p1 WHERE status = $p0",
+			"UPDATE users SET tier = $p1 WHERE (status = $p0 OR (type::is_array(status) AND status CONTAINS $p0))",
 		);
 		expect(executor.queries[0].bindings).toEqual({
 			p0: "active",
