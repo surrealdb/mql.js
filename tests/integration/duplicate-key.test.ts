@@ -17,13 +17,14 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Subprocess } from "bun";
 import type { Collection, Db, MongoClient } from "../../src/index.ts";
-import { MongoServerError } from "../../src/index.ts";
+import { MongoServerError, ObjectId } from "../../src/index.ts";
 import type { Document } from "../../src/types.ts";
 import { setupSurreal, teardownSurreal } from "./helpers.ts";
 
 const PORT = 18132;
 
 interface Account extends Document {
+	_id?: unknown;
 	email?: string;
 	tenant?: string;
 	slot?: number;
@@ -164,5 +165,104 @@ describe("other server errors keep their own codes", () => {
 		);
 
 		expect(err.code).not.toBe(11000);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Duplicate _id
+// ---------------------------------------------------------------------------
+
+/**
+ * A colliding `_id` is a duplicate key, not a duplicate namespace.
+ *
+ * SurrealDB reports it as "record already exists", which reads like the table
+ * and namespace conflicts it shares an error class with — but what collided is
+ * `_id`, and MongoDB attributes that to the implicit `_id_` index with code
+ * 11000. Every expectation below was measured against a real mongod first.
+ */
+describe("duplicate _id", () => {
+	test("a colliding string _id reports 11000 against the _id_ index", async () => {
+		const col = db.collection<Account>("dupid_string");
+		await col.insertOne({ _id: "dup" });
+
+		const err = await captureError(() => col.insertOne({ _id: "dup" }));
+
+		expect(err.code).toBe(11000);
+		expect(err.codeName).toBe("DuplicateKey");
+		expect(err.keyPattern).toEqual({ _id: 1 });
+		expect(err.keyValue).toEqual({ _id: "dup" });
+		expect(err.message).toContain("E11000 duplicate key error");
+		expect(err.message).toContain("index: _id_");
+		expect(err.message).toContain('dup key: { _id: "dup" }');
+	});
+
+	test("a colliding ObjectId _id round-trips as an ObjectId", async () => {
+		const col = db.collection<Account>("dupid_oid");
+		const id = new ObjectId();
+		await col.insertOne({ _id: id });
+
+		const err = await captureError(() => col.insertOne({ _id: id }));
+
+		expect(err.code).toBe(11000);
+		// The value has to be the ObjectId a read would have returned, not the hex
+		// string the server names the record with.
+		expect(err.keyValue?._id).toBeInstanceOf(ObjectId);
+		expect((err.keyValue?._id as ObjectId).toHexString()).toBe(
+			id.toHexString(),
+		);
+		expect(err.message).toContain(
+			`dup key: { _id: ObjectId('${id.toHexString()}') }`,
+		);
+	});
+
+	// The server names the record as a string, which cannot distinguish 42 from
+	// "42"; the insert still holds the typed id, and that is what is reported.
+	test("a colliding numeric _id stays a number", async () => {
+		const col = db.collection<Account>("dupid_number");
+		await col.insertOne({ _id: 42 });
+
+		const err = await captureError(() => col.insertOne({ _id: 42 }));
+
+		expect(err.code).toBe(11000);
+		expect(err.keyValue).toEqual({ _id: 42 });
+		expect(err.message).toContain("dup key: { _id: 42 }");
+	});
+
+	test("insertMany colliding with an existing _id reports 11000", async () => {
+		const col = db.collection<Account>("dupid_many");
+		await col.insertOne({ _id: "taken" });
+
+		const err = await captureError(() =>
+			col.insertMany([{ _id: "fresh" }, { _id: "taken" }]),
+		);
+
+		expect(err.code).toBe(11000);
+		expect(err.keyValue).toEqual({ _id: "taken" });
+	});
+
+	test("a generated _id never collides", async () => {
+		const col = db.collection<Account>("dupid_generated");
+		await col.insertMany([
+			{ email: "a@x" },
+			{ email: "b@x" },
+			{ email: "c@x" },
+		]);
+		expect(await col.countDocuments({})).toBe(3);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Neighbouring conflicts keep their own codes
+// ---------------------------------------------------------------------------
+
+describe("conflicts that are not duplicate keys", () => {
+	test("a collection that already exists is 48, not 11000", async () => {
+		await db.createCollection("already_here");
+		const err = await captureError(() => db.createCollection("already_here"));
+
+		// Same SurrealDB error class as a duplicate record, discriminated by whether
+		// the error names a record or a table.
+		expect(err.code).toBe(48);
+		expect(err.codeName).toBe("NamespaceExists");
 	});
 });

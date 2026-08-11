@@ -727,7 +727,9 @@ Other differences worth knowing:
 - **`keyPattern`/`keyValue`** on a duplicate-key error are populated only when
   the violated index follows the generated `field_1` naming convention. For a
   custom-named index the fields cannot be recovered from the server's message,
-  and inventing them would be worse than omitting them.
+  and inventing them would be worse than omitting them. An `_id` collision is
+  exempt: it is always attributed to the implicit `_id_` index, so both are
+  always reported.
 
 ## Database operations
 

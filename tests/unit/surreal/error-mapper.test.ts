@@ -20,10 +20,12 @@ import {
 	MongoNetworkError,
 	MongoServerError,
 } from "../../../src/errors.ts";
+import { ObjectId } from "../../../src/object-id.ts";
 import {
 	mapConnectError,
 	mapQueryError,
 	parseDuplicateKeyError,
+	withTypedDuplicateId,
 } from "../../../src/surreal/error-mapper.ts";
 
 /**
@@ -400,5 +402,102 @@ describe("mapQueryError – transaction conflict", () => {
 
 		expect(mapped.code).toBe(MongoErrorCode.NoSuchTransaction);
 		expect(mapped.message).toBe("Transaction is not in progress");
+	});
+});
+
+describe("mapQueryError – duplicate _id", () => {
+	/** The shape SurrealDB reports when a record's id collides. */
+	function recordExists(recordId: string): AlreadyExistsError {
+		return new AlreadyExistsError({
+			kind: "AlreadyExists",
+			message: `Database record \`${recordId}\` already exists`,
+			details: { kind: "Record", details: { id: recordId } },
+		} as never);
+	}
+
+	test("a colliding record is a duplicate key, not a duplicate namespace", () => {
+		const err = mapQueryError(recordExists("users:abc"));
+
+		expect(err.code).toBe(MongoErrorCode.DuplicateKey);
+		expect(err).toBeInstanceOf(MongoServerError);
+		expect((err as MongoServerError).keyPattern).toEqual({ _id: 1 });
+		expect((err as MongoServerError).keyValue).toEqual({ _id: "abc" });
+		expect(err.message).toBe(
+			'E11000 duplicate key error collection: users index: _id_ dup key: { _id: "abc" }',
+		);
+	});
+
+	// The same error class carries table and namespace conflicts, which are
+	// genuinely NamespaceExists — the record id is what separates them.
+	test("a colliding table stays NamespaceExists (48)", () => {
+		const err = mapQueryError(
+			new AlreadyExistsError({
+				kind: "AlreadyExists",
+				message: "The table 'x' already exists",
+				details: { kind: "Table", details: { name: "x" } },
+			} as never),
+		);
+		expect(err.code).toBe(MongoErrorCode.NamespaceExists);
+	});
+
+	test("a hex record id comes back as an ObjectId, as a read would return it", () => {
+		const hex = "6a7b8f05d92a9d20e503de01";
+		const err = mapQueryError(recordExists(`docs:${hex}`)) as MongoServerError;
+
+		expect(err.keyValue?._id).toBeInstanceOf(ObjectId);
+		expect(err.message).toContain(`dup key: { _id: ObjectId('${hex}') }`);
+	});
+});
+
+describe("withTypedDuplicateId", () => {
+	function duplicate(recordId: string): unknown {
+		return mapQueryError(
+			new AlreadyExistsError({
+				kind: "AlreadyExists",
+				message: `Database record \`${recordId}\` already exists`,
+				details: { kind: "Record", details: { id: recordId } },
+			} as never),
+		);
+	}
+
+	// A record id is a string on the wire, so 42 and "42" arrive identically; the
+	// caller's own value is the only way to tell them apart.
+	test("restores a numeric _id the server could only name as a string", () => {
+		const restored = withTypedDuplicateId(
+			duplicate("n:42"),
+			[42],
+		) as MongoServerError;
+
+		expect(restored.keyValue).toEqual({ _id: 42 });
+		expect(restored.message).toContain("dup key: { _id: 42 }");
+	});
+
+	test("keeps a string _id a string when that is what was supplied", () => {
+		const restored = withTypedDuplicateId(duplicate("s:42"), [
+			"42",
+		]) as MongoServerError;
+
+		expect(restored.keyValue).toEqual({ _id: "42" });
+	});
+
+	test("picks the colliding id out of a batch", () => {
+		const restored = withTypedDuplicateId(
+			duplicate("n:7"),
+			[1, 7, 9],
+		) as MongoServerError;
+
+		expect(restored.keyValue).toEqual({ _id: 7 });
+	});
+
+	test("leaves the error alone when no candidate matches", () => {
+		const original = duplicate("n:99");
+		expect(withTypedDuplicateId(original, [1, 2])).toBe(original);
+	});
+
+	test("leaves an unrelated error alone", () => {
+		const other = mapQueryError(
+			new NotFoundError({ kind: "NotFound", message: "nope" } as never),
+		);
+		expect(withTypedDuplicateId(other, [1])).toBe(other);
 	});
 });
