@@ -4,7 +4,10 @@
  */
 
 import { IndexRegistry } from "../../src/collection/index-registry.ts";
-import type { OperationContext } from "../../src/collection/operation-context.ts";
+import type {
+	ClientDefaults,
+	OperationContext,
+} from "../../src/collection/operation-context.ts";
 import { escapeIdentifier } from "../../src/surreal/sql/escape.ts";
 import {
 	resolveDialect,
@@ -17,6 +20,7 @@ export interface FakeContextOptions {
 	dialect?: SurrealDialect;
 	indexes?: IndexRegistry;
 	executor?: FakeQueryExecutor;
+	defaults?: ClientDefaults;
 }
 
 export interface FakeContextResult {
@@ -39,6 +43,7 @@ export function makeContext(
 		escapedTable: escapeIdentifier(collectionName),
 		dialect,
 		indexes,
+		defaults: options.defaults,
 	};
 	return { ctx, executor, indexes };
 }

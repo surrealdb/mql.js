@@ -4,8 +4,7 @@
  * testing) can be swapped without touching translators or operations.
  */
 
-import type { RecordId, Table } from "surrealdb";
-import type { Document } from "../types.ts";
+import type { RecordId } from "surrealdb";
 
 /**
  * A SurrealDB record id reference – either a typed `RecordId` object or
@@ -19,6 +18,11 @@ export type RecordIdLike = RecordId | string;
  * Wrapping the SDK behind this interface satisfies the Dependency
  * Inversion Principle: high-level operations depend on this abstraction
  * rather than the concrete `Surreal` class.
+ *
+ * Every read and write goes through `query`, including the inserts the SDK
+ * offers shortcuts for: only a statement can carry the clauses a caller's
+ * options become — `TIMEOUT` above all — so one path keeps the option policy
+ * from applying to some writes and not others.
  */
 export interface QueryExecutor {
 	/**
@@ -29,16 +33,6 @@ export interface QueryExecutor {
 		sql: string,
 		bindings?: Record<string, unknown>,
 	): Promise<T>;
-
-	/**
-	 * Create a single record with the given content.
-	 */
-	createRecord(recordId: RecordIdLike, content: Document): Promise<void>;
-
-	/**
-	 * Bulk-insert records into a table.
-	 */
-	insertMany(table: Table | string, docs: Document[]): Promise<void>;
 
 	/**
 	 * The version reported by the connected SurrealDB server, if known.

@@ -30,7 +30,7 @@ describe("findOneAndUpdate", () => {
 		)) as User;
 
 		expect(executor.queries[1].sql).toBe(
-			"UPDATE $__rid SET age += $p1 RETURN BEFORE",
+			"UPDATE $__rid SET age += $p0 RETURN BEFORE",
 		);
 		expect(out.age).toBe(30);
 	});
@@ -59,7 +59,7 @@ describe("findOneAndUpdate", () => {
 		expect(executor.queries.length).toBe(1);
 	});
 
-	test("includeResultMetadata wraps the value in { value, ok }", async () => {
+	test("includeResultMetadata reports the command reply, ok=1 even on no match", async () => {
 		const { ctx, executor } = makeContext();
 		executor.enqueue([]); // no match
 		const r = (await findOneAndUpdate<User>(
@@ -68,10 +68,14 @@ describe("findOneAndUpdate", () => {
 			{ $set: { age: 1 } },
 			{ includeResultMetadata: true },
 		)) as ModifyResult<User>;
-		expect(r).toEqual({ value: null, ok: 0 });
+		expect(r).toEqual({
+			lastErrorObject: { n: 0, updatedExisting: false },
+			value: null,
+			ok: 1,
+		});
 	});
 
-	test("includeResultMetadata=true returns ok=1 when the document is found", async () => {
+	test("includeResultMetadata reports updatedExisting when the document is found", async () => {
 		const { ctx, executor } = makeContext();
 		const rid = new RecordId("users", "a");
 		executor.enqueue([{ id: rid }]).enqueue([{ id: rid, age: 10 }]);
@@ -82,6 +86,7 @@ describe("findOneAndUpdate", () => {
 			{ includeResultMetadata: true },
 		)) as ModifyResult<User>;
 		expect(r.ok).toBe(1);
+		expect(r.lastErrorObject).toEqual({ n: 1, updatedExisting: true });
 		expect(r.value?.age).toBe(10); // RETURN BEFORE default
 	});
 
@@ -95,7 +100,106 @@ describe("findOneAndUpdate", () => {
 			{ $set: { "grades.$[g].adjusted": true } },
 			{ arrayFilters: [{ "g.score": { $gte: 90 } }] },
 		);
-		expect(executor.queries[1].sql).toContain("grades[WHERE score >= $p1]");
+		expect(executor.queries[1].sql).toContain("grades[WHERE score >= $p0]");
+	});
+
+	test("sort decides which document is modified, by ordering the id lookup", async () => {
+		const { ctx, executor } = makeContext({ collectionName: "users" });
+		const rid = new RecordId("users", "a");
+		executor.enqueue([{ id: rid }]).enqueue([{ id: rid }]);
+
+		await findOneAndUpdate<User>(
+			ctx,
+			{},
+			{ $set: { age: 1 } },
+			{
+				sort: { age: -1 },
+			},
+		);
+
+		// The sort's column is selected alongside `id` because SurrealDB rejects an
+		// `ORDER BY` naming an idiom the field list does not carry.
+		expect(executor.queries[0].sql).toBe(
+			"SELECT id, age FROM users ORDER BY age DESC LIMIT 1",
+		);
+	});
+
+	test("projection is applied to the returned document", async () => {
+		const { ctx, executor } = makeContext();
+		const rid = new RecordId("users", "a");
+		executor
+			.enqueue([{ id: rid }])
+			.enqueue([{ id: rid, name: "Alice", password: "hunter2" }]);
+
+		const out = (await findOneAndUpdate<User>(
+			ctx,
+			{},
+			{ $set: { age: 1 } },
+			{
+				projection: { name: 1, _id: 0 },
+			},
+		)) as User;
+
+		expect(out).toEqual({ name: "Alice" } as unknown as User);
+	});
+
+	test("upsert inserts the document seeded from the filter and reports it", async () => {
+		const { ctx, executor } = makeContext({ collectionName: "users" });
+		executor
+			.enqueue([]) // no match
+			.enqueue([{ id: new RecordId("users", "x"), email: "a@b.c", hits: 1 }]);
+
+		const r = (await findOneAndUpdate<User>(
+			ctx,
+			{ email: "a@b.c" },
+			{ $inc: { hits: 1 } },
+			{ upsert: true, returnDocument: "after", includeResultMetadata: true },
+		)) as ModifyResult<User>;
+
+		expect(executor.queries[1].sql).toBe(
+			"UPSERT $__rid SET email = $p0, hits += $p1 RETURN AFTER",
+		);
+		expect(executor.queries[1].bindings?.p0).toBe("a@b.c");
+		expect(r.value).toMatchObject({ email: "a@b.c", hits: 1 });
+		expect(r.lastErrorObject?.updatedExisting).toBe(false);
+		expect(r.lastErrorObject?.upserted).toBeDefined();
+	});
+
+	test("upsert returns null for the pre-image of a document that did not exist", async () => {
+		const { ctx, executor } = makeContext();
+		executor.enqueue([]).enqueue([{ id: new RecordId("users", "x") }]);
+
+		const out = await findOneAndUpdate<User>(
+			ctx,
+			{ email: "a@b.c" },
+			{ $set: { hits: 1 } },
+			{ upsert: true },
+		);
+
+		expect(out).toBeNull();
+		// The write still happened, which is what makes get-or-create work.
+		expect(executor.queries.length).toBe(2);
+	});
+
+	test("an _id in the filter becomes the upserted record's identity", async () => {
+		const { ctx, executor } = makeContext({ collectionName: "users" });
+		executor.enqueue([]).enqueue([{ id: new RecordId("users", "fixed") }]);
+
+		await findOneAndUpdate<User>(
+			ctx,
+			{ _id: "fixed" },
+			{ $set: { age: 1 } },
+			{
+				upsert: true,
+			},
+		);
+
+		const rid = executor.queries[1].bindings?.__rid as RecordId;
+		expect(rid.id).toBe("fixed");
+		// `_id` addresses the record; it must not also be written as a field.
+		expect(executor.queries[1].sql).toBe(
+			"UPSERT $__rid SET age = $p0 RETURN AFTER",
+		);
 	});
 });
 
@@ -120,7 +224,7 @@ describe("findOneAndDelete", () => {
 		expect(await findOneAndDelete<User>(ctx, { name: "ghost" })).toBeNull();
 	});
 
-	test("includeResultMetadata wraps the result", async () => {
+	test("includeResultMetadata reports n=0 and no updatedExisting", async () => {
 		const { ctx, executor } = makeContext();
 		executor.enqueue([]);
 		const r = (await findOneAndDelete<User>(
@@ -128,7 +232,29 @@ describe("findOneAndDelete", () => {
 			{ name: "ghost" },
 			{ includeResultMetadata: true },
 		)) as ModifyResult<User>;
-		expect(r).toEqual({ value: null, ok: 0 });
+		expect(r).toEqual({ lastErrorObject: { n: 0 }, value: null, ok: 1 });
+	});
+
+	test("sort and projection reach the lookup and the returned document", async () => {
+		const { ctx, executor } = makeContext({ collectionName: "users" });
+		const rid = new RecordId("users", "a");
+		executor
+			.enqueue([{ id: rid }])
+			.enqueue([{ id: rid, name: "Alice", password: "x" }]);
+
+		const out = await findOneAndDelete<User>(
+			ctx,
+			{},
+			{
+				sort: { age: 1 },
+				projection: { password: 0 },
+			},
+		);
+
+		expect(executor.queries[0].sql).toBe(
+			"SELECT id, age FROM users ORDER BY age ASC LIMIT 1",
+		);
+		expect(out).toEqual({ _id: "a", name: "Alice" } as unknown as User);
 	});
 });
 
@@ -142,7 +268,7 @@ describe("findOneAndReplace", () => {
 
 	test("returns null when no match", async () => {
 		const { ctx, executor } = makeContext();
-		executor.enqueue([]); // first SELECT * LIMIT 1
+		executor.enqueue([]); // SELECT id LIMIT 1
 		const out = await findOneAndReplace<User>(ctx, { name: "ghost" }, {
 			name: "x",
 			age: 1,
@@ -154,8 +280,8 @@ describe("findOneAndReplace", () => {
 		const { ctx, executor } = makeContext();
 		const rid = new RecordId("users", "a");
 		executor
-			.enqueue([{ id: rid, name: "Old", age: 10 }]) // SELECT * LIMIT 1
-			.enqueue([{ id: rid, name: "New", age: 1 }]); // UPDATE $rid CONTENT … RETURN AFTER
+			.enqueue([{ id: rid }]) // SELECT id LIMIT 1
+			.enqueue([{ id: rid, name: "Old", age: 10 }]); // UPDATE … RETURN BEFORE
 
 		const out = (await findOneAndReplace<User>(ctx, { name: "Old" }, {
 			name: "New",
@@ -168,9 +294,7 @@ describe("findOneAndReplace", () => {
 	test("returnDocument=after returns the post-image", async () => {
 		const { ctx, executor } = makeContext();
 		const rid = new RecordId("users", "a");
-		executor
-			.enqueue([{ id: rid, name: "Old", age: 10 }])
-			.enqueue([{ id: rid, name: "New", age: 1 }]);
+		executor.enqueue([{ id: rid }]).enqueue([{ id: rid, name: "New", age: 1 }]);
 
 		const out = (await findOneAndReplace<User>(
 			ctx,
@@ -185,9 +309,7 @@ describe("findOneAndReplace", () => {
 	test("UPDATE statement uses CONTENT $… and binds the rid", async () => {
 		const { ctx, executor } = makeContext();
 		const rid = new RecordId("users", "a");
-		executor
-			.enqueue([{ id: rid, name: "Old" }])
-			.enqueue([{ id: rid, name: "New" }]);
+		executor.enqueue([{ id: rid }]).enqueue([{ id: rid, name: "New" }]);
 
 		await findOneAndReplace<User>(ctx, { name: "Old" }, {
 			name: "New",
@@ -195,12 +317,30 @@ describe("findOneAndReplace", () => {
 		} as User);
 
 		expect(executor.queries[1].sql).toBe(
-			"UPDATE $rid CONTENT $p1 RETURN AFTER",
+			"UPDATE $__rid CONTENT $p0 RETURN BEFORE",
 		);
-		expect(executor.queries[1].bindings?.rid).toBe(rid);
-		expect(executor.queries[1].bindings?.p1).toEqual({
+		expect(executor.queries[1].bindings?.__rid).toBe(rid);
+		expect(executor.queries[1].bindings?.p0).toEqual({
 			name: "New",
 			age: 1,
 		});
+	});
+
+	test("upsert creates exactly the replacement, not the filter's fields", async () => {
+		const { ctx, executor } = makeContext({ collectionName: "users" });
+		executor.enqueue([]).enqueue([{ id: new RecordId("users", "x"), r: 1 }]);
+
+		const out = await findOneAndReplace<User>(
+			ctx,
+			{ k: 7 },
+			{ r: 1 } as unknown as User,
+			{ upsert: true, returnDocument: "after" },
+		);
+
+		expect(executor.queries[1].sql).toBe(
+			"CREATE $__rid CONTENT $__doc RETURN AFTER",
+		);
+		expect(executor.queries[1].bindings?.__doc).toEqual({ r: 1 });
+		expect(out).toMatchObject({ r: 1 });
 	});
 });

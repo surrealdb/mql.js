@@ -228,14 +228,18 @@ describe("findOneAndUpdate with includeResultMetadata", () => {
 		expect(result.value?.name).toBe("Alice");
 	});
 
-	test("returns ok: 0 when no match", async () => {
+	// `ok` reports whether the command ran, not whether it matched — MongoDB
+	// answers `{ lastErrorObject: { n: 0, updatedExisting: false }, value: null,
+	// ok: 1 }` here, measured against a real server.
+	test("reports no match in lastErrorObject, with ok: 1", async () => {
 		const result = (await col.findOneAndUpdate(
 			{ name: "Nobody" },
 			{ $set: { age: 99 } },
 			{ includeResultMetadata: true },
 		)) as unknown as ModifyResult<TestDoc>;
-		expect(result.ok).toBe(0);
+		expect(result.ok).toBe(1);
 		expect(result.value).toBeNull();
+		expect(result.lastErrorObject).toEqual({ n: 0, updatedExisting: false });
 	});
 });
 
@@ -254,13 +258,15 @@ describe("findOneAndDelete with includeResultMetadata", () => {
 		expect(check).toBeNull();
 	});
 
-	test("returns ok: 0 when no match", async () => {
+	// A delete's reply carries no `updatedExisting`, again matching MongoDB.
+	test("reports no match in lastErrorObject, with ok: 1", async () => {
 		const result = (await col.findOneAndDelete(
 			{ name: "Nobody" },
 			{ includeResultMetadata: true },
 		)) as unknown as ModifyResult<TestDoc>;
-		expect(result.ok).toBe(0);
+		expect(result.ok).toBe(1);
 		expect(result.value).toBeNull();
+		expect(result.lastErrorObject).toEqual({ n: 0 });
 	});
 });
 

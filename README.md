@@ -105,29 +105,143 @@ await client.close();
 The driver accepts MongoDB-style connection strings and translates them to SurrealDB connections.
 
 ```
-mongodb://[user:pass@]host[:port]/database[?namespace=ns]
+mongodb://[user:pass@]host[:port]/[database][?namespace=ns&options]
 ```
 
 | Connection string | SurrealDB equivalent |
 | --- | --- |
 | `mongodb://root:root@localhost:8000/mydb` | `ws://localhost:8000/rpc` |
-| `mongodb+srv://root:root@example.com/mydb` | `wss://example.com/rpc` |
-| `ws://localhost:8000/mydb` | Passed through as-is |
-| `http://localhost:8000/mydb` | Passed through as-is |
+| `mongodb://localhost/mydb` | `ws://localhost:8000/rpc` (SurrealDB's default port) |
+| `mongodb://db.example.com/mydb?tls=true` | `wss://db.example.com:443/rpc` |
+| `ws://localhost:8000/mydb` | `ws://localhost:8000/rpc` |
+| `wss://db.example.com/mydb` | `wss://db.example.com:443/rpc` |
+| `http://localhost:8000/mydb` | `http://localhost:8000/rpc` |
+| `mongodb+srv://cluster0.example.com/mydb` | throws — see below |
+| `mongodb://h1:27017,h2:27017/mydb` | throws — see below |
 
-- **Protocol**: `mongodb://` maps to `ws://`, `mongodb+srv://` maps to `wss://`
-- **Database**: Extracted from the URL path
-- **Namespace**: Set via the `?namespace=` query parameter (defaults to `"default"`)
-- **Credentials**: Extracted from the userinfo section of the URL
+- **Protocol**: `mongodb://` maps to `ws://`, and `?tls=true` (or `?ssl=true`)
+  upgrades it to `wss://`. SurrealDB's own schemes are used as written.
+- **Port**: a missing port becomes `8000` for a plaintext scheme and `443` for an
+  encrypted one, rather than the URL standard's `80`/`443`.
+- **Database**: taken from the URL path, percent-decoded. With no path, MongoDB's
+  default of `test` is used.
+- **Namespace**: set via the `?namespace=` query parameter (defaults to
+  `"default"`). This is an extension: SurrealDB needs a namespace and a MongoDB
+  URI has nowhere else to put one, so a string using it is not portable back to
+  the official driver, which rejects unknown parameters.
+- **Credentials**: taken from the userinfo section and **percent-decoded**, as
+  the MongoDB URI specification requires — a password containing `@`, `/`, `:` or
+  `%` must be encoded in the string (`p%40ssw%2Frd` is the password `p@ssw/rd`).
 
-You can also pass options directly:
+You can also pass options directly, and they win over the connection string:
 
 ```typescript
 const client = new MongoClient("mongodb://localhost:8000/mydb", {
   namespace: "production",
   database: "override_db", // overrides the database in the URL
+  connectTimeoutMS: 5_000,
 });
 ```
+
+`client.db()` may be called before `connect()`, as it may in the official driver:
+the connection is established by the first operation. Calling `connect()`
+explicitly is still the way to find out up front whether the server is reachable.
+
+```typescript
+const client = new MongoClient("mongodb://root:root@localhost:8000/mydb");
+const users = client.db().collection("users"); // no connection yet
+await users.insertOne({ name: "Alice" }); // connects, then inserts
+
+// Or in one step
+const connected = await MongoClient.connect("mongodb://localhost:8000/mydb");
+```
+
+After `close()`, operations fail with `MongoNotConnectedError` rather than
+silently reopening the connection.
+
+### Authentication
+
+Credentials are signed in as a **SurrealDB root user** by default, which is the
+level MongoDB's `admin` database corresponds to. `?authSource=<database>` signs in
+as a user defined `ON DATABASE` in the database it names, inside the connection's
+namespace:
+
+```typescript
+// A root user (SurrealDB `DEFINE USER … ON ROOT`)
+new MongoClient("mongodb://root:root@localhost:8000/mydb?namespace=ns");
+
+// A database user (SurrealDB `DEFINE USER … ON DATABASE`)
+new MongoClient(
+  "mongodb://app:secret@localhost:8000/mydb?namespace=ns&authSource=mydb",
+);
+```
+
+This differs from MongoDB, which defaults `authSource` to the database in the
+connection string. Defaulting to root instead keeps `mongodb://root:root@…/mydb`
+meaning the root user, and SurrealDB rejects root credentials presented at
+database level. Namespace-level SurrealDB users have no MongoDB analogue and
+cannot be selected through a connection string.
+
+### Connection-string and client options
+
+Options are read from the connection string and the constructor together, then
+classified exactly as the per-operation options are: honoured, accepted with no
+effect, or rejected with a reason. Nothing is accepted and silently dropped.
+
+| Option | Behaviour | Notes |
+| --- | --- | --- |
+| `tls`, `ssl` | honoured | selects `wss://` / `https://`; the two must agree |
+| `connectTimeoutMS`, `serverSelectionTimeoutMS` | honoured | the tighter one bounds the connect; both default to 30 000 ms, `0` means no limit |
+| `timeoutMS` | honoured | becomes a SurrealQL `TIMEOUT` on every operation, which a per-operation `maxTimeMS`/`timeoutMS` may tighten |
+| `ignoreUndefined` | honoured | default for every operation |
+| `auth`, `authSource` | honoured | see above |
+| `namespace`, `database`, `reconnect` | honoured | SurrealDB-specific; `reconnect` is off by default, so a dropped connection surfaces as an error |
+| `replicaSet`, `directConnection`, `loadBalanced`, `heartbeatFrequencyMS`, `minHeartbeatFrequencyMS`, `serverMonitoringMode`, `localThresholdMS` | accepted, no effect | there is one connection to one node |
+| `maxPoolSize`, `minPoolSize`, `maxConnecting`, `maxIdleTimeMS`, `waitQueueTimeoutMS` | accepted, no effect | operations are multiplexed over a single connection |
+| `readPreference`, `maxStalenessSeconds`, `readPreferenceTags` | accepted, no effect | reading the only node is stronger than any secondary read |
+| `readConcern`/`readConcernLevel` of `local`, `majority`, `available` | accepted, no effect | identical on one node |
+| `writeConcern`, `w`, `journal`, `wtimeoutMS` | accepted, no effect | writes always wait for SurrealDB to acknowledge |
+| `retryWrites`, `retryReads`, `maxAdaptiveRetries`, `enableOverloadRetargeting` | accepted, no effect | nothing is retried, so `false` is exact and `true` is a no-op |
+| `compressors`, `zlibCompressionLevel`, `noDelay` | accepted, no effect | transport tuning, invisible in results |
+| `appName`, `driverInfo`, `mongodbLog*` | accepted, no effect | no client-metadata channel and no logger |
+| `serverApi` | accepted, no effect | there is no MongoDB command surface to version |
+| `authMechanism` of `DEFAULT`, `SCRAM-SHA-*`, `PLAIN`, and `authMechanismProperties` | accepted, no effect | all describe a username/password exchange SurrealDB settles its own way |
+| `readConcern`/`readConcernLevel` of `linearizable` or `snapshot` | throws `123` | needs a replica set, as it does in MongoDB |
+| `w: 0` | throws | asks for an unacknowledged write |
+| `w > 1` | throws `2` | `cannot use 'w' > 1 when a host is not replicated` |
+| `socketTimeoutMS` | throws | no per-socket inactivity limit exists; use `timeoutMS` |
+| `tlsCAFile`, `tlsCertificateKeyFile*`, `tlsCRLFile` | throws | the platform's WebSocket and `fetch` use the runtime's trust store |
+| `tlsInsecure: true`, `tlsAllowInvalidCertificates: true`, `tlsAllowInvalidHostnames: true` | throws | certificate validation cannot be relaxed |
+| `proxyHost`, `proxyPort`, `proxyUsername`, `proxyPassword` | throws | the transport cannot be pointed at a SOCKS5 proxy |
+| `srvMaxHosts`, `srvServiceName` | throws | no SRV lookup |
+| `authMechanism` of `MONGODB-X509`, `GSSAPI`, `MONGODB-AWS`, `MONGODB-OIDC` | throws | replaces the password exchange |
+| `monitorCommands: true` | throws | no command-monitoring events are emitted |
+| `pkFactory`, `forceServerObjectId: true` | throws | generated `_id`s would not come from them |
+| `autoEncryption` | throws | fields would be stored in the clear |
+| `raw`, `promote*`, `useBigInt64`, `bsonRegExp`, `serializeFunctions`, `checkKeys`, `fieldsAsRaw`, `enableUtf8Validation` | throws | this driver encodes CBOR and has no BSON layer |
+
+`client.options` reports the merged result. Only honoured options carry a
+default there: reporting `maxPoolSize: 100` would suggest a pool that does not
+exist.
+
+### Connection behaviour that differs from MongoDB
+
+- **`mongodb+srv://` throws.** Resolving a seedlist needs a DNS `SRV` lookup,
+  which this driver cannot perform in every runtime it targets (it ships a
+  browser bundle), and the host in such a string names a discovery record rather
+  than a server. Name the SurrealDB server directly.
+- **A multi-host string throws.** Several hosts ask for replica-set or `mongos`
+  discovery, elections and failover. This driver holds one connection to one
+  node, so quietly using the first host would leave you believing you had
+  failover you do not have.
+- **An unknown query parameter throws**, as it does in MongoDB — a connection
+  string has no type checker, so `?tls=ture` has to be caught. An unrecognised
+  key in the *options object* is tolerated instead: wrapper layers such as
+  mongoose compute those objects and attach bookkeeping of their own.
+- **`?namespace=` is this driver's own parameter**, and MongoDB rejects it.
+- **Value errors are MongoDB's**, in MongoDB's words: `?maxPoolSize=abc`,
+  `?retryWrites=yes` and `?tls=true&ssl=false` all fail the way the official
+  driver fails them, at construction rather than at `connect()`.
 
 ## CRUD operations
 
@@ -236,6 +350,55 @@ const replaced = await users.findOneAndReplace(
   { returnDocument: "after" },
 );
 ```
+
+### Per-operation options
+
+Every CRUD and index method passes its options through one gate, which reads the
+whole object rather than the fields that method happens to use — a computed
+options bag is not checked by TypeScript. Each option is honoured, accepted with
+no effect, or rejected with a reason. Nothing is accepted and silently dropped.
+
+| Option | Behaviour | Notes |
+| --- | --- | --- |
+| `maxTimeMS`, `timeoutMS` | honoured | becomes a SurrealQL `TIMEOUT`; the tightest of the two and the client's `timeoutMS` binds. `0` means no limit, and a value above MongoDB's 32-bit ceiling is refused as MongoDB refuses it. Not available on index operations — SurrealDB's DDL takes no `TIMEOUT` clause |
+| `hint` | honoured | becomes `WITH INDEX <name>`, or `WITH NOINDEX` for `{$natural: …}`. Validated against the collection's real indexes first: SurrealDB *silently ignores* a `WITH INDEX` naming an index that does not exist, so an unmatched hint raises `2` (`BadValue`) as MongoDB does rather than scanning unnoticed |
+| `sort` | honoured | orders the id lookup, which is what decides *which* document a `findOneAnd*`/`replaceOne` modifies |
+| `projection` | honoured | a field list in the `SELECT` for `find`/`findOne`, applied to the returned document for the `findOneAnd*` methods |
+| `upsert`, `returnDocument`, `includeResultMetadata`, `arrayFilters` | honoured | the created document is seeded from the filter's equalities, as MongoDB seeds it |
+| `ignoreUndefined` | honoured | decides whether an `undefined` property is dropped or stored as `null`; overrides the client's setting, including with an explicit `false` |
+| `comment` | accepted, no effect | SurrealDB has no query-level comment mechanism, and a comment cannot change the answer |
+| `readPreference`, `readConcern` of `local`/`majority`/`available` | accepted, no effect | reading the only node is at least what they ask for |
+| `writeConcern`, other than `w: 0` and `w > 1` | accepted, no effect | every write waits for SurrealDB to acknowledge |
+| `batchSize`, `maxAwaitTimeMS`, `noCursorTimeout`, `allowDiskUse`, `allowPartialResults`, `oplogReplay`, `ordered: true` | accepted, no effect | server-cursor and sharding mechanics; results are materialised in one round trip |
+| `session` | throws `MongoTransactionError` | there are no sessions or transactions yet, so the operation would run outside the session while the caller believed it could be rolled back |
+| `readConcern` of `linearizable` or `snapshot` | throws `123` | needs a replica set, as it does in MongoDB |
+| `writeConcern: {w: 0}` | throws | asks for an unacknowledged write |
+| `writeConcern: {w: >1}` | throws `2` | `cannot use 'w' > 1 when a host is not replicated` |
+| `collation` | throws | SurrealDB compares strings by code point, so a locale-aware comparison would match and order differently |
+| `let` | throws | `$$var` references need an expression compiler this driver does not have |
+| `explain` | throws | SurrealDB's `EXPLAIN` describes a different planner |
+| `bypassDocumentValidation: true` | throws | `ASSERT`s are enforced inside the storage engine |
+| `ordered: false` | throws | a SurrealDB batch insert is atomic, so the documents it promises to keep would not be written |
+| `forceServerObjectId: true` | throws | the reported `insertedId` would have nothing truthful to say |
+| `min`, `max` | throws | no index-bound clause, so the scan would not be restricted (in `createIndex` these are a `2d` index's coordinate limits, and are accepted there) |
+| `returnKey`, `showRecordId`, `singleBatch`, `tailable`, `awaitData` | throws | no index-key projection, no storage-level record id and no capped collections |
+| `out`, `dbName` | throws | the results would not be written where the caller asked, or read from the database they named |
+| `raw`, `promote*`, `useBigInt64`, `bsonRegExp`, `serializeFunctions`, `checkKeys`, `fieldsAsRaw`, `enableUtf8Validation` | throws | this driver encodes CBOR and has no BSON layer |
+
+An option this driver does not recognise **at all** is tolerated, deliberately:
+real MongoDB drivers ignore unknown keys, and wrapper layers such as mongoose
+compute their options objects and attach bookkeeping of their own.
+
+### A collection that has never been written to
+
+SurrealDB refuses to read a table it holds no definition for, where MongoDB
+treats a missing collection as an empty one. The single-document write paths —
+`updateOne`, `deleteOne`, `replaceOne` and the `findOneAnd*` methods — read that
+refusal as "no match", so `upsert: true` creates the first document of a
+collection and a `deleteOne` reports `deletedCount: 0`. The read paths
+(`find`, `findOne`, `countDocuments`, `estimatedDocumentCount`, `distinct`) and
+the multi-document writes (`updateMany`, `deleteMany`) still raise `26`
+(`NamespaceNotFound`) where MongoDB would return nothing.
 
 ## Query filters
 
@@ -572,6 +735,10 @@ const db = client.db("mydb");
 const collections = await db.listCollections();
 // [{ name: "users", type: "collection" }, ...]
 
+// Filter by the fields a collection reply carries
+await db.listCollections({ name: "users" });
+await db.listCollections({ name: { $in: ["users", "logs"] } });
+
 // Create a collection explicitly
 const logs = await db.createCollection("logs");
 
@@ -581,6 +748,23 @@ await db.dropCollection("logs");
 // Drop the entire database
 await db.dropDatabase();
 ```
+
+Every `Db` method runs its options through the same gate as the collection
+operations, so an unsupported option is refused here too rather than dropped a
+layer above the code that would have applied it — `session` most importantly.
+
+`listCollections` filters the *reply*, so its predicate applies to the
+`{name, type}` documents rather than to stored rows. `name` and `type` are
+matched with `$eq`, `$ne`, `$in`, `$nin` and `$regex`; a filter naming any other
+field is rejected, because a predicate over data the reply does not carry would
+otherwise silently match everything.
+
+`createCollection` rejects the collection-shaping options `DEFINE TABLE` has no
+counterpart for — `capped`, `size`, `max`, `validator`, `validationLevel`,
+`validationAction`, `timeseries`, `expireAfterSeconds`, `viewOn`, `pipeline` and
+`clusteredIndex`. Handing back an ordinary table for a request that asked for a
+capped one, a view, or a time-series collection would misrepresent the storage
+being written to, rather than merely omitting a refinement.
 
 ## Contributing
 

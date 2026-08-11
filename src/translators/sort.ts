@@ -24,26 +24,38 @@ import { isIdField, SURREAL_ID_FIELD } from "./filter/id-field.ts";
  * Returns an empty string when no sort is specified.
  */
 export function translateSort(sort?: Sort | null): string {
-	if (!sort) return "";
-
-	// String shorthand: single field ascending
-	if (typeof sort === "string") {
-		return `ORDER BY ${escapeSortField(sort)} ASC`;
-	}
-
-	// Array of tuples: [["name", 1], ["age", -1]]
-	if (Array.isArray(sort)) {
-		const parts = sort.map(([field, dir]) => {
-			return `${escapeSortField(field)} ${normaliseDirection(dir)}`;
-		});
-		return parts.length > 0 ? `ORDER BY ${parts.join(", ")}` : "";
-	}
-
-	// Object: { name: 1, age: -1 }
-	const parts = Object.entries(sort).map(([field, dir]) => {
-		return `${escapeSortField(field)} ${normaliseDirection(dir)}`;
-	});
+	const parts = sortEntries(sort).map(
+		([field, dir]) => `${escapeSortField(field)} ${normaliseDirection(dir)}`,
+	);
 	return parts.length > 0 ? `ORDER BY ${parts.join(", ")}` : "";
+}
+
+/**
+ * The columns a sort orders by, escaped, without duplicates.
+ *
+ * SurrealDB requires every `ORDER BY` idiom to appear in the statement's field
+ * list, so a `SELECT` that names its fields has to name these too:
+ * `SELECT id FROM t ORDER BY k` is a parse error, not a slower query. Returned
+ * apart from the clause because only the caller knows what its field list
+ * already contains.
+ */
+export function sortColumns(sort?: Sort | null): string[] {
+	return [
+		...new Set(sortEntries(sort).map(([field]) => escapeSortField(field))),
+	];
+}
+
+/**
+ * The `(field, direction)` pairs a sort denotes, in the order they compare.
+ *
+ * MongoDB accepts a bare field name, an array of tuples and an object, and the
+ * clause and the column list have to agree on how each is read.
+ */
+function sortEntries(sort?: Sort | null): [string, SortDirection][] {
+	if (!sort) return [];
+	if (typeof sort === "string") return [[sort, 1]];
+	if (Array.isArray(sort)) return sort.map(([field, dir]) => [field, dir]);
+	return Object.entries(sort);
 }
 
 /**

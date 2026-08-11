@@ -14,11 +14,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Subprocess } from "bun";
-import {
-	MongoClient,
-	MongoCompatibilityError,
-	MongoNotConnectedError,
-} from "../../src/index.ts";
+import { MongoClient, MongoCompatibilityError } from "../../src/index.ts";
 import { waitForSurreal } from "./helpers.ts";
 
 const PORT = 18131;
@@ -74,7 +70,12 @@ describe("minimum supported SurrealDB version", () => {
 	test("a rejected connect leaves the client unusable rather than half-open", async () => {
 		const client = clientReporting("2.3.7");
 		await expect(client.connect()).rejects.toThrow(MongoCompatibilityError);
-		expect(() => client.db("compatdb")).toThrow(MongoNotConnectedError);
+		// `db()` is available before connecting, as it is in the official driver, so
+		// the refusal has to surface on the operation instead — and it does so while
+		// the operation is still choosing its dialect, before any statement is built.
+		expect(() =>
+			client.db("compatdb").collection("things").countDocuments(),
+		).toThrow(MongoCompatibilityError);
 	});
 
 	test("older majors are rejected too", async () => {

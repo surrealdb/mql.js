@@ -132,21 +132,31 @@ describe("invalid update operators", () => {
 // ---------------------------------------------------------------------------
 
 describe("operations on disconnected client", () => {
-	test("db() throws MongoNotConnectedError when not connected", () => {
+	test("an operation on a never-connected client connects lazily", async () => {
 		const disconnected = new MongoClient(
 			`mongodb://root:root@127.0.0.1:${PORT}/testdb?namespace=test`,
 		);
-		// Never called connect()
-		expect(() => disconnected.db()).toThrow(MongoNotConnectedError);
+		// Never called connect(): the official driver allows this, and the first
+		// operation is what establishes the connection.
+		try {
+			await disconnected.db().collection("lazy_ops").insertOne({ n: 1 });
+			expect(disconnected.serverVersion).toBeDefined();
+		} finally {
+			await disconnected.close();
+		}
 	});
 
-	test("db() throws after close()", async () => {
+	test("an operation after close() throws MongoNotConnectedError", async () => {
 		const tempClient = new MongoClient(
 			`mongodb://root:root@127.0.0.1:${PORT}/testdb?namespace=test`,
 		);
 		await tempClient.connect();
+		const collection = tempClient.db().collection("closed_ops");
 		await tempClient.close();
-		expect(() => tempClient.db()).toThrow(MongoNotConnectedError);
+
+		await expect(collection.countDocuments()).rejects.toThrow(
+			MongoNotConnectedError,
+		);
 	});
 });
 

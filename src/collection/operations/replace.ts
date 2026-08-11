@@ -5,8 +5,8 @@
  * `UPDATE`, so we look up the matching id first and `UPDATE $rid CONTENT`.
  */
 
-import type { RecordId } from "surrealdb";
 import { MongoInvalidArgumentError } from "../../errors.ts";
+import { statement } from "../../surreal/sql/statement.ts";
 import { translateFilter } from "../../translators/filter.ts";
 import { translateReplacement } from "../../translators/update.ts";
 import type {
@@ -16,12 +16,15 @@ import type {
 	UpdateResult,
 	WithoutId,
 } from "../../types.ts";
-import { prepareInsert } from "../../utils/id.ts";
 import { makeUpdateResult } from "../../utils/result.ts";
+import { applyUndefinedPolicy } from "../../utils/undefined.ts";
 import {
 	filterOptionsFor,
 	type OperationContext,
 } from "../operation-context.ts";
+import { resolveOperationPlan } from "../operation-options.ts";
+import { selectOneId } from "./find.ts";
+import { insertUpsertedReplacement } from "./upsert.ts";
 
 export async function replaceOne<TSchema extends Document>(
 	ctx: OperationContext,
@@ -29,8 +32,18 @@ export async function replaceOne<TSchema extends Document>(
 	replacement: WithoutId<TSchema>,
 	options?: ReplaceOptions,
 ): Promise<UpdateResult> {
-	const { clause: whereClause, bindings: filterBindings } = translateFilter(
+	const plan = await resolveOperationPlan(ctx, options, { indexHint: true });
+	const criteria = applyUndefinedPolicy(
 		filter as Document,
+		plan.ignoreUndefined,
+	);
+	const document = applyUndefinedPolicy(
+		replacement as Document,
+		plan.ignoreUndefined,
+	);
+
+	const { clause: whereClause, bindings: filterBindings } = translateFilter(
+		criteria,
 		await filterOptionsFor(ctx, filter as Document),
 	);
 
@@ -40,38 +53,33 @@ export async function replaceOne<TSchema extends Document>(
 		);
 	}
 
-	const findSql = `SELECT * FROM ${ctx.escapedTable} WHERE ${whereClause} LIMIT 1`;
-	const existing = await ctx.executor.query<Record<string, unknown>[]>(
-		findSql,
+	const rid = await selectOneId(
+		ctx,
+		whereClause,
+		plan,
 		filterBindings,
+		options?.sort,
 	);
 
-	if (!existing || existing.length === 0) {
+	if (rid === undefined) {
 		if (options?.upsert) {
-			const prepared = prepareInsert(
-				ctx.collectionName,
-				replacement as Document,
+			const inserted = await insertUpsertedReplacement(
+				ctx,
+				criteria,
+				document,
+				plan,
 			);
-			await ctx.executor.createRecord(prepared.recordId!, prepared.data);
-			return makeUpdateResult([], prepared.insertedId);
+			return makeUpdateResult([], inserted.insertedId);
 		}
 		return makeUpdateResult([]);
 	}
 
-	const record = existing[0];
-	const rid = record.id as RecordId;
-	const paramOffset = Object.keys(filterBindings).length;
 	const { clause: contentClause, bindings: contentBindings } =
-		translateReplacement(replacement as Document, paramOffset);
-	const allBindings: Record<string, unknown> = {
-		...filterBindings,
-		...contentBindings,
-		rid,
-	};
+		translateReplacement(document, 0);
 
 	const rows = await ctx.executor.query<Record<string, unknown>[]>(
-		`UPDATE $rid ${contentClause}`,
-		allBindings,
+		statement(`UPDATE $__rid ${contentClause}`, plan.timeout),
+		{ ...contentBindings, __rid: rid },
 	);
 	return makeUpdateResult(rows || []);
 }
