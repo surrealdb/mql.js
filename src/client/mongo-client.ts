@@ -17,8 +17,14 @@ import {
 	MongoInvalidArgumentError,
 	MongoNotConnectedError,
 } from "../errors.ts";
+import type {
+	ClientSessionOptions,
+	WithSessionCallback,
+} from "../session/client-session.ts";
+import { ClientSession } from "../session/client-session.ts";
 import type { QueryExecutor } from "../surreal/query-executor.ts";
 import { SurrealdbExecutor } from "../surreal/surrealdb-executor.ts";
+import type { TransactionScope } from "../surreal/transaction-executor.ts";
 import {
 	isUnsupportedVersion,
 	MINIMUM_SURREALDB_VERSION,
@@ -47,6 +53,8 @@ export class MongoClient {
 	private _closed = false;
 	/** In-flight or completed connect, so concurrent operations share one. */
 	private _connecting: Promise<void> | undefined;
+	/** Sessions handed out and not yet ended, so `close()` can settle them. */
+	private readonly _sessions = new Set<ClientSession>();
 
 	/**
 	 * Create a new MongoClient instance.
@@ -132,14 +140,104 @@ export class MongoClient {
 		};
 	}
 
+	/**
+	 * Create a session, in which operations can share a transaction.
+	 *
+	 * Synchronous, as the official driver's is: a session is a client-side object
+	 * and nothing is asked of the server until a transaction started on it runs
+	 * its first statement. That also means a session may be created before
+	 * `connect()`.
+	 *
+	 * Refused up front on an `http://` or `https://` connection. SurrealDB's HTTP
+	 * engine has no transactions, and this driver's sessions exist to carry one, so
+	 * handing back a session that could never roll anything back would move the
+	 * failure to whichever write the caller believed was protected.
+	 */
+	startSession(options?: ClientSessionOptions): ClientSession {
+		const transport = new URL(this._parsed.surrealUrl).protocol.slice(0, -1);
+		if (transport === "http" || transport === "https") {
+			throw new MongoCompatibilityError(
+				`Sessions are not supported over the '${transport}' transport: SurrealDB's HTTP engine has no transaction support, so nothing done in a session opened here could be committed or rolled back as a unit. Connect with 'mongodb://', 'ws://' or 'wss://' instead.`,
+			);
+		}
+
+		const session = new ClientSession(this, options);
+		this._sessions.add(session);
+		return session;
+	}
+
+	/**
+	 * Run `executor` with a session, ending it however the callback finishes.
+	 *
+	 * The session is only ended, not committed: a transaction the callback started
+	 * and did not commit is aborted, as it is by `endSession()`.
+	 */
+	async withSession<T = unknown>(executor: WithSessionCallback<T>): Promise<T>;
+	async withSession<T = unknown>(
+		options: ClientSessionOptions,
+		executor: WithSessionCallback<T>,
+	): Promise<T>;
+	async withSession<T = unknown>(
+		optionsOrExecutor: ClientSessionOptions | WithSessionCallback<T>,
+		possibleExecutor?: WithSessionCallback<T>,
+	): Promise<T> {
+		const options =
+			typeof optionsOrExecutor === "function" ? undefined : optionsOrExecutor;
+		const executor =
+			typeof optionsOrExecutor === "function"
+				? optionsOrExecutor
+				: possibleExecutor;
+
+		if (typeof executor !== "function") {
+			throw new MongoInvalidArgumentError(
+				"Missing required callback argument to withSession()",
+			);
+		}
+
+		const session = this.startSession(options);
+		try {
+			return await executor(session);
+		} finally {
+			await session.endSession();
+		}
+	}
+
 	/** Close the connection and release resources. */
 	async close(): Promise<void> {
+		// Sessions first, and while the connection is still up: ending one aborts
+		// the transaction it holds, which takes a round trip.
+		for (const session of [...this._sessions]) {
+			await session.endSession({ force: true }).catch(() => {});
+		}
+		this._sessions.clear();
+
 		this._closed = true;
 		this._connecting = undefined;
 		if (this._connected) {
 			this._connected = false;
 			await this._inner.close();
 		}
+	}
+
+	/**
+	 * @internal Begin a SurrealDB transaction, connecting first if necessary.
+	 *
+	 * Called by a session when a statement first needs the transaction that
+	 * `startTransaction()` promised.
+	 */
+	async _beginTransaction(): Promise<TransactionScope> {
+		if (this._closed) {
+			throw new MongoNotConnectedError(
+				"Client must be connected before running operations",
+			);
+		}
+		await this.ensureConnected();
+		return this._inner.beginTransaction();
+	}
+
+	/** @internal Stop tracking a session that has ended. */
+	_forgetSession(session: ClientSession): void {
+		this._sessions.delete(session);
 	}
 
 	/**
