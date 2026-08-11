@@ -2,6 +2,7 @@
  * `createIndex` / `dropIndex` / `listIndexes` operations.
  */
 
+import { escapeFieldList, escapeIdentifier } from "../../surreal/sql/escape.ts";
 import type {
 	CreateIndexOptions,
 	IndexDescription,
@@ -29,7 +30,8 @@ export async function createIndex(
 	const isTextIndex = entries.some(([, v]) => v === "text");
 
 	const name = options?.name ?? generateIndexName(spec);
-	const fields = entries.map(([k]) => k).join(", ");
+	const escapedName = escapeIdentifier(name);
+	const fields = escapeFieldList(entries.map(([k]) => k));
 
 	if (isTextIndex) {
 		const ensureAnalyzer = ctx.dialect.ensureBlankAnalyzerSql();
@@ -37,11 +39,11 @@ export async function createIndex(
 			await ctx.executor.query(ensureAnalyzer);
 		}
 		await ctx.executor.query(
-			`DEFINE INDEX ${name} ON ${ctx.escapedTable} FIELDS ${fields} ${ctx.dialect.fullTextKeyword} ANALYZER blank BM25 HIGHLIGHTS`,
+			`DEFINE INDEX ${escapedName} ON ${ctx.escapedTable} FIELDS ${fields} ${ctx.dialect.fullTextKeyword} ANALYZER blank BM25 HIGHLIGHTS`,
 		);
 	} else {
 		await ctx.executor.query(
-			`DEFINE INDEX ${name} ON ${ctx.escapedTable} FIELDS ${fields}`,
+			`DEFINE INDEX ${escapedName} ON ${ctx.escapedTable} FIELDS ${fields}`,
 		);
 	}
 

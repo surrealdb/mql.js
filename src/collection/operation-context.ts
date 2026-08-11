@@ -32,5 +32,6 @@ export function filterOptionsFor(
 	return {
 		textFields: fields.length > 0 ? [...fields] : undefined,
 		dialect: ctx.dialect,
+		collection: ctx.collectionName,
 	};
 }

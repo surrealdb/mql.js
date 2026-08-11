@@ -2,9 +2,11 @@
  * Array operators: $all, $size, $elemMatch.
  */
 
+import { escapeFieldPath } from "../../../surreal/sql/escape.ts";
 import type { Document } from "../../../types.ts";
 import type { FilterOperator } from "../operator-registry.ts";
 import type { TranslateContext } from "../translate-context.ts";
+import { arrayTypeCheckFn, equalityPredicate } from "./comparison.ts";
 
 function isOperatorObject(value: unknown): boolean {
 	if (value === null || value === undefined || typeof value !== "object") {
@@ -17,47 +19,65 @@ function isOperatorObject(value: unknown): boolean {
 	return keys.length > 0 && keys.every((k) => k.startsWith("$"));
 }
 
+/**
+ * `$elemMatch` matches a document when at least one element of `field`
+ * satisfies *every* condition. SurrealQL expresses that as a filtered
+ * projection whose length is non-zero: `array::len(field[WHERE …]) > 0`.
+ *
+ * Defect fixed: a condition made only of field/value pairs took a whole-object
+ * equality shortcut (`field CONTAINS $p`), so `{items: {$elemMatch: {x: 1}}}`
+ * matched only an element that was *exactly* `{x: 1}` and missed
+ * `{x: 1, y: 2}` — the ordinary case. MongoDB's condition is a partial match
+ * (extra fields on the element are irrelevant), so every branch now compiles to
+ * a predicate evaluated per element.
+ *
+ * The `type::is_array` guard is required, not cosmetic: verified live on
+ * SurrealDB 3.x, projecting out of a NONE (absent field) yields a one-element
+ * result rather than an empty one, so an unguarded
+ * `array::len(missing[WHERE …]) > 0` matches every document whose condition is
+ * vacuously true for NONE (e.g. `{$elemMatch: {x: null}}`).
+ */
 function translateElemMatch(
 	field: string,
 	conditions: Document,
 	ctx: TranslateContext,
 ): string {
-	const isAllEquality = Object.keys(conditions).every(
-		(k) => !k.startsWith("$") && !isOperatorObject(conditions[k]),
-	);
+	const guard = `${arrayTypeCheckFn(ctx)}(${field})`;
 
-	if (isAllEquality) {
-		const p = ctx.bind(conditions);
-		return `${field} CONTAINS $${p}`;
-	}
+	// Operator keys with no field name apply to the element itself, addressed as
+	// `$this`. They are collected and translated together so a `$regex` can see
+	// its sibling `$options`.
+	const elementOps: Document = {};
+	const parts: string[] = [];
 
-	const isAllOperators = Object.keys(conditions).every((k) =>
-		k.startsWith("$"),
-	);
-
-	if (isAllOperators) {
-		const subParts: string[] = [];
-		for (const [op, val] of Object.entries(conditions)) {
-			subParts.push(
-				...ctx
-					.translateOperators("$this", { [op]: val } as Document)
-					.split(" AND "),
-			);
-		}
-		return `array::len(${field}[WHERE ${subParts.join(" AND ")}]) > 0`;
-	}
-
-	const subParts: string[] = [];
 	for (const [key, value] of Object.entries(conditions)) {
+		if (key.startsWith("$")) {
+			elementOps[key] = value;
+			continue;
+		}
+
+		const path = escapeFieldPath(key);
 		if (isOperatorObject(value)) {
-			subParts.push(ctx.translateOperators(key, value as Document));
+			parts.push(ctx.translateOperators(path, value as Document));
+		} else if (value instanceof RegExp) {
+			parts.push(ctx.translateOperators(path, { $regex: value }));
 		} else {
-			const p = ctx.bind(value);
-			subParts.push(`${key} = $${p}`);
+			// Sub-field equality is MongoDB equality, so an element whose `t` is
+			// an array still matches `{$elemMatch: {t: "a"}}`.
+			parts.push(equalityPredicate(path, value, ctx));
 		}
 	}
 
-	return `array::len(${field}[WHERE ${subParts.join(" AND ")}]) > 0`;
+	if (Object.keys(elementOps).length > 0) {
+		parts.unshift(ctx.translateOperators("$this", elementOps));
+	}
+
+	// `$elemMatch: {}` constrains nothing beyond the field being a non-empty
+	// array. `array::len()` is typed on arrays and errors on a NONE, which the
+	// guard's short-circuit prevents.
+	if (parts.length === 0) return `(${guard} AND array::len(${field}) > 0)`;
+
+	return `(${guard} AND array::len(${field}[WHERE ${parts.join(" AND ")}]) > 0)`;
 }
 
 export const arrayOperators: FilterOperator[] = [

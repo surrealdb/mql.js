@@ -15,6 +15,11 @@ export interface TranslateContext {
 	readonly dialect: SurrealDialect;
 	/** Field names that have a FULLTEXT index (used for `$text`). */
 	readonly textFields: string[] | undefined;
+	/**
+	 * Collection (table) being queried, used to build `RecordId`s for `_id`
+	 * conditions. Undefined when the caller did not supply one.
+	 */
+	readonly collection: string | undefined;
 
 	/** All bindings collected during this call; mutated by operators. */
 	readonly bindings: Record<string, unknown>;
