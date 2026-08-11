@@ -7,12 +7,14 @@
  *
  *   - **honoured** — `maxTimeMS`/`timeoutMS` become a `TIMEOUT` clause, `hint`
  *     becomes `WITH INDEX`, `ignoreUndefined` decides what a caller's
- *     `undefined` becomes;
+ *     `undefined` becomes, `session` routes the statement into the transaction
+ *     that session is running (resolved by the collection, not here — the gate
+ *     validates options rather than executing against them);
  *   - **accepted, no effect** — only where the option cannot change what the
  *     caller gets or what survives a restart, each one listed with its reason
  *     alongside `REJECTED_OPTIONS` below;
- *   - **rejected** — everything whose absence would change the answer, the
- *     durability, or the transaction the caller believes they are in.
+ *   - **rejected** — everything whose absence would change the answer or the
+ *     durability the caller asked for.
  *
  * The gate reads the whole options object, not just the fields the calling
  * operation happens to consume: TypeScript's excess-property check disappears
@@ -30,7 +32,6 @@ import {
 	MongoErrorCode,
 	MongoInvalidArgumentError,
 	MongoServerError,
-	MongoTransactionError,
 } from "../errors.ts";
 import { escapeIdentifier } from "../surreal/sql/escape.ts";
 import type { CommandOperationOptions, Document, Hint } from "../types.ts";
@@ -95,8 +96,15 @@ export const NO_PLAN: OperationPlan = {
  *     node, and reading from it is *stronger* than the secondary read any
  *     non-primary preference asks for, so no promise is broken.
  *   - `readConcern: 'local' | 'majority' | 'available'`: on a single node these
- *     collapse into the same read. `'linearizable'` and `'snapshot'` do not, and
- *     are rejected below — as MongoDB itself rejects them off a replica set.
+ *     collapse into the same read. `'linearizable'` does not, and is rejected
+ *     below — as MongoDB itself rejects it off a replica set.
+ *   - `readConcern: 'snapshot'`: satisfied by construction. It asks that every
+ *     read in the operation — or, with a session, in the transaction — come from
+ *     one consistent point in time, and SurrealDB's MVCC gives exactly that: a
+ *     statement is a transaction, and a read inside an open transaction does not
+ *     observe a commit another connection made after the transaction began
+ *     (verified against 3.1 and 3.2). Nothing here is a promise about a second
+ *     node, so nothing is left unkept.
  *   - `writeConcern` other than `w: 0` and `w > 1`: this driver always waits for
  *     the server's acknowledgement, which is at least what `w: 1`,
  *     `w: 'majority'`, `journal` and `wtimeoutMS` ask for on a one-node
@@ -166,32 +174,21 @@ const BSON_OPTIONS = [
 
 const REJECTED_OPTIONS: readonly RejectionRule[] = [
 	{
-		option: "session",
-		applies: supplied,
-		// `MongoTransactionError` rather than a compatibility error: a session is
-		// how a caller asks for a transaction, and this is the class that will
-		// still be right once sessions exist. Silently dropping it is the worst
-		// case in the whole surface — mongoose injects `session` from an
-		// AsyncLocalStorage, so a `conn.transaction()` write would look protected
-		// while running unprotected.
-		reject: () =>
-			new MongoTransactionError(
-				"Option 'session' is not supported: this driver has no sessions or transactions yet, so the operation would run outside the session while the caller believed it could be rolled back",
-			),
-	},
-	{
 		option: "writeConcern",
 		applies: (value) => writeConcernRejection(value) !== undefined,
 		reject: writeConcernError,
 	},
 	{
 		option: "readConcern",
-		applies: (value) => {
-			const level = readConcernLevel(value);
-			return level === "linearizable" || level === "snapshot";
-		},
-		// MongoDB's own refusal, verbatim and with its code: the reason is the same
-		// one — there is no second node to establish the guarantee against.
+		// `snapshot` asks the store to *be* something — one consistent point in
+		// time per operation or transaction — which SurrealDB is, so it is accepted
+		// above. `linearizable` asks the server to *do* something before answering:
+		// confirm that no newer primary has been elected, so the read reflects every
+		// majority-acknowledged write that preceded it. There is no election to
+		// confirm and no step this driver performs in its place, so accepting it
+		// would promise a check that never happens.
+		applies: (value) => readConcernLevel(value) === "linearizable",
+		// MongoDB's own refusal, verbatim and with its code.
 		reject: (value) =>
 			new MongoServerError(
 				`node needs to be a replica set member to use readConcern: ${readConcernLevel(value)}`,

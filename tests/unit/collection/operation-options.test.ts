@@ -15,7 +15,6 @@ import {
 	MongoErrorCode,
 	MongoInvalidArgumentError,
 	MongoServerError,
-	MongoTransactionError,
 } from "../../../src/errors.ts";
 import { makeContext } from "../../helpers/operation-context.ts";
 
@@ -36,10 +35,16 @@ describe("assertSupportedOptions", () => {
 		).not.toThrow();
 	});
 
-	test("`session` is a transaction error, not a compatibility one", () => {
-		expect(() => assertSupportedOptions({ session: {} as never })).toThrow(
-			MongoTransactionError,
-		);
+	test("`session` is honoured elsewhere, so the gate has nothing to say about it", () => {
+		// The gate decides which options this driver can serve; a session is served
+		// by routing the statement into its transaction, which the collection does
+		// when it builds the operation's context. Refusing it here would make every
+		// transactional call impossible — and validating it here would duplicate
+		// `sessionExecutor`, the one place that can tell a live session from an
+		// ended one or one belonging to another client.
+		expect(() =>
+			assertSupportedOptions({ session: {} as never }),
+		).not.toThrow();
 		// A computed options bag routinely carries the key with nothing in it.
 		expect(() =>
 			assertSupportedOptions({ session: undefined as never }),
@@ -73,10 +78,14 @@ describe("assertSupportedOptions", () => {
 		expect(() =>
 			assertSupportedIndexOptions({ min: -180, max: 180 } as never),
 		).not.toThrow();
-		// Everything else is still refused there.
-		expect(() => assertSupportedIndexOptions({ session: {} as never })).toThrow(
-			MongoTransactionError,
-		);
+		// Only those two names are redefined; the rest of the policy still applies,
+		// so an index operation cannot smuggle in an option a query could not.
+		expect(() =>
+			assertSupportedIndexOptions({ collation: { locale: "en" } }),
+		).toThrow(/'collation' is not supported/);
+		expect(() =>
+			assertSupportedIndexOptions({ readConcern: "linearizable" }),
+		).toThrow(MongoServerError);
 	});
 });
 

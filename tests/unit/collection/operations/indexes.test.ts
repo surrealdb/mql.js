@@ -16,7 +16,7 @@ import {
 	MongoServerError,
 } from "../../../../src/errors.ts";
 import { V3Dialect } from "../../../../src/translators/dialect/index.ts";
-import type { FakeQueryExecutor } from "../../../helpers/fake-executor.ts";
+import { FakeQueryExecutor } from "../../../helpers/fake-executor.ts";
 import { makeContext } from "../../../helpers/operation-context.ts";
 
 /** Program the next `INFO FOR TABLE … STRUCTURE` read. */
@@ -187,6 +187,31 @@ describe("createIndex – text indexes", () => {
 			"DEFINE INDEX title_text ON users FIELDS title FULLTEXT ANALYZER blank BM25 HIGHLIGHTS COMMENT $mqlIndexMeta",
 		]);
 		expect(ctx.indexes.textFields).toEqual(["title"]);
+	});
+
+	// SurrealDB does not show a `DEFINE INDEX` an analyzer defined earlier in the
+	// same transaction, so a text index created inside one would fail with "the
+	// analyzer does not exist" if the prerequisite travelled with it. The analyzer
+	// is a database-level `IF NOT EXISTS` definition shared by every text index, so
+	// it goes to the connection while the index stays in the caller's transaction —
+	// and is rolled back with it.
+	test("the analyzer a caller's transaction needs is defined outside it", async () => {
+		const connection = new FakeQueryExecutor();
+		const { ctx, executor } = makeContext({
+			dialect: new V3Dialect(),
+			inTransaction: true,
+			connection,
+		});
+
+		await createIndex(ctx, { title: "text" });
+
+		expect(connection.queries.map((q) => q.sql)).toEqual([
+			"DEFINE ANALYZER IF NOT EXISTS blank TOKENIZERS blank FILTERS lowercase",
+		]);
+		expect(executor.queries.map((q) => q.sql)).toEqual([
+			INFO_SQL,
+			"DEFINE INDEX title_text ON users FIELDS title FULLTEXT ANALYZER blank BM25 HIGHLIGHTS COMMENT $mqlIndexMeta",
+		]);
 	});
 
 	test("a multi-field text index becomes one FULLTEXT index per field", async () => {
