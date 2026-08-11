@@ -4,9 +4,12 @@
  * never see raw `surrealdb` errors.
  */
 
-import type { Surreal } from "surrealdb";
+import { Features, type Surreal } from "surrealdb";
+import { MongoCompatibilityError } from "../errors.ts";
 import { mapQueryError } from "./error-mapper.ts";
 import type { QueryExecutor } from "./query-executor.ts";
+import type { TransactionScope } from "./transaction-executor.ts";
+import { TransactionExecutor } from "./transaction-executor.ts";
 
 export class SurrealdbExecutor implements QueryExecutor {
 	private readonly surreal: Surreal;
@@ -33,6 +36,36 @@ export class SurrealdbExecutor implements QueryExecutor {
 		try {
 			const results = await this.surreal.query<[T]>(sql, bindings);
 			return results[0];
+		} catch (err) {
+			throw mapQueryError(err);
+		}
+	}
+
+	/**
+	 * Open a SurrealDB transaction and return an executor scoped to it.
+	 *
+	 * The connection must already be up, because whether transactions are
+	 * available is a property of the engine that was selected for it. The SDK
+	 * answers that through `isFeatureSupported`, which covers both halves of the
+	 * question — an engine without the capability (its HTTP engine has none) and a
+	 * server too old to offer it — and is asked here rather than inferred from the
+	 * URL scheme, so a caller supplying their own engine gets a truthful answer.
+	 *
+	 * The whole of it is translated, the capability question included: that
+	 * question is put to the live connection, so a connection that has dropped
+	 * since the caller's `startTransaction()` answers it by throwing, and the
+	 * caller must see this driver's network error rather than the SDK's.
+	 */
+	async beginTransaction(): Promise<TransactionScope> {
+		try {
+			if (!this.surreal.isFeatureSupported(Features.Transactions)) {
+				throw new MongoCompatibilityError(
+					"Transactions are not available on this connection: the SurrealDB engine in use does not support them. A WebSocket connection to SurrealDB 3.0.0 or newer is required.",
+				);
+			}
+
+			const transaction = await this.surreal.beginTransaction();
+			return new TransactionExecutor(transaction, this._serverVersion);
 		} catch (err) {
 			throw mapQueryError(err);
 		}
