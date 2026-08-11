@@ -26,6 +26,12 @@ export interface TranslateUpdateOptions {
 	startIndex?: number;
 	/** Array filters for positional filtered operators ($[identifier]). */
 	arrayFilters?: Document[];
+	/**
+	 * True when the caller will run the resulting clause as an upsert, so the
+	 * statement may insert. Only `$setOnInsert` depends on it, and MongoDB
+	 * applies that operator solely on the inserting path.
+	 */
+	upsert?: boolean;
 	/** Override the operator registry (advanced). */
 	registry?: UpdateOperatorRegistry;
 }
@@ -50,6 +56,7 @@ export function translateUpdate(
 		bindings,
 		parts,
 		arrayFilters: options?.arrayFilters,
+		upsert: options?.upsert === true,
 		nextParam: () => `p${counter++}`,
 		bind(value) {
 			const name = ctx.nextParam();
@@ -63,10 +70,13 @@ export function translateUpdate(
 
 	for (const [op, fields] of Object.entries(update)) {
 		if (typeof fields !== "object" || fields === null) {
-			throw new Error(`Update operator ${op} requires an object value`);
+			throw new MongoInvalidArgumentError(
+				`Update operator ${op} requires an object value`,
+			);
 		}
 		const handler = registry.get(op);
 		const entries = Object.entries(fields as Record<string, unknown>);
+		rejectIdMutation(entries);
 		handler.apply(entries, ctx);
 	}
 
@@ -97,4 +107,26 @@ export {
 	type UpdateOperator,
 	UpdateOperatorRegistry,
 } from "./operator-registry.ts";
+
+import { MongoInvalidArgumentError } from "../../errors.ts";
+import { MONGO_ID_FIELD } from "../filter/id-field.ts";
+
 export type { UpdateContext } from "./update-context.ts";
+
+/**
+ * Reject an update that targets `_id`, matching MongoDB's immutable-id rule.
+ *
+ * Without this the field would be written literally: SurrealDB stores identity
+ * in `id`, so `{$set: {_id: x}}` emitted `SET _id = x` and created a *second*,
+ * phantom `_id` column that shadowed the real identity on read — leaving the
+ * document with an `_id` that no query could match.
+ */
+function rejectIdMutation(entries: [string, unknown][]): void {
+	for (const [field] of entries) {
+		if (field === MONGO_ID_FIELD || field.startsWith(`${MONGO_ID_FIELD}.`)) {
+			throw new MongoInvalidArgumentError(
+				`Performing an update on the path '${field}' would modify the immutable field '_id'`,
+			);
+		}
+	}
+}

@@ -5,7 +5,7 @@ import {
 	findOneAndReplace,
 	findOneAndUpdate,
 } from "../../../../src/collection/operations/find-and-modify.ts";
-import { MongoServerError } from "../../../../src/errors.ts";
+import { MongoInvalidArgumentError } from "../../../../src/errors.ts";
 import type { Document, ModifyResult } from "../../../../src/types.ts";
 import { makeContext } from "../../../helpers/operation-context.ts";
 
@@ -108,7 +108,7 @@ describe("findOneAndDelete", () => {
 		const out = await findOneAndDelete<User>(ctx, { name: "Alice" });
 
 		expect(executor.queries[0].sql).toBe(
-			"SELECT id FROM users WHERE name = $p0 LIMIT 1",
+			"SELECT id FROM users WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0)) LIMIT 1",
 		);
 		expect(executor.queries[1].sql).toBe("DELETE $__rid RETURN BEFORE");
 		expect(out).toMatchObject({ name: "Alice" });
@@ -133,11 +133,11 @@ describe("findOneAndDelete", () => {
 });
 
 describe("findOneAndReplace", () => {
-	test("requires a non-empty filter (Mongo-compat error)", async () => {
+	test("requires a non-empty filter (caller error, not a server error)", async () => {
 		const { ctx } = makeContext();
 		await expect(
 			findOneAndReplace<User>(ctx, {}, { name: "x", age: 0 } as User),
-		).rejects.toBeInstanceOf(MongoServerError);
+		).rejects.toBeInstanceOf(MongoInvalidArgumentError);
 	});
 
 	test("returns null when no match", async () => {

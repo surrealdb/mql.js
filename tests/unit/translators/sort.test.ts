@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { MongoInvalidArgumentError } from "../../../src/errors.ts";
 import { translateSort } from "../../../src/translators/sort.ts";
+import type { SortDirection } from "../../../src/types/options.ts";
+import type { Sort } from "../../../src/types.ts";
 
 describe("translateSort", () => {
 	test("null / undefined returns empty string", () => {
@@ -45,5 +48,70 @@ describe("translateSort", () => {
 
 	test("empty object returns empty string", () => {
 		expect(translateSort({})).toBe("");
+	});
+
+	// -----------------------------------------------------------------------
+	// Direction normalisation. `'ascending'` used to fall through to DESC,
+	// silently reversing the caller's order.
+	// -----------------------------------------------------------------------
+
+	test("long-form 'ascending' / 'descending' are honoured", () => {
+		expect(translateSort({ name: "ascending" })).toBe("ORDER BY name ASC");
+		expect(translateSort({ name: "descending" })).toBe("ORDER BY name DESC");
+		expect(translateSort({ name: "ascending", age: "descending" })).toBe(
+			"ORDER BY name ASC, age DESC",
+		);
+	});
+
+	test("long-form directions work in the array-tuple form", () => {
+		expect(
+			translateSort([
+				["name", "ascending"],
+				["age", "descending"],
+			]),
+		).toBe("ORDER BY name ASC, age DESC");
+	});
+
+	test("numeric strings are accepted, as the official driver does", () => {
+		// mongodb/lib/sort.js stringifies the direction before matching, so "1"
+		// and "-1" are valid at runtime even though `SortDirection` omits them.
+		expect(translateSort({ name: "1" as unknown as SortDirection })).toBe(
+			"ORDER BY name ASC",
+		);
+		expect(translateSort({ name: "-1" as unknown as SortDirection })).toBe(
+			"ORDER BY name DESC",
+		);
+	});
+
+	test("direction matching is case-insensitive", () => {
+		expect(translateSort({ name: "ASC" as unknown as SortDirection })).toBe(
+			"ORDER BY name ASC",
+		);
+		expect(
+			translateSort({ name: "Descending" as unknown as SortDirection }),
+		).toBe("ORDER BY name DESC");
+	});
+
+	test("a missing direction defaults to ascending", () => {
+		// `prepareDirection(direction = 1)` in the official driver.
+		expect(translateSort({ name: undefined as unknown as SortDirection })).toBe(
+			"ORDER BY name ASC",
+		);
+	});
+
+	test("an unrecognised direction throws instead of sorting descending", () => {
+		expect(() =>
+			translateSort({ name: "sideways" as unknown as SortDirection }),
+		).toThrow(MongoInvalidArgumentError);
+		expect(() =>
+			translateSort({ name: "sideways" as unknown as SortDirection }),
+		).toThrow(/Invalid sort direction/);
+		// `null` is not covered by the driver's default-parameter fallback.
+		expect(() =>
+			translateSort({ name: null as unknown as SortDirection }),
+		).toThrow(MongoInvalidArgumentError);
+		expect(() =>
+			translateSort([["name", 2 as unknown as SortDirection]] as Sort),
+		).toThrow(MongoInvalidArgumentError);
 	});
 });

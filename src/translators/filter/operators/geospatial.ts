@@ -5,6 +5,7 @@
  * GeoJSON-aware comparison operators (INSIDE / INTERSECTS / geo::distance).
  */
 
+import { MongoInvalidArgumentError } from "../../../errors.ts";
 import type { Document } from "../../../types.ts";
 import type { FilterOperator } from "../operator-registry.ts";
 import type { TranslateContext } from "../translate-context.ts";
@@ -69,7 +70,7 @@ function translateGeoWithin(
 		return `${field} INSIDE $${p}`;
 	}
 
-	throw new Error(
+	throw new MongoInvalidArgumentError(
 		"$geoWithin requires $geometry, $centerSphere, $center, $box, or $polygon",
 	);
 }
@@ -80,7 +81,7 @@ function translateGeoIntersects(
 	ctx: TranslateContext,
 ): string {
 	if (!val.$geometry) {
-		throw new Error("$geoIntersects requires $geometry");
+		throw new MongoInvalidArgumentError("$geoIntersects requires $geometry");
 	}
 	const p = ctx.bind(val.$geometry);
 	return `${field} INTERSECTS $${p}`;
@@ -92,7 +93,7 @@ function translateNear(
 	ctx: TranslateContext,
 ): string {
 	if (!val.$geometry) {
-		throw new Error("$near/$nearSphere requires $geometry");
+		throw new MongoInvalidArgumentError("$near/$nearSphere requires $geometry");
 	}
 
 	const pPoint = ctx.bind(val.$geometry);

@@ -51,11 +51,15 @@ export interface TranslateFilterOptions {
 	 * Override the operator registry (advanced – typically left to default).
 	 */
 	registry?: FilterOperatorRegistry;
-}
-
-/** Escape a field path for use in SurrealQL. Dot-notation passes through as-is. */
-function escapeField(field: string): string {
-	return field;
+	/**
+	 * Collection (table) the filter runs against.
+	 *
+	 * Required to translate `_id`: SurrealDB identities are `RecordId`s, which
+	 * are scoped to a table, so `{_id: "abc"}` can only become `id = users:abc`
+	 * if the table is known. Without it an `_id` condition is left alone and
+	 * cannot match, so every caller inside the driver supplies it.
+	 */
+	collection?: string;
 }
 
 /**
@@ -80,6 +84,7 @@ export function translateFilter(
 	const ctx: TranslateContext = {
 		dialect,
 		textFields: options?.textFields,
+		collection: options?.collection,
 		bindings,
 		nextParam: () => `p${counter++}`,
 		bind(value) {
@@ -139,6 +144,15 @@ function translateDocument(
 			parts.push(`NOT (${inner})`);
 		} else if (key === "$text") {
 			parts.push(translateTextSearch(value as Document, ctx));
+		} else if (key.startsWith("$")) {
+			// Defect fixed: an unrecognised top-level `$operator` used to fall
+			// through to the field-condition path, where `{$where: "true"}` became a
+			// predicate against a field literally named `$where` — a silently wrong
+			// result set rather than an error. Wording mirrors the registry's
+			// per-field message in `operator-registry.ts`.
+			throw new MongoInvalidArgumentError(
+				`Unsupported top-level filter operator: ${key}`,
+			);
 		} else {
 			parts.push(translateFieldCondition(key, value, ctx, registry));
 		}
@@ -170,7 +184,14 @@ function translateFieldCondition(
 	ctx: TranslateContext,
 	registry: FilterOperatorRegistry,
 ): string {
-	const f = escapeField(field);
+	let f = escapeFieldPath(field);
+
+	// `_id` lives in SurrealDB's `id` column as a RecordId; rewrite the field
+	// and coerce the compared values so the comparison can actually be true.
+	if (isIdField(field) && ctx.collection) {
+		f = SURREAL_ID_FIELD;
+		value = coerceIdCondition(ctx.collection, value);
+	}
 
 	if (value instanceof RegExp) {
 		return registry.get("$regex").translate(f, value, ctx);
@@ -180,8 +201,9 @@ function translateFieldCondition(
 		return translateOperators(f, value as Document, ctx, registry);
 	}
 
-	const p = ctx.bind(value);
-	return `${f} = $${p}`;
+	// Implicit equality is MongoDB equality, not whole-value equality: it also
+	// matches an element of an array field and, for `null`, an absent field.
+	return equalityPredicate(f, value, ctx);
 }
 
 function isOperatorObject(value: unknown): boolean {
@@ -204,6 +226,27 @@ function translateOperators(
 ): string {
 	const parts: string[] = [];
 	for (const [op, val] of Object.entries(operators)) {
+		// `$options` is not a predicate: it carries the flags of a sibling
+		// `$regex`, which an operator strategy cannot see on its own. Pair the two
+		// here so `{$regex: "x", $options: "i"}` honours the `i`. MongoDB rejects
+		// `$options` without a `$regex` with exactly this message.
+		if (op === "$options") {
+			if (!("$regex" in operators)) {
+				throw new MongoInvalidArgumentError("$options needs a $regex");
+			}
+			continue;
+		}
+		if (op === "$regex") {
+			const operand: RegexOperand = {
+				pattern: val as string | RegExp,
+				options:
+					typeof operators.$options === "string"
+						? operators.$options
+						: undefined,
+			};
+			parts.push(registry.get(op).translate(field, operand, ctx));
+			continue;
+		}
 		parts.push(registry.get(op).translate(field, val, ctx));
 	}
 	return parts.join(" AND ");
@@ -216,12 +259,12 @@ function translateOperators(
 function translateTextSearch(textOp: Document, ctx: TranslateContext): string {
 	const search = textOp.$search as string;
 	if (typeof search !== "string") {
-		throw new Error("$text requires a $search string");
+		throw new MongoInvalidArgumentError("$text requires a $search string");
 	}
 
 	const fields = ctx.textFields;
 	if (!fields || fields.length === 0) {
-		throw new Error(
+		throw new MongoInvalidArgumentError(
 			"$text query requires a text index. Call createIndex() with a 'text' field first.",
 		);
 	}
@@ -239,4 +282,11 @@ export {
 	type FilterOperator,
 	FilterOperatorRegistry,
 } from "./operator-registry.ts";
+
+import { MongoInvalidArgumentError } from "../../errors.ts";
+import { escapeFieldPath } from "../../surreal/sql/escape.ts";
+import { coerceIdCondition, isIdField, SURREAL_ID_FIELD } from "./id-field.ts";
+import { equalityPredicate } from "./operators/comparison.ts";
+import type { RegexOperand } from "./operators/evaluation.ts";
+
 export type { TranslateContext } from "./translate-context.ts";

@@ -7,6 +7,8 @@
  *   - 3 bytes: incrementing counter
  */
 
+import { MongoInvalidArgumentError } from "./errors.ts";
+
 let randomBytes: Uint8Array;
 let counter: number;
 
@@ -51,13 +53,13 @@ export class ObjectId {
 			this._id = id._id;
 		} else if (typeof id === "string") {
 			if (!ObjectId.isValid(id)) {
-				throw new Error(`Invalid ObjectId string: ${id}`);
+				throw new MongoInvalidArgumentError(`Invalid ObjectId string: ${id}`);
 			}
 			this._id = id.toLowerCase();
 		} else if (id === undefined || id === null) {
 			this._id = ObjectId.generate();
 		} else {
-			throw new Error(
+			throw new MongoInvalidArgumentError(
 				"ObjectId requires a 24-character hex string or no argument",
 			);
 		}

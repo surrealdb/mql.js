@@ -14,7 +14,7 @@ describe("countDocuments", () => {
 		const n = await countDocuments(ctx, { active: true });
 
 		expect(executor.queries[0].sql).toBe(
-			"SELECT count() AS count FROM users WHERE active = $p0 GROUP ALL",
+			"SELECT count() AS count FROM users WHERE (active = $p0 OR (type::is_array(active) AND active CONTAINS $p0)) GROUP ALL",
 		);
 		expect(executor.queries[0].bindings).toEqual({ p0: true });
 		expect(n).toBe(5);
@@ -61,7 +61,7 @@ describe("distinct", () => {
 		const out = await distinct(ctx, "name", { active: true });
 
 		expect(executor.queries[0].sql).toBe(
-			"SELECT array::distinct(name) AS vals FROM users WHERE active = $p0 GROUP ALL",
+			"SELECT array::distinct(name) AS vals FROM users WHERE (active = $p0 OR (type::is_array(active) AND active CONTAINS $p0)) GROUP ALL",
 		);
 		expect(executor.queries[0].bindings).toEqual({ p0: true });
 		expect(out).toEqual(["alice", "bob"]);
