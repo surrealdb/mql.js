@@ -7,6 +7,7 @@ import {
 	InternalError,
 	NotAllowedError,
 	NotFoundError,
+	QueryError,
 	ServerError,
 	ThrownError,
 	UnsupportedFeatureError,
@@ -15,6 +16,7 @@ import {
 import {
 	MongoCompatibilityError,
 	MongoErrorCode,
+	MongoErrorLabel,
 	MongoNetworkError,
 	MongoServerError,
 } from "../../../src/errors.ts";
@@ -334,5 +336,69 @@ describe("mapConnectError", () => {
 	test("the originating error is preserved as `cause`", () => {
 		const root = new Error("ECONNREFUSED");
 		expect(mapConnectError(root).cause).toBe(root);
+	});
+});
+
+describe("mapQueryError – transaction conflict", () => {
+	/**
+	 * Both wordings, captured from live servers. 3.2 and later report the
+	 * conflict as a `QueryError` carrying a structured detail; 3.0 and 3.1 report
+	 * the same event as a bare `InternalError`, prefixed differently, whose message
+	 * is the only evidence there is.
+	 */
+	const CONFLICT_3_2 =
+		"There was a problem with the key-value store: Transaction conflict: Write conflict, retry the transaction. This transaction can be retried";
+	const CONFLICT_3_0 =
+		"Transaction conflict: Write conflict, retry the transaction. This transaction can be retried";
+
+	test("the structured detail is recognised, with MongoDB's code and label", () => {
+		const conflict = new QueryError({
+			kind: "Query",
+			message: CONFLICT_3_2,
+			details: { kind: "TransactionConflict" },
+		});
+
+		const mapped = mapQueryError(conflict);
+
+		expect(mapped).toBeInstanceOf(MongoServerError);
+		expect(mapped.code).toBe(MongoErrorCode.WriteConflict);
+		expect((mapped as MongoServerError).codeName).toBe("WriteConflict");
+		expect(
+			mapped.hasErrorLabel(MongoErrorLabel.TransientTransactionError),
+		).toBe(true);
+		expect(mapped.cause).toBe(conflict);
+	});
+
+	test("an older server's unstructured conflict is recognised by message", () => {
+		const mapped = mapQueryError(
+			new InternalError({ kind: "Internal", message: CONFLICT_3_0 }),
+		);
+
+		expect(mapped.code).toBe(MongoErrorCode.WriteConflict);
+		expect(
+			mapped.hasErrorLabel(MongoErrorLabel.TransientTransactionError),
+		).toBe(true);
+	});
+
+	test("a query failure that is not a conflict carries no retry label", () => {
+		const mapped = mapQueryError(
+			new QueryError({ kind: "Query", message: "boom" }),
+		);
+
+		expect(
+			mapped.hasErrorLabel(MongoErrorLabel.TransientTransactionError),
+		).toBe(false);
+	});
+
+	test("a handle the server has released reports NoSuchTransaction", () => {
+		const mapped = mapQueryError(
+			new ValidationError({
+				kind: "Validation",
+				message: "Transaction not found",
+			}),
+		);
+
+		expect(mapped.code).toBe(MongoErrorCode.NoSuchTransaction);
+		expect(mapped.message).toBe("Transaction is not in progress");
 	});
 });
