@@ -10,6 +10,7 @@
 
 import type { FindCursorState, FindRunner } from "../cursor/find-cursor.ts";
 import { FindCursor } from "../cursor/find-cursor.ts";
+import { ListIndexesCursor } from "../cursor/list-indexes-cursor.ts";
 import type { Db } from "../db/db.ts";
 import { escapeIdentifier } from "../surreal/sql/escape.ts";
 import {
@@ -18,18 +19,23 @@ import {
 } from "../translators/dialect/index.ts";
 import type {
 	CountDocumentsOptions,
-	CreateIndexOptions,
+	CreateIndexesOptions,
 	DeleteResult,
 	Document,
+	DropIndexesOptions,
 	Filter,
 	FindOneAndDeleteOptions,
 	FindOneAndReplaceOptions,
 	FindOneAndUpdateOptions,
 	FindOptions,
 	IndexDescription,
+	IndexDescriptionCompact,
+	IndexDescriptionInfo,
+	IndexInformationOptions,
 	IndexSpecification,
 	InsertManyResult,
 	InsertOneResult,
+	ListIndexesOptions,
 	ModifyResult,
 	OptionalId,
 	ReplaceOptions,
@@ -59,8 +65,12 @@ import {
 	findOneAndUpdate as findOneAndUpdateOp,
 } from "./operations/find-and-modify.ts";
 import {
+	createIndexes as createIndexesOp,
 	createIndex as createIndexOp,
+	dropIndexes as dropIndexesOp,
 	dropIndex as dropIndexOp,
+	indexExists as indexExistsOp,
+	indexInformation as indexInformationOp,
 	listIndexes as listIndexesOp,
 } from "./operations/indexes.ts";
 import {
@@ -224,17 +234,81 @@ export class Collection<TSchema extends Document = Document> {
 
 	createIndex(
 		spec: IndexSpecification,
-		options?: CreateIndexOptions,
+		options?: CreateIndexesOptions,
 	): Promise<string> {
 		return createIndexOp(this.context(), spec, options);
 	}
 
-	dropIndex(name: string): Promise<void> {
+	createIndexes(
+		specs: IndexDescription[],
+		options?: CreateIndexesOptions,
+	): Promise<string[]> {
+		return createIndexesOp(this.context(), specs, options);
+	}
+
+	dropIndex(name: string, _options?: DropIndexesOptions): Promise<Document> {
 		return dropIndexOp(this.context(), name);
 	}
 
-	listIndexes(): IndexDescription[] {
-		return listIndexesOp(this.context());
+	dropIndexes(_options?: DropIndexesOptions): Promise<boolean> {
+		return dropIndexesOp(this.context());
+	}
+
+	/**
+	 * Cursor over the collection's indexes.
+	 *
+	 * Returns a cursor rather than an array because that is the shape MongoDB
+	 * consumers write against — `await col.listIndexes().toArray()`.
+	 */
+	listIndexes(_options?: ListIndexesOptions): ListIndexesCursor {
+		const ctx = this.context();
+		return new ListIndexesCursor(() => listIndexesOp(ctx));
+	}
+
+	/**
+	 * The collection's indexes as an array, or as a compact
+	 * `{ name: [[field, direction], …] }` map when `full` is `false`.
+	 *
+	 * `full` defaults to `true` here, which is the opposite of
+	 * `indexInformation`'s default — matching the official driver, where the two
+	 * methods differ in exactly that way.
+	 */
+	indexes(
+		options: IndexInformationOptions & { full?: true },
+	): Promise<IndexDescriptionInfo[]>;
+	indexes(
+		options: IndexInformationOptions & { full: false },
+	): Promise<IndexDescriptionCompact>;
+	indexes(
+		options: IndexInformationOptions,
+	): Promise<IndexDescriptionCompact | IndexDescriptionInfo[]>;
+	indexes(options?: ListIndexesOptions): Promise<IndexDescriptionInfo[]>;
+	indexes(
+		options?: IndexInformationOptions,
+	): Promise<IndexDescriptionCompact | IndexDescriptionInfo[]> {
+		return indexInformationOp(this.context(), options?.full ?? true);
+	}
+
+	indexExists(
+		indexes: string | string[],
+		_options?: ListIndexesOptions,
+	): Promise<boolean> {
+		return indexExistsOp(this.context(), indexes);
+	}
+
+	indexInformation(
+		options: IndexInformationOptions & { full: true },
+	): Promise<IndexDescriptionInfo[]>;
+	indexInformation(
+		options?: IndexInformationOptions & { full?: false },
+	): Promise<IndexDescriptionCompact>;
+	indexInformation(
+		options?: IndexInformationOptions,
+	): Promise<IndexDescriptionCompact | IndexDescriptionInfo[]>;
+	indexInformation(
+		options?: IndexInformationOptions,
+	): Promise<IndexDescriptionCompact | IndexDescriptionInfo[]> {
+		return indexInformationOp(this.context(), options?.full);
 	}
 
 	// -----------------------------------------------------------------------

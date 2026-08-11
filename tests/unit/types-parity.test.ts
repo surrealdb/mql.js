@@ -146,6 +146,75 @@ async function _useMqlCollection(
 	];
 }
 
+// ---------------------------------------------------------------------------
+// 2b. Index-surface probes.
+//
+//     Written once per driver over the same call shapes: every index method,
+//     every `IndexSpecification` form, and the option groups. If a signature
+//     drifts — an option that is no longer accepted, a return type that is no
+//     longer awaited the same way — the corresponding probe stops compiling.
+// ---------------------------------------------------------------------------
+
+async function _useMongoIndexes(
+	col: MongoCollection<MongoParityUser>,
+): Promise<unknown> {
+	const cursor = col.listIndexes();
+	return [
+		await col.createIndex({ age: 1 }),
+		await col.createIndex({ age: -1 }, { name: "by_age_desc" }),
+		await col.createIndex({ email: 1 }, { unique: true, sparse: true }),
+		await col.createIndex("name"),
+		await col.createIndex(["name", "age"]),
+		await col.createIndex([["age", -1]]),
+		await col.createIndex(new Map([["age", 1]])),
+		await col.createIndex({ age: 1 }, { background: true, version: 2 }),
+		await col.createIndexes([
+			{ key: { age: 1 } },
+			{ key: { name: 1 }, name: "n" },
+		]),
+		await cursor.toArray(),
+		await col.listIndexes().next(),
+		await col.listIndexes().hasNext(),
+		await col.indexes(),
+		await col.indexExists("age_1"),
+		await col.indexExists(["age_1", "n"]),
+		await col.indexInformation(),
+		await col.indexInformation({ full: true }),
+		await col.dropIndex("age_1"),
+		await col.dropIndexes(),
+	];
+}
+
+async function _useMqlIndexes(
+	col: MqlCollection<MqlParityUser>,
+): Promise<unknown> {
+	const cursor = col.listIndexes();
+	return [
+		await col.createIndex({ age: 1 }),
+		await col.createIndex({ age: -1 }, { name: "by_age_desc" }),
+		await col.createIndex({ email: 1 }, { unique: true, sparse: true }),
+		await col.createIndex("name"),
+		await col.createIndex(["name", "age"]),
+		await col.createIndex([["age", -1]]),
+		await col.createIndex(new Map([["age", 1]])),
+		await col.createIndex({ age: 1 }, { background: true, version: 2 }),
+		await col.createIndexes([
+			{ key: { age: 1 } },
+			{ key: { name: 1 }, name: "n" },
+		]),
+		await cursor.toArray(),
+		await col.listIndexes().next(),
+		await col.listIndexes().hasNext(),
+		await col.indexes(),
+		await col.indexExists("age_1"),
+		await col.indexExists(["age_1", "n"]),
+		await col.indexInformation(),
+		await col.indexInformation({ full: true }),
+		await col.dropIndex("age_1"),
+		await col.dropIndexes(),
+	];
+}
+
 async function _useMongoCursor(
 	cursor: MongoFindCursor<MongoParityUser>,
 ): Promise<unknown> {
@@ -180,6 +249,8 @@ const _probesExist: readonly unknown[] = [
 	_useMqlDb,
 	_useMongoCollection,
 	_useMqlCollection,
+	_useMongoIndexes,
+	_useMqlIndexes,
 	_useMongoCursor,
 	_useMqlCursor,
 	_useClient,
@@ -213,6 +284,14 @@ void tempClient.close().catch(() => undefined);
 // ---------------------------------------------------------------------------
 
 const COLLECTION_METHODS: readonly string[] = [
+	"createIndex",
+	"createIndexes",
+	"dropIndex",
+	"dropIndexes",
+	"indexes",
+	"indexExists",
+	"indexInformation",
+	"listIndexes",
 	"insertOne",
 	"insertMany",
 	"findOne",
@@ -261,7 +340,7 @@ describe("public-API parity (mql.js vs. mongodb)", () => {
 	});
 
 	test("call-site parity probes exist (and therefore compiled)", () => {
-		expect(_probesExist).toHaveLength(7);
+		expect(_probesExist).toHaveLength(9);
 		for (const probe of _probesExist) {
 			expect(typeof probe).toBe("function");
 		}

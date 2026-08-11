@@ -16,7 +16,7 @@ export async function countDocuments<TSchema extends Document>(
 ): Promise<number> {
 	const { clause, bindings } = translateFilter(
 		filter as Document,
-		filterOptionsFor(ctx),
+		await filterOptionsFor(ctx, filter as Document),
 	);
 
 	let sql = `SELECT count() AS count FROM ${ctx.escapedTable}`;

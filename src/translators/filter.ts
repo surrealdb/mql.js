@@ -6,4 +6,5 @@ export {
 	type TranslatedFilter,
 	type TranslateFilterOptions,
 	translateFilter,
+	usesTextSearch,
 } from "./filter/index.ts";

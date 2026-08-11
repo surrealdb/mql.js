@@ -16,7 +16,7 @@ export async function deleteOne<TSchema extends Document>(
 ): Promise<DeleteResult> {
 	const { clause, bindings } = translateFilter(
 		filter as Document,
-		filterOptionsFor(ctx),
+		await filterOptionsFor(ctx, filter as Document),
 	);
 
 	let findSql = `SELECT id FROM ${ctx.escapedTable}`;
@@ -45,7 +45,7 @@ export async function deleteMany<TSchema extends Document>(
 ): Promise<DeleteResult> {
 	const { clause, bindings } = translateFilter(
 		filter as Document,
-		filterOptionsFor(ctx),
+		await filterOptionsFor(ctx, filter as Document),
 	);
 
 	let sql = `DELETE FROM ${ctx.escapedTable}`;

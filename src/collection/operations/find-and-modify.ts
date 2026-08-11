@@ -51,7 +51,7 @@ export async function findOneAndUpdate<TSchema extends Document>(
 
 	const { clause: whereClause, bindings: filterBindings } = translateFilter(
 		filter as Document,
-		filterOptionsFor(ctx),
+		await filterOptionsFor(ctx, filter as Document),
 	);
 
 	const paramOffset = Object.keys(filterBindings).length;
@@ -97,7 +97,7 @@ export async function findOneAndDelete<TSchema extends Document>(
 ): Promise<TSchema | ModifyResult<TSchema> | null> {
 	const { clause, bindings } = translateFilter(
 		filter as Document,
-		filterOptionsFor(ctx),
+		await filterOptionsFor(ctx, filter as Document),
 	);
 
 	let findSql = `SELECT id FROM ${ctx.escapedTable}`;
@@ -134,7 +134,7 @@ export async function findOneAndReplace<TSchema extends Document>(
 
 	const { clause: whereClause, bindings: filterBindings } = translateFilter(
 		filter as Document,
-		filterOptionsFor(ctx),
+		await filterOptionsFor(ctx, filter as Document),
 	);
 
 	if (!whereClause) {

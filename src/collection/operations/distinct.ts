@@ -20,7 +20,7 @@ export async function distinct<
 >(ctx: OperationContext, key: string, filter?: Filter<TSchema>): Promise<T[]> {
 	const { clause, bindings } = translateFilter(
 		filter as Document,
-		filterOptionsFor(ctx),
+		await filterOptionsFor(ctx, filter as Document),
 	);
 
 	// `_id` is stored as SurrealDB's `id` column.

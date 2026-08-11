@@ -7,6 +7,10 @@
 export { MongoClient } from "./client/mongo-client.ts";
 export { Collection } from "./collection/collection.ts";
 export { FindCursor } from "./cursor/find-cursor.ts";
+export {
+	ListIndexesCursor,
+	type ListIndexesRunner,
+} from "./cursor/list-indexes-cursor.ts";
 export { Db } from "./db/db.ts";
 export type {
 	MongoErrorCodeValue,
@@ -41,23 +45,36 @@ export {
 export { ObjectId } from "./object-id.ts";
 export type {
 	BulkWriteResult,
+	CollationOptions,
 	CollectionInfo,
 	CountDocumentsOptions,
+	CreateIndexesOptions,
+	CreateIndexOptions,
 	DeleteResult,
 	Document,
+	DropIndexesOptions,
 	Filter,
 	FindOneAndDeleteOptions,
 	FindOneAndReplaceOptions,
 	FindOneAndUpdateOptions,
 	FindOptions,
+	IndexDescription,
+	IndexDescriptionCompact,
+	IndexDescriptionInfo,
+	IndexDirection,
+	IndexInformationOptions,
+	IndexKey,
+	IndexSpecification,
 	InsertManyResult,
 	InsertOneResult,
+	ListIndexesOptions,
 	ModifyResult,
 	MongoClientOptions,
 	OptionalId,
 	Projection,
 	ReplaceOptions,
 	Sort,
+	SortDirection,
 	UpdateFilter,
 	UpdateOptions,
 	UpdateResult,

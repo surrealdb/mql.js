@@ -23,7 +23,7 @@ export async function findOne<TSchema extends Document>(
 ): Promise<TSchema | null> {
 	const { clause, bindings, nearSort } = translateFilter(
 		filter as Document,
-		filterOptionsFor(ctx),
+		await filterOptionsFor(ctx, filter as Document),
 	);
 	const proj = translateProjection(options?.projection);
 	const sortClause = translateSort(options?.sort) || nearSort || "";
@@ -65,7 +65,7 @@ export async function executeFind<TSchema extends Document>(
 ): Promise<TSchema[]> {
 	const { clause, bindings, nearSort } = translateFilter(
 		filter,
-		filterOptionsFor(ctx),
+		await filterOptionsFor(ctx, filter),
 	);
 	const sortClause = translateSort(options.sort) || nearSort || "";
 

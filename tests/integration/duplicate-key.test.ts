@@ -8,8 +8,10 @@
  * message format changing between SurrealDB releases: it would otherwise
  * degrade silently into an uncoded error that no application can branch on.
  *
- * The unique index is defined with raw SurrealQL because `createIndex`'s
- * `unique` option is added in a later change; these tests pin the *mapping*.
+ * The unique index is defined with raw SurrealQL rather than through
+ * `createIndex`, so what is under test is only the error mapping — a change to
+ * how the driver emits `UNIQUE` cannot mask a change in what the server says
+ * when the constraint fires.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";

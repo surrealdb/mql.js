@@ -15,18 +15,28 @@ export type {
 	GeospatialOperators,
 } from "./filter.ts";
 export type {
+	CollationOptions,
 	CountDocumentsOptions,
+	CreateIndexesOptions,
 	CreateIndexOptions,
+	DropIndexesOptions,
 	FindOneAndDeleteOptions,
 	FindOneAndReplaceOptions,
 	FindOneAndUpdateOptions,
 	FindOptions,
 	IndexDescription,
+	IndexDescriptionCompact,
+	IndexDescriptionInfo,
+	IndexDirection,
+	IndexInformationOptions,
+	IndexKey,
 	IndexSpecification,
+	ListIndexesOptions,
 	MongoClientOptions,
 	Projection,
 	ReplaceOptions,
 	Sort,
+	SortDirection,
 	UpdateOptions,
 } from "./options.ts";
 export type {

@@ -31,7 +31,7 @@ export async function replaceOne<TSchema extends Document>(
 ): Promise<UpdateResult> {
 	const { clause: whereClause, bindings: filterBindings } = translateFilter(
 		filter as Document,
-		filterOptionsFor(ctx),
+		await filterOptionsFor(ctx, filter as Document),
 	);
 
 	if (!whereClause) {

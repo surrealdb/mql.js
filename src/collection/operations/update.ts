@@ -52,7 +52,7 @@ async function runUpdate(
 ): Promise<UpdateResult> {
 	const { clause: whereClause, bindings: filterBindings } = translateFilter(
 		filter,
-		filterOptionsFor(ctx),
+		await filterOptionsFor(ctx, filter),
 	);
 
 	const paramOffset = Object.keys(filterBindings).length;

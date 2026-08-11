@@ -50,8 +50,16 @@ export const MongoErrorCode = {
 	AuthenticationFailed: 18,
 	/** The target namespace (database or collection) does not exist. */
 	NamespaceNotFound: 26,
+	/** No index with the requested name exists on the collection. */
+	IndexNotFound: 27,
 	/** The target namespace already exists. */
 	NamespaceExists: 48,
+	/** The command's options are not valid for the target. */
+	InvalidOptions: 72,
+	/** An index with the requested key already exists under another name. */
+	IndexOptionsConflict: 85,
+	/** An index with the requested name already exists with a different spec. */
+	IndexKeySpecsConflict: 86,
 	/** The operation exceeded its `maxTimeMS` budget. */
 	MaxTimeMSExpired: 50,
 	/** The command is not recognised by the server. */
@@ -74,9 +82,13 @@ const CODE_NAMES: Record<number, string> = {
 	13: "Unauthorized",
 	18: "AuthenticationFailed",
 	26: "NamespaceNotFound",
+	27: "IndexNotFound",
 	48: "NamespaceExists",
 	50: "MaxTimeMSExpired",
 	59: "CommandNotFound",
+	72: "InvalidOptions",
+	85: "IndexOptionsConflict",
+	86: "IndexKeySpecsConflict",
 	11000: "DuplicateKey",
 	121: "DocumentValidationFailure",
 	251: "NoSuchTransaction",

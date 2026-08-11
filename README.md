@@ -486,18 +486,82 @@ console.log(cursor.closed); // true
 // Create a standard index
 await users.createIndex({ email: 1 });
 
-// Create a text index for full-text search
+// Enforce uniqueness — a duplicate write fails with code 11000
+await users.createIndex({ email: 1 }, { unique: true });
+
+// Compound and descending keys
+await users.createIndex({ lastName: 1, age: -1 });
+
+// A text index for full-text search
 await users.createIndex({ bio: "text" });
 
-// Create a named index
+// A named index
 await users.createIndex({ age: 1 }, { name: "age_asc" });
 
-// Drop an index
-await users.dropIndex("age_asc");
+// Several at once
+await users.createIndexes([{ key: { a: 1 } }, { key: { b: -1 }, unique: true }]);
 
-// List indexes
-const indexes = users.listIndexes();
+// Read them back — a cursor, as in the MongoDB driver
+const indexes = await users.listIndexes().toArray();
+const asArray = await users.indexes();
+const compact = await users.indexInformation(); // { email_1: [["email", 1]] }
+const exists = await users.indexExists("email_1");
+
+// Drop one, or all but _id_
+await users.dropIndex("age_asc");
+await users.dropIndexes();
 ```
+
+`createIndex` is idempotent: re-creating an identical index succeeds and returns
+its name, while reusing a name for a different key raises code `86`
+(`IndexKeySpecsConflict`), matching MongoDB. Indexes are read from the server on
+every call, so a new `Collection` instance, a second process and a reconnected
+client all see the same list.
+
+### Index behaviour that differs from MongoDB
+
+Unsupported options **throw** rather than being silently accepted, so a caller
+never believes an index does something it does not:
+
+| Option | Behaviour | Why |
+| --- | --- | --- |
+| `expireAfterSeconds` (TTL) | throws | SurrealDB `DEFINE INDEX` has no TTL clause |
+| `partialFilterExpression` | throws | no partial-index equivalent |
+| `collation` | throws | index-level collation is not expressible |
+| `weights`, `default_language`, `language_override` | throws | full-text ranking is fixed to BM25 over the indexed fields |
+| `hidden: true` | throws | indexes cannot be hidden from the planner |
+| `wildcardProjection` | throws | no wildcard indexes |
+| `sparse: false` | throws | see below |
+| `2d`, `2dsphere`, `geoHaystack`, `hashed` keys | throws | no equivalent index type; a plain index would not make `$near` index-backed |
+| `background`, `storageEngine`, `commitQuorum`, version fields | accepted, no effect | no meaning here, and MongoDB itself ignores several of them |
+
+Other differences worth knowing:
+
+- **Unique indexes are always sparse.** Two documents that both omit a
+  unique-indexed field are both accepted; MongoDB indexes the absent field as
+  `null` and rejects the second. Because `sparse: false` is MongoDB's *default*,
+  it is rejected only when passed explicitly.
+- **A compound text index becomes one full-text index per field.** MongoDB
+  creates a single index with per-field weights; SurrealDB rejects more than one
+  column in a `FULLTEXT` definition. The parts are reported back as the single
+  index you asked for, and `$text` searches all of its fields. Mixing a `"text"`
+  field with a non-text field in one key throws.
+- **A text index's key is reported as you supplied it** (`{ title: "text" }`),
+  where MongoDB reports its internal `{ _fts: "text", _ftsx: 1 }` plus `weights`
+  and `textIndexVersion`. Tooling that keys off `_fts` will not find it.
+- **`v`** (the on-disk index format version MongoDB always reports as `2`) is
+  omitted, as it has no SurrealDB counterpart.
+- **Directions are recorded, not enforced.** SurrealDB indexes serve both
+  directions, so `-1` is preserved in the reported key and in generated names
+  (`age_-1`) but does not change the physical index.
+- **A missing collection is not an error.** `listIndexes`, `indexes` and
+  `indexInformation` report just `_id_`, and `dropIndexes()` returns `true`,
+  where MongoDB raises `26` (`NamespaceNotFound`). `dropIndex` on an unknown
+  name raises `27` (`IndexNotFound`) rather than `26`.
+- **`keyPattern`/`keyValue`** on a duplicate-key error are populated only when
+  the violated index follows the generated `field_1` naming convention. For a
+  custom-named index the fields cannot be recovered from the server's message,
+  and inventing them would be worse than omitting them.
 
 ## Database operations
 
