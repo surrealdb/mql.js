@@ -67,10 +67,11 @@ async function runUpdate(
 	const document = applyUndefinedPolicy(update, plan.ignoreUndefined);
 	const criteria = applyUndefinedPolicy(filter, plan.ignoreUndefined);
 
-	const { clause: whereClause, bindings: filterBindings } = translateFilter(
-		criteria,
-		await filterOptionsFor(ctx, filter),
-	);
+	const {
+		clause: whereClause,
+		bindings: filterBindings,
+		nearDistance,
+	} = translateFilter(criteria, await filterOptionsFor(ctx, filter));
 
 	if (single) {
 		const rows = await updateOneMatch(
@@ -80,6 +81,7 @@ async function runUpdate(
 			document,
 			plan,
 			options,
+			nearDistance,
 		);
 		if (rows.length > 0 || !options?.upsert) return makeUpdateResult(rows);
 		const inserted = await insertUpserted(
@@ -120,6 +122,7 @@ async function updateOneMatch(
 	update: Document,
 	plan: OperationPlan,
 	options?: UpdateOptions,
+	nearDistance?: string,
 ): Promise<Record<string, unknown>[]> {
 	const { clause, bindings } = translateUpdate(
 		update,
@@ -130,7 +133,7 @@ async function updateOneMatch(
 	return writeOneRecord(
 		ctx,
 		statement(
-			`UPDATE ${oneRecordTarget(ctx, whereClause, plan)}`,
+			`UPDATE ${oneRecordTarget(ctx, whereClause, plan, undefined, nearDistance)}`,
 			clause,
 			plan.timeout,
 		),

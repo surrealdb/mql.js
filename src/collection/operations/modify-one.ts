@@ -44,6 +44,7 @@ import { sortColumns, translateSort } from "../../translators/sort.ts";
 import type { Sort } from "../../types.ts";
 import type { OperationContext } from "../operation-context.ts";
 import type { OperationPlan } from "../operation-options.ts";
+import { DISTANCE_ALIAS } from "./near-query.ts";
 
 /**
  * How many times a write conflict is re-issued before it reaches the caller.
@@ -69,18 +70,29 @@ export function oneRecordTarget(
 	whereClause: string,
 	plan: OperationPlan,
 	sort?: Sort | null,
+	nearDistance?: string,
 ): string {
+	const sortClause = translateSort(sort);
+
 	// Every column the sort orders by is selected alongside `id`, because
 	// SurrealDB refuses an `ORDER BY` naming an idiom the field list does not:
 	// `SELECT id FROM t ORDER BY k` is a parse error. The enclosing
 	// `SELECT VALUE id` then reduces each row to the bare record id a write
 	// target takes, discarding the sort columns nothing reads.
+	//
+	// A `$near` orders by distance, which is why it has to be projected under an
+	// alias here too rather than named in the `ORDER BY` — the same rule, and the
+	// same reason as in `near-query.ts`. An explicit sort wins over it, as it does
+	// in MongoDB, in which case the distance is not projected at all.
+	const distance = sortClause ? undefined : nearDistance;
 	const columns = ["id", ...sortColumns(sort).filter((c) => c !== "id")];
+	if (distance) columns.push(`${distance} AS ${DISTANCE_ALIAS}`);
+
 	const match = statement(
 		`SELECT ${columns.join(", ")} FROM ${ctx.escapedTable}`,
 		plan.indexHint,
 		whereClause && `WHERE ${whereClause}`,
-		translateSort(sort),
+		sortClause || (distance && `ORDER BY ${DISTANCE_ALIAS} ASC`),
 		"LIMIT 1",
 	);
 

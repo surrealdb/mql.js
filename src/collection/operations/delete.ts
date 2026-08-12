@@ -30,7 +30,7 @@ export async function deleteOne<TSchema extends Document>(
 ): Promise<DeleteResult> {
 	const plan = await resolveOperationPlan(ctx, options, { indexHint: true });
 
-	const { clause, bindings } = translateFilter(
+	const { clause, bindings, nearDistance } = translateFilter(
 		applyUndefinedPolicy(filter as Document, plan.ignoreUndefined),
 		await filterOptionsFor(ctx, filter as Document),
 	);
@@ -38,7 +38,7 @@ export async function deleteOne<TSchema extends Document>(
 	const rows = await writeOneRecord(
 		ctx,
 		statement(
-			`DELETE ${oneRecordTarget(ctx, clause, plan)}`,
+			`DELETE ${oneRecordTarget(ctx, clause, plan, undefined, nearDistance)}`,
 			"RETURN BEFORE",
 			plan.timeout,
 		),

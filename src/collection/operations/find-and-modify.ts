@@ -116,7 +116,11 @@ export async function findOneAndUpdate<TSchema extends Document>(
 		plan.ignoreUndefined,
 	);
 
-	const { clause: whereClause, bindings: filterBindings } = translateFilter(
+	const {
+		clause: whereClause,
+		bindings: filterBindings,
+		nearDistance,
+	} = translateFilter(
 		criteria,
 		await filterOptionsFor(ctx, filter as Document),
 	);
@@ -130,7 +134,7 @@ export async function findOneAndUpdate<TSchema extends Document>(
 	const rows = await writeOneRecord(
 		ctx,
 		statement(
-			`UPDATE ${oneRecordTarget(ctx, whereClause, plan, options?.sort)}`,
+			`UPDATE ${oneRecordTarget(ctx, whereClause, plan, options?.sort, nearDistance)}`,
 			setClause,
 			wantsBefore(options?.returnDocument) ? "RETURN BEFORE" : "RETURN AFTER",
 			plan.timeout,
@@ -167,7 +171,7 @@ export async function findOneAndDelete<TSchema extends Document>(
 ): Promise<TSchema | ModifyResult<TSchema> | null> {
 	const plan = await resolveOperationPlan(ctx, options, { indexHint: true });
 
-	const { clause, bindings } = translateFilter(
+	const { clause, bindings, nearDistance } = translateFilter(
 		applyUndefinedPolicy(filter as Document, plan.ignoreUndefined),
 		await filterOptionsFor(ctx, filter as Document),
 	);
@@ -175,7 +179,7 @@ export async function findOneAndDelete<TSchema extends Document>(
 	const rows = await writeOneRecord(
 		ctx,
 		statement(
-			`DELETE ${oneRecordTarget(ctx, clause, plan, options?.sort)}`,
+			`DELETE ${oneRecordTarget(ctx, clause, plan, options?.sort, nearDistance)}`,
 			"RETURN BEFORE",
 			plan.timeout,
 		),
@@ -202,7 +206,11 @@ export async function findOneAndReplace<TSchema extends Document>(
 		plan.ignoreUndefined,
 	);
 
-	const { clause: whereClause, bindings: filterBindings } = translateFilter(
+	const {
+		clause: whereClause,
+		bindings: filterBindings,
+		nearDistance,
+	} = translateFilter(
 		criteria,
 		await filterOptionsFor(ctx, filter as Document),
 	);
@@ -219,7 +227,7 @@ export async function findOneAndReplace<TSchema extends Document>(
 	const rows = await writeOneRecord(
 		ctx,
 		statement(
-			`UPDATE ${oneRecordTarget(ctx, whereClause, plan, options?.sort)} ${contentClause}`,
+			`UPDATE ${oneRecordTarget(ctx, whereClause, plan, options?.sort, nearDistance)} ${contentClause}`,
 			wantsBefore(options?.returnDocument) ? "RETURN BEFORE" : "RETURN AFTER",
 			plan.timeout,
 		),

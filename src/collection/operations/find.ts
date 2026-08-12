@@ -18,6 +18,7 @@ import {
 	type OperationContext,
 } from "../operation-context.ts";
 import { resolveOperationPlan } from "../operation-options.ts";
+import { nearProjection, nearSource } from "./near-query.ts";
 
 export async function findOne<TSchema extends Document>(
 	ctx: OperationContext,
@@ -26,17 +27,23 @@ export async function findOne<TSchema extends Document>(
 ): Promise<TSchema | null> {
 	const plan = await resolveOperationPlan(ctx, options, { indexHint: true });
 
-	const { clause, bindings, nearSort } = translateFilter(
+	const { clause, bindings, nearDistance } = translateFilter(
 		applyUndefinedPolicy(filter as Document, plan.ignoreUndefined),
 		await filterOptionsFor(ctx, filter as Document),
 	);
 	const proj = translateProjection(options?.projection);
-	const sortClause = translateSort(options?.sort) || nearSort || "";
+	const sortClause = translateSort(options?.sort);
+	const source = nearSource(
+		ctx.escapedTable,
+		clause,
+		plan.indexHint,
+		sortClause ? undefined : nearDistance,
+	);
 
 	const sql = statement(
-		`SELECT ${proj.fields || "*"} FROM ${ctx.escapedTable}`,
-		plan.indexHint,
-		clause && `WHERE ${clause}`,
+		`SELECT ${nearProjection(proj.fields, source.omit)} FROM ${source.from}`,
+		source.indexHint,
+		source.where && `WHERE ${source.where}`,
 		sortClause,
 		"LIMIT 1",
 		plan.timeout,
@@ -81,16 +88,22 @@ export async function executeFind<TSchema extends Document>(
 ): Promise<TSchema[]> {
 	const plan = await resolveOperationPlan(ctx, options, { indexHint: true });
 
-	const { clause, bindings, nearSort } = translateFilter(
+	const { clause, bindings, nearDistance } = translateFilter(
 		applyUndefinedPolicy(filter, plan.ignoreUndefined),
 		await filterOptionsFor(ctx, filter),
 	);
-	const sortClause = translateSort(state.sort) || nearSort || "";
+	const sortClause = translateSort(state.sort);
+	const source = nearSource(
+		ctx.escapedTable,
+		clause,
+		plan.indexHint,
+		sortClause ? undefined : nearDistance,
+	);
 
 	const sql = statement(
-		`SELECT ${state.projectionFields || "*"} FROM ${ctx.escapedTable}`,
-		plan.indexHint,
-		clause && `WHERE ${clause}`,
+		`SELECT ${nearProjection(state.projectionFields ?? "", source.omit)} FROM ${source.from}`,
+		source.indexHint,
+		source.where && `WHERE ${source.where}`,
 		sortClause,
 		state.limit !== undefined && `LIMIT ${state.limit}`,
 		state.skip !== undefined && `START ${state.skip}`,
