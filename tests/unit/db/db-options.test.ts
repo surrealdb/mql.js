@@ -20,6 +20,7 @@ import {
 	MongoInvalidArgumentError,
 } from "../../../src/errors.ts";
 import { ClientSession } from "../../../src/session/client-session.ts";
+import type { QueryExecutor } from "../../../src/surreal/query-executor.ts";
 import type { TransactionScope } from "../../../src/surreal/transaction-executor.ts";
 import { FakeQueryExecutor } from "../../helpers/fake-executor.ts";
 
@@ -40,9 +41,12 @@ function fakeClient(
 		commit: async (): Promise<void> => {},
 		cancel: async (): Promise<void> => {},
 		isLive: true,
+		forDatabase: (): QueryExecutor => transaction,
 	});
 	return {
 		_executor: connection,
+		_scopeFor: (): string | undefined => undefined,
+		_executorFor: (): QueryExecutor => connection,
 		_beginTransaction: async (): Promise<TransactionScope> => scope,
 		_forgetSession: (): void => {},
 	} as unknown as MongoClient;
@@ -84,7 +88,7 @@ describe("Db statements honour a session", () => {
 		[
 			"dropDatabase",
 			(db: Db, session: ClientSession) => db.dropDatabase({ session }),
-			"REMOVE DATABASE testdb",
+			"REMOVE DATABASE `testdb`",
 		],
 	])("%s runs inside the caller's transaction", async (_, call, sql) => {
 		const { db, connection, transaction, session } = makeTransactionalDb();

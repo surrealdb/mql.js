@@ -65,6 +65,10 @@ export interface OperationContext {
 	 * so cannot read it. The `DEFINE INDEX` can, and the search works from the
 	 * commit onwards.
 	 *
+	 * Addressed at this collection's database, like `executor`: an analyzer is
+	 * defined per database, so the one a text index names has to be defined in the
+	 * database that index lives in.
+	 *
 	 * Equal to `executor` outside a transaction, where the distinction is moot.
 	 */
 	readonly connection: QueryExecutor;

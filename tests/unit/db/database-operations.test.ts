@@ -82,7 +82,20 @@ describe("dropDatabase", () => {
 		exec.enqueue(undefined);
 		const ok = await dropDatabase(exec, "mydb");
 		expect(ok).toBe(true);
-		expect(exec.queries[0].sql).toBe("REMOVE DATABASE mydb");
+		expect(exec.queries[0].sql).toBe("REMOVE DATABASE `mydb`");
+	});
+
+	test("quotes a name that would otherwise open a statement of its own", async () => {
+		// `REMOVE DATABASE function` is a parse error on 3.x, and this function reports
+		// any failure as `false` — so bare, a database that could have been dropped
+		// would be reported as one that was not.
+		for (const name of ["function", "alter", "sleep", "and"]) {
+			const exec = new FakeQueryExecutor();
+			exec.enqueue(undefined);
+
+			expect(await dropDatabase(exec, name)).toBe(true);
+			expect(exec.queries[0].sql).toBe(`REMOVE DATABASE \`${name}\``);
+		}
 	});
 
 	test("returns false on error", async () => {

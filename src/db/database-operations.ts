@@ -9,7 +9,7 @@
 
 import { MongoInvalidArgumentError } from "../errors.ts";
 import type { QueryExecutor } from "../surreal/query-executor.ts";
-import { escapeIdentifier } from "../surreal/sql/escape.ts";
+import { escapeIdentifier, quoteIdentifier } from "../surreal/sql/escape.ts";
 import type { CollectionInfo, Document } from "../types.ts";
 
 /**
@@ -118,7 +118,7 @@ export async function listCollections(
 }
 
 /**
- * Every table defined in the connected database.
+ * Every table defined in the database `exec` addresses.
  *
  * Shared by `listCollections` and the stats commands, all of which need the same
  * `INFO FOR DB` reply. SurrealDB defines a table on first write, so this is also
@@ -210,12 +210,22 @@ export async function dropCollectionTable(
 	}
 }
 
+/**
+ * Remove a whole database.
+ *
+ * The name is quoted unconditionally, like the one in a statement's database
+ * prefix and for the same reason: `REMOVE DATABASE` accepts fewer bare words than
+ * a table position does, so `function`, `alter`, `sleep` and `and` are parse
+ * errors bare and fine quoted. Bare, the parse error would be caught below and
+ * reported as `false` — a database that could have been dropped, reported as one
+ * that was not.
+ */
 export async function dropDatabase(
 	exec: QueryExecutor,
 	name: string,
 ): Promise<boolean> {
 	try {
-		await exec.query(`REMOVE DATABASE ${escapeIdentifier(name)}`);
+		await exec.query(`REMOVE DATABASE ${quoteIdentifier(name)}`);
 		return true;
 	} catch {
 		return false;

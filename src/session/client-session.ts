@@ -439,11 +439,19 @@ export class ClientSession implements AsyncDisposable {
 	 * Outside a transaction that is the base connection, exactly as if no session
 	 * had been passed. Inside one it is the transaction, acquired on first use —
 	 * which is where `startTransaction()`'s deferred round trip finally happens.
+	 *
+	 * One transaction serves every database the session touches, so `scope` picks
+	 * the database this statement addresses rather than selecting a transaction:
+	 * a session is a handle on one, and a write through `db("other")` belongs
+	 * inside it like any other.
 	 */
-	async _executor(fallback: QueryExecutor): Promise<QueryExecutor> {
+	async _executor(
+		fallback: QueryExecutor,
+		scope?: string,
+	): Promise<QueryExecutor> {
 		this.assertUsable();
 		if (!this.inTransaction()) return fallback;
-		return this.acquireScope();
+		return (await this.acquireScope()).forDatabase(scope);
 	}
 
 	/**
@@ -506,19 +514,31 @@ export class ClientSession implements AsyncDisposable {
 }
 
 /**
- * The executor an operation must run through, given whatever the caller put in
- * `options.session`.
+ * The executor an operation must run through, given the database it addresses
+ * and whatever the caller put in `options.session`.
  *
- * This is the only thing an operation needs to know about sessions: pass the
- * caller's value and the connection it would otherwise have used, and run the
- * statement against what comes back.
+ * This is the only thing an operation needs to know about either: name the
+ * database the operation belongs to, pass the caller's `session`, and run the
+ * statement against what comes back. Both questions are answered here so that
+ * neither can be answered differently in two places — a statement that reached
+ * the connection instead of the caller's transaction, or the connected database
+ * instead of the one they named, is the same class of silent wrong answer.
+ *
+ * `database` may be `undefined`, which means "whichever the connection is pointed
+ * at". That is not a default for callers who have a database in mind — it is for
+ * the statements that are about the *namespace* rather than about any one database
+ * (`INFO FOR NS`, and a bare liveness probe), where naming one would only bring it
+ * into existence to ask a question that was never about it.
  */
 export async function sessionExecutor(
 	session: unknown,
 	client: MongoClient,
-	fallback: QueryExecutor,
+	database: string | undefined,
 ): Promise<QueryExecutor> {
-	if (session === undefined || session === null) return fallback;
+	const scope = database === undefined ? undefined : client._scopeFor(database);
+	const connection = client._executorFor(scope);
+
+	if (session === undefined || session === null) return connection;
 
 	if (!(session instanceof ClientSession)) {
 		throw new MongoInvalidArgumentError(
@@ -531,7 +551,7 @@ export async function sessionExecutor(
 		);
 	}
 
-	return session._executor(fallback);
+	return session._executor(connection, scope);
 }
 
 /**

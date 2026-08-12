@@ -189,3 +189,72 @@ test("the server version is inherited from the connection", () => {
 	const { handle } = immediateHandle();
 	expect(new TransactionExecutor(handle, "3.1.5").serverVersion).toBe("3.1.5");
 });
+
+/**
+ * One transaction spans every database a session touches, so a statement for
+ * another database is a view of the same handle rather than a second
+ * transaction. What matters is that the guarantees above are not lost on the way
+ * through the view: a scoped statement queues in the same line and is refused by
+ * the same spent handle.
+ */
+describe("statements for another database", () => {
+	test("carry the database prefix into the transaction", async () => {
+		const { handle, events } = immediateHandle();
+		const executor = new TransactionExecutor(handle, "3.2.4");
+
+		await executor.forDatabase("other").query("CREATE t:one");
+
+		expect(events).toEqual(["USE DB `other`; CREATE t:one"]);
+	});
+
+	test("queue behind statements issued for the connected one", async () => {
+		const { handle, events, resolvers } = recordingHandle();
+		const executor = new TransactionExecutor(handle, "3.2.4");
+
+		const first = executor.query("one");
+		const second = executor.forDatabase("other").query("two");
+
+		await Promise.resolve();
+		expect(events).toEqual(["start:one"]);
+
+		resolvers[0]?.();
+		await first;
+		await Promise.resolve();
+		resolvers[1]?.();
+		await second;
+
+		expect(events).toEqual([
+			"start:one",
+			"end:one",
+			"start:USE DB `other`; two",
+			"end:USE DB `other`; two",
+		]);
+	});
+
+	test("are refused once the transaction has been settled", async () => {
+		const { handle, events } = immediateHandle();
+		const executor = new TransactionExecutor(handle, "3.2.4");
+		const other = executor.forDatabase("other");
+
+		await executor.commit();
+
+		await expect(other.query("late")).rejects.toBeInstanceOf(
+			MongoTransactionError,
+		);
+		expect(events).toEqual(["commit"]);
+	});
+
+	test("read their own result, not the prefix's", async () => {
+		const handle: TransactionHandle = {
+			query: async <R extends unknown[] = unknown[]>(): Promise<R> =>
+				[{ database: "other" }, ["row"]] as unknown as R,
+			commit: async () => {},
+			cancel: async () => {},
+		};
+		const executor = new TransactionExecutor(handle, "3.2.4");
+
+		expect(
+			await executor.forDatabase("other").query<string[]>("SELECT 1"),
+		).toEqual(["row"]);
+	});
+});

@@ -261,17 +261,40 @@ export class Db {
 	}
 
 	/**
+	 * @internal The executor for a statement about the namespace, not this database.
+	 *
+	 * `INFO FOR NS` and a bare liveness probe ask nothing of any one database, and
+	 * addressing one would create it: SurrealDB's `USE` brings a database into
+	 * existence, so `client.db("typo").admin().listDatabases()` would otherwise
+	 * report `typo` among the databases — an answer the question invented. The
+	 * caller's transaction is still honoured; only the database scope is dropped.
+	 */
+	_namespaceExecutor(
+		options: { readonly session?: ClientSession } | undefined,
+	): Promise<QueryExecutor> {
+		return sessionExecutor(options?.session, this._client, undefined);
+	}
+
+	/**
+	 * @internal The client's connection, addressing this database.
+	 *
+	 * The executor an operation uses when no session sends it elsewhere, and the
+	 * one an operation compares against to tell whether it is in a transaction.
+	 */
+	get _connection(): QueryExecutor {
+		return this._client._executorFor(this._client._scopeFor(this.databaseName));
+	}
+
+	/**
 	 * The executor this call's statements run through: the caller's transaction
-	 * when they passed a session in one, the client's connection otherwise.
+	 * when they passed a session in one, the client's connection otherwise — and
+	 * either way addressed at this database rather than at whichever one the
+	 * connection happens to be pointed at.
 	 */
 	private executor(
 		options: { readonly session?: ClientSession } | undefined,
 	): Promise<QueryExecutor> {
-		return sessionExecutor(
-			options?.session,
-			this._client,
-			this._client._executor,
-		);
+		return sessionExecutor(options?.session, this._client, this.databaseName);
 	}
 }
 

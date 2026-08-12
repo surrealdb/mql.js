@@ -125,11 +125,7 @@ function client(
 
 /** Run one statement with `session`, which is what establishes the transaction. */
 async function statement(session: ClientSession, sql: string): Promise<void> {
-	const executor = await sessionExecutor(
-		session,
-		session.client,
-		session.client._executor,
-	);
+	const executor = await sessionExecutor(session, session.client, "testdb");
 	await executor.query(sql);
 }
 
@@ -511,7 +507,7 @@ describe("endSession", () => {
 			MongoExpiredSessionError,
 		);
 		await expect(
-			sessionExecutor(session, mongo, mongo._executor),
+			sessionExecutor(session, mongo, "testdb"),
 		).rejects.toBeInstanceOf(MongoExpiredSessionError);
 	});
 
@@ -753,7 +749,7 @@ describe("sessionExecutor", () => {
 	test("uses the connection when no session is given", async () => {
 		const mongo = client();
 
-		expect(await sessionExecutor(undefined, mongo, mongo._executor)).toBe(
+		expect(await sessionExecutor(undefined, mongo, "testdb")).toBe(
 			mongo._executor,
 		);
 	});
@@ -762,7 +758,7 @@ describe("sessionExecutor", () => {
 		const mongo = client();
 		const session = mongo.startSession();
 
-		expect(await sessionExecutor(session, mongo, mongo._executor)).toBe(
+		expect(await sessionExecutor(session, mongo, "testdb")).toBe(
 			mongo._executor,
 		);
 	});
@@ -772,7 +768,7 @@ describe("sessionExecutor", () => {
 		const session = mongo.startSession();
 		session.startTransaction();
 
-		const executor = await sessionExecutor(session, mongo, mongo._executor);
+		const executor = await sessionExecutor(session, mongo, "testdb");
 		await executor.query("CREATE t:one");
 
 		expect(recording.transactions[0]?.queries).toEqual(["CREATE t:one"]);
@@ -796,24 +792,54 @@ describe("sessionExecutor", () => {
 		]);
 	});
 
+	test("keeps a statement for another database inside the same transaction", async () => {
+		const mongo = client();
+		const session = mongo.startSession();
+		session.startTransaction();
+
+		const connected = await sessionExecutor(session, mongo, "testdb");
+		const other = await sessionExecutor(session, mongo, "elsewhere");
+		await connected.query("CREATE t:one");
+		await other.query("CREATE t:two");
+
+		// One transaction, both statements in it. A second transaction — or either
+		// statement landing on the connection — would mean the two databases could
+		// not be committed or rolled back as a unit.
+		expect(recording.transactions).toHaveLength(1);
+		expect(recording.transactions[0]?.queries).toEqual([
+			"CREATE t:one",
+			"USE DB `elsewhere`; CREATE t:two",
+		]);
+		expect(recording.connectionQueries).not.toContain("CREATE t:two");
+	});
+
+	test("uses the named database's connection when no transaction is open", async () => {
+		const mongo = client();
+		const session = mongo.startSession();
+
+		expect(await sessionExecutor(session, mongo, "elsewhere")).toBe(
+			await sessionExecutor(undefined, mongo, "elsewhere"),
+		);
+	});
+
 	test("refuses a session belonging to another client", async () => {
 		const owner = client();
 		const other = client();
 		const session = owner.startSession();
 
 		await expect(
-			sessionExecutor(session, other, other._executor),
+			sessionExecutor(session, other, "testdb"),
 		).rejects.toBeInstanceOf(MongoInvalidArgumentError);
-		await expect(
-			sessionExecutor(session, other, other._executor),
-		).rejects.toThrow("must be from the same MongoClient");
+		await expect(sessionExecutor(session, other, "testdb")).rejects.toThrow(
+			"must be from the same MongoClient",
+		);
 	});
 
 	test("refuses a value that is not a session", async () => {
 		const mongo = client();
 
 		await expect(
-			sessionExecutor({ id: "not-a-session" }, mongo, mongo._executor),
+			sessionExecutor({ id: "not-a-session" }, mongo, "testdb"),
 		).rejects.toBeInstanceOf(MongoInvalidArgumentError);
 	});
 

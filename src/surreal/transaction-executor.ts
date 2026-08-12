@@ -21,6 +21,7 @@
  */
 
 import { MongoTransactionError } from "../errors.ts";
+import { ScopedExecutor } from "./database-scope.ts";
 import { mapQueryError } from "./error-mapper.ts";
 import type { QueryExecutor } from "./query-executor.ts";
 
@@ -47,9 +48,21 @@ export interface TransactionScope extends QueryExecutor {
 	cancel(): Promise<void>;
 	/** False once `commit()` or `cancel()` has been called. */
 	readonly isLive: boolean;
+	/**
+	 * This same transaction, addressing `database` instead of the connected one.
+	 *
+	 * One transaction spans every database a session touches, which is what
+	 * MongoDB's does — measured — so this hands back a view rather than opening
+	 * anything: the statements it carries queue behind the same handle and are
+	 * settled by the same commit.
+	 */
+	forDatabase(database: string | undefined): QueryExecutor;
 }
 
-export class TransactionExecutor implements TransactionScope {
+export class TransactionExecutor
+	extends ScopedExecutor
+	implements TransactionScope
+{
 	private readonly handle: TransactionHandle;
 	private readonly _serverVersion: string | undefined;
 	private _isLive = true;
@@ -57,6 +70,7 @@ export class TransactionExecutor implements TransactionScope {
 	private tail: Promise<unknown> = Promise.resolve();
 
 	constructor(handle: TransactionHandle, serverVersion: string | undefined) {
+		super(undefined);
 		this.handle = handle;
 		this._serverVersion = serverVersion;
 	}
@@ -69,15 +83,14 @@ export class TransactionExecutor implements TransactionScope {
 		return this._isLive;
 	}
 
-	async query<T = unknown>(
+	protected async dispatch(
 		sql: string,
 		bindings?: Record<string, unknown>,
-	): Promise<T> {
+	): Promise<readonly unknown[]> {
 		return this.enqueue(async () => {
 			this.assertLive("run a statement in");
 			try {
-				const results = await this.handle.query<[T]>(sql, bindings);
-				return results[0];
+				return await this.handle.query(sql, bindings);
 			} catch (err) {
 				throw mapQueryError(err);
 			}
