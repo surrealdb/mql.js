@@ -107,7 +107,7 @@ describe("a sort the field list does not name", () => {
 				projectionFields: "tag",
 				projectionIncludeId: false,
 			}),
-		).rejects.toThrow(/Sorting by id while/);
+		).rejects.toThrow(/Sorting by _id while/);
 	});
 
 	test("is refused from findOne on the same terms", async () => {

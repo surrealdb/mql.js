@@ -152,7 +152,7 @@ describe("a sort an inclusion projection does not cover", () => {
 			coll
 				.find({}, { projection: { tag: 1, _id: 0 }, sort: { _id: -1 } })
 				.toArray(),
-		).rejects.toThrow(/Sorting by id/);
+		).rejects.toThrow(/Sorting by _id/);
 	});
 
 	test("is refused for a projection of _id alone sorted by anything else", async () => {

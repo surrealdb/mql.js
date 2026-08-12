@@ -117,6 +117,10 @@ describe("translateSort", () => {
 });
 
 describe("sortColumns", () => {
+	/** Just the SurrealQL spellings, for the cases that are only about those. */
+	const columns = (sort?: Sort | null) =>
+		sortColumns(sort).map((column) => column.column);
+
 	// SurrealDB refuses an `ORDER BY` naming an idiom the field list does not
 	// carry, so every statement that projects its fields has to select these.
 	test("nothing to order by yields no columns", () => {
@@ -126,10 +130,10 @@ describe("sortColumns", () => {
 	});
 
 	test("reads the same three shapes the clause does", () => {
-		expect(sortColumns("name")).toEqual(["name"]);
-		expect(sortColumns({ name: 1, age: -1 })).toEqual(["name", "age"]);
+		expect(columns("name")).toEqual(["name"]);
+		expect(columns({ name: 1, age: -1 })).toEqual(["name", "age"]);
 		expect(
-			sortColumns([
+			columns([
 				["name", 1],
 				["age", -1],
 			] as Sort),
@@ -137,20 +141,36 @@ describe("sortColumns", () => {
 	});
 
 	test("`_id` becomes SurrealDB's `id` column", () => {
-		expect(sortColumns({ _id: 1 })).toEqual(["id"]);
+		expect(columns({ _id: 1 })).toEqual(["id"]);
 	});
 
 	test("paths and awkward names are escaped as idioms", () => {
-		expect(sortColumns({ "nested.d": -1 })).toEqual(["nested.d"]);
-		expect(sortColumns({ "weird field": 1 })).toEqual(["`weird field`"]);
+		expect(columns({ "nested.d": -1 })).toEqual(["nested.d"]);
+		expect(columns({ "weird field": 1 })).toEqual(["`weird field`"]);
 	});
 
 	test("a column named twice appears once", () => {
 		expect(
-			sortColumns([
+			columns([
 				["name", 1],
 				["name", -1],
 			] as Sort),
 		).toEqual(["name"]);
+	});
+
+	/**
+	 * The caller's spelling travels with the column because a sort the field list
+	 * cannot carry is *reported*, and the report has to name the field the caller
+	 * wrote rather than this driver's escaping of it. Keeping the pair together is
+	 * what stops the two from being assembled separately and drifting.
+	 */
+	test("each column carries the name the caller gave it", () => {
+		expect(sortColumns({ "nested.d": -1 })).toEqual([
+			{ key: "nested.d", column: "nested.d" },
+		]);
+		expect(sortColumns({ _id: 1 })).toEqual([{ key: "_id", column: "id" }]);
+		expect(sortColumns("weird field")).toEqual([
+			{ key: "weird field", column: "`weird field`" },
+		]);
 	});
 });

@@ -74,6 +74,7 @@
 import { MongoCompatibilityError } from "../../errors.ts";
 import { escapeIdentifier } from "../../surreal/sql/escape.ts";
 import { statement } from "../../surreal/sql/statement.ts";
+import type { SortColumn } from "../../translators/sort.ts";
 
 /**
  * The alias the projected distance is ordered by.
@@ -90,9 +91,10 @@ export interface ReadOrdering {
 	readonly sortClause: string;
 	/**
 	 * The columns that `sortClause` orders by, escaped as the field list escapes
-	 * them, so the two can be compared directly.
+	 * them, so the two can be compared directly — each still carrying the name the
+	 * caller gave it, which is the one a refusal names.
 	 */
-	readonly sortFields: readonly string[];
+	readonly sortFields: readonly SortColumn[];
 	/** The distance expression a `$near` reported, if the filter had one. */
 	readonly nearDistance: string | undefined;
 	/**
@@ -184,10 +186,14 @@ export function readSource(
 		// ordering by anything else — `Missing order idiom` — so a sort the
 		// projection does not select cannot be served.
 		const projected = new Set(fields.split(",").map((field) => field.trim()));
-		const missing = sortFields.filter((field) => !projected.has(field));
+		const missing = sortFields.filter((sort) => !projected.has(sort.column));
 		if (missing.length > 0) {
+			// Named as the caller named them: they asked to sort by `a.b`, and being
+			// told about `` `a`.`b` `` would report this driver's SurrealQL escaping
+			// back to them as if it were their own field name.
+			const names = missing.map((sort) => sort.key).join(", ");
 			throw new MongoCompatibilityError(
-				`Sorting by ${missing.join(", ")} while projecting a different set of fields is not supported: SurrealDB requires every ORDER BY field to appear in the statement's own field list. Include ${missing.length === 1 ? "that field" : "those fields"} in the projection, use an exclusion projection instead, or sort the results after reading them.`,
+				`Sorting by ${names} while projecting a different set of fields is not supported: SurrealDB requires every ORDER BY field to appear in the statement's own field list. Include ${missing.length === 1 ? "that field" : "those fields"} in the projection, use an exclusion projection instead, or sort the results after reading them.`,
 			);
 		}
 
