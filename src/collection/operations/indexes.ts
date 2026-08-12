@@ -16,6 +16,7 @@
  */
 
 import {
+	MongoCompatibilityError,
 	MongoErrorCode,
 	MongoInvalidArgumentError,
 	MongoServerError,
@@ -37,6 +38,7 @@ import {
 	describeIndexes,
 	ID_INDEX_NAME,
 	type IndexInventory,
+	type IndexStatement,
 	isIdIndexKey,
 	keyToObject,
 	physicalIndexNames,
@@ -194,11 +196,82 @@ async function defineIndex(
 		ctx.escapedTable,
 		fullTextClause,
 	)) {
-		await ctx.executor.query(statement.sql, statement.bindings);
+		await defineOneIndex(ctx, statement, definition);
 	}
 
 	ctx.indexes.add(keyToObject(definition.key), definition.name);
 	return definition.name;
+}
+
+/**
+ * Define one index, and refuse it rather than store a definition the server
+ * cannot read back.
+ *
+ * SurrealDB accepts `DEFINE INDEX … FIELDS \`select\`` and then re-renders the
+ * stored idiom *unquoted* when reading the definition again. The re-render does
+ * not re-parse, and from that moment the table cannot be scanned, its indexes
+ * cannot be listed, and neither the index, the table nor the **database** can be
+ * removed — the rows survive only as direct record-id reads. Measured on 3.2.3
+ * for 26 of the words in SurrealQL's keyword table, as the *leading* segment of
+ * a field path (`outer.select` is unaffected); filed as
+ * `surrealdb/surrealdb-private#906`.
+ *
+ * `INFO FOR TABLE` is therefore issued in the same transaction as the
+ * definition. It is the same read the server fails on, so a definition it cannot
+ * re-parse aborts the transaction that created it and nothing is stored — the
+ * table is left exactly as it was, verified. This asks the connected server what
+ * it can store rather than consulting a list of words, which is what makes it
+ * hold for the keywords of a version this driver has never seen. A caller's own
+ * transaction already supplies that atomicity, so only the standalone case adds
+ * `BEGIN`/`COMMIT`; inside one, the failure aborts the caller's transaction,
+ * which is what a failed operation should do to it.
+ *
+ * The cost is one metadata read per index created, on an operation that already
+ * reads the whole index inventory first.
+ */
+async function defineOneIndex(
+	ctx: OperationContext,
+	statement: IndexStatement,
+	definition: ResolvedIndexDefinition,
+): Promise<void> {
+	const readBack = `INFO FOR TABLE ${ctx.escapedTable}`;
+	const sql = ctx.inTransaction
+		? `${statement.sql}; ${readBack}`
+		: `BEGIN; ${statement.sql}; ${readBack}; COMMIT`;
+
+	try {
+		await ctx.executor.query(sql, statement.bindings);
+	} catch (err) {
+		if (!isRolledBackTransaction(err)) throw err;
+
+		// SurrealDB reports a rolled-back statement as "not executed" and attaches
+		// the real cause to a *later* frame, which the SDK does not surface, so this
+		// deliberately does not claim to know which of the two statements failed.
+		// The precise message for the names known to do it comes from
+		// `assertIndexableColumns`, before any of this runs.
+		const columns = definition.columns
+			.map((column) => `'${column}'`)
+			.join(", ");
+		throw new MongoCompatibilityError(
+			`An index on ${columns} could not be created: SurrealDB either rejected the definition or could not read it back. No index was created and the collection is unchanged.`,
+			{ cause: err },
+		);
+	}
+}
+
+/**
+ * Did the whole dispatch roll back, rather than one statement failing?
+ *
+ * The message SurrealDB gives a statement discarded by a neighbour's failure.
+ * Distinguishing it matters because everything else — a taken index name,
+ * insufficient permissions — should reach the caller as itself.
+ */
+function isRolledBackTransaction(err: unknown): boolean {
+	const message = err instanceof Error ? err.message : String(err);
+	return (
+		message.includes("not executed due to a failed transaction") ||
+		message.includes("not executed due to a cancelled transaction")
+	);
 }
 
 // `async` rather than returning `defineIndex`'s promise directly, so a
