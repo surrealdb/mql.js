@@ -98,13 +98,15 @@ export interface ReadOrdering {
 	/** The distance expression a `$near` reported, if the filter had one. */
 	readonly nearDistance: string | undefined;
 	/**
-	 * The `SELECT` field list an inclusion projection asks for, empty for `*`.
+	 * The escaped columns an inclusion projection asks for, empty for `*`.
 	 *
 	 * This is what decides whether the caller's `sort` can be served: a `*` carries
 	 * every idiom an `ORDER BY` could name, and a field list carries only what it
-	 * names.
+	 * names. It arrives as a list rather than as the comma-joined string it is
+	 * emitted as, because a joined list has to be split to be asked that question
+	 * and a field name may contain a comma.
 	 */
-	readonly fields: string;
+	readonly columns: readonly string[];
 	/** How many documents the caller wants, if it said. */
 	readonly limit: number | undefined;
 	/** How many documents the caller wants skipped, if it said. */
@@ -144,7 +146,7 @@ export function readSource(
 	indexHint: string,
 	ordering: ReadOrdering,
 ): ReadSource {
-	const { sortClause, sortFields, nearDistance, fields, limit, skip } =
+	const { sortClause, sortFields, nearDistance, columns, limit, skip } =
 		ordering;
 	const limitClause = limit !== undefined ? `LIMIT ${limit}` : "";
 	const startClause = skip !== undefined ? `START ${skip}` : "";
@@ -180,12 +182,12 @@ export function readSource(
 	// of the two branches below can apply.
 	if (sortClause) {
 		// A `*` carries every idiom an `ORDER BY` could name, so it orders in place.
-		if (!fields) return inPlace(sortClause);
+		if (columns.length === 0) return inPlace(sortClause);
 
 		// An explicit field list only carries what it names. SurrealDB rejects an
 		// ordering by anything else — `Missing order idiom` — so a sort the
 		// projection does not select cannot be served.
-		const projected = new Set(fields.split(",").map((field) => field.trim()));
+		const projected = new Set(columns);
 		const missing = sortFields.filter((sort) => !projected.has(sort.column));
 		if (missing.length > 0) {
 			// Named as the caller named them: they asked to sort by `a.b`, and being
@@ -210,8 +212,17 @@ export function readSource(
 	);
 }
 
-/** The `SELECT` field list for a read, hiding any alias from a `*`. */
-export function readProjection(fields: string, omit: string): string {
-	if (fields) return fields;
+/**
+ * The `SELECT` field list for a read, hiding any alias from a `*`.
+ *
+ * The one place the columns become SQL, which is why they travel as a list up to
+ * here: joining them earlier would mean splitting them again to ask what the list
+ * carries.
+ */
+export function readProjection(
+	columns: readonly string[],
+	omit: string,
+): string {
+	if (columns.length > 0) return columns.join(", ");
 	return omit ? `* OMIT ${omit}` : "*";
 }

@@ -37,13 +37,13 @@ export async function findOne<TSchema extends Document>(
 		sortClause: translateSort(options?.sort),
 		sortFields: sortColumns(options?.sort),
 		nearDistance,
-		fields: proj.fields,
+		columns: proj.columns,
 		limit: 1,
 		skip: undefined,
 	});
 
 	const sql = statement(
-		`SELECT ${readProjection(proj.fields, source.omit)} FROM ${source.from}`,
+		`SELECT ${readProjection(proj.columns, source.omit)} FROM ${source.from}`,
 		source.indexHint,
 		source.where && `WHERE ${source.where}`,
 		source.orderBy,
@@ -67,7 +67,7 @@ export interface ExecuteFindOptions {
 	sort?: Sort;
 	limit?: number;
 	skip?: number;
-	projectionFields?: string;
+	projectionColumns?: readonly string[];
 	projectionExcludeFields?: string[];
 	projectionIncludeId?: boolean;
 }
@@ -91,18 +91,18 @@ export async function executeFind<TSchema extends Document>(
 		applyUndefinedPolicy(filter, plan.ignoreUndefined),
 		await filterOptionsFor(ctx, filter),
 	);
-	const fields = state.projectionFields ?? "";
+	const columns = state.projectionColumns ?? [];
 	const source = readSource(ctx.escapedTable, clause, plan.indexHint, {
 		sortClause: translateSort(state.sort),
 		sortFields: sortColumns(state.sort),
 		nearDistance,
-		fields,
+		columns,
 		limit: state.limit,
 		skip: state.skip,
 	});
 
 	const sql = statement(
-		`SELECT ${readProjection(fields, source.omit)} FROM ${source.from}`,
+		`SELECT ${readProjection(columns, source.omit)} FROM ${source.from}`,
 		source.indexHint,
 		source.where && `WHERE ${source.where}`,
 		source.orderBy,

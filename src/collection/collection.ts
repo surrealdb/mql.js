@@ -224,7 +224,7 @@ export class Collection<TSchema extends Document = Document> {
 					sort: state.sort,
 					limit: state.limit,
 					skip: state.skip,
-					projectionFields: state.projectionFields,
+					projectionColumns: state.projectionColumns,
 					projectionExcludeFields: state.projectionExcludeFields,
 					projectionIncludeId: state.projectionIncludeId,
 				},
