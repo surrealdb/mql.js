@@ -9,7 +9,7 @@
 
 import { MongoInvalidArgumentError } from "../errors.ts";
 import type { QueryExecutor } from "../surreal/query-executor.ts";
-import { escapeIdentifier, quoteIdentifier } from "../surreal/sql/escape.ts";
+import { escapeIdentifier } from "../surreal/sql/escape.ts";
 import type { CollectionInfo, Document } from "../types.ts";
 
 /**
@@ -213,19 +213,17 @@ export async function dropCollectionTable(
 /**
  * Remove a whole database.
  *
- * The name is quoted unconditionally, like the one in a statement's database
- * prefix and for the same reason: `REMOVE DATABASE` accepts fewer bare words than
- * a table position does, so `function`, `alter`, `sleep` and `and` are parse
- * errors bare and fine quoted. Bare, the parse error would be caught below and
- * reported as `false` — a database that could have been dropped, reported as one
- * that was not.
+ * The `catch` is what makes `escapeIdentifier` load-bearing here rather than
+ * merely correct: a name it failed to quote would be a parse error, the parse
+ * error would be swallowed below, and a database that could have been dropped
+ * would be reported as one that was not.
  */
 export async function dropDatabase(
 	exec: QueryExecutor,
 	name: string,
 ): Promise<boolean> {
 	try {
-		await exec.query(`REMOVE DATABASE ${quoteIdentifier(name)}`);
+		await exec.query(`REMOVE DATABASE ${escapeIdentifier(name)}`);
 		return true;
 	} catch {
 		return false;

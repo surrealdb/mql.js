@@ -27,8 +27,8 @@ describe("ConnectionManager.ensureNamespaceAndDatabase", () => {
 		);
 
 		expect(queries).toHaveLength(1);
-		expect(queries[0]).toContain("DEFINE NAMESPACE IF NOT EXISTS test");
-		expect(queries[0]).toContain("DEFINE DATABASE IF NOT EXISTS mydb");
+		expect(queries[0]).toContain("DEFINE NAMESPACE IF NOT EXISTS `test`");
+		expect(queries[0]).toContain("DEFINE DATABASE IF NOT EXISTS `mydb`");
 	});
 
 	test("escapes identifiers that require quoting", async () => {
@@ -50,7 +50,7 @@ describe("ConnectionManager.ensureNamespaceAndDatabase", () => {
 		);
 
 		expect(queries).toHaveLength(1);
-		expect(queries[0]).toContain("DEFINE NAMESPACE IF NOT EXISTS test");
+		expect(queries[0]).toContain("DEFINE NAMESPACE IF NOT EXISTS `test`");
 		expect(queries[0]).not.toContain("DEFINE DATABASE");
 	});
 

@@ -3,6 +3,7 @@ import {
 	MongoCompatibilityError,
 	MongoInvalidArgumentError,
 } from "../../../src/errors.ts";
+import { escapeFieldPath } from "../../../src/surreal/sql/escape.ts";
 import { translateFilter } from "../../../src/translators/filter.ts";
 
 /**
@@ -10,11 +11,21 @@ import { translateFilter } from "../../../src/translators/filter.ts";
  * an array field. These build the predicates the translator emits for that, so
  * the incidental tests below stay readable — the dedicated array-semantics
  * tests further down spell the SurrealQL out in full.
+ *
+ * The field goes through `escapeFieldPath` rather than being written out
+ * backticked, because these assertions are about the *shape* of the predicate,
+ * not about quoting. Quoting is pinned on its own in `sql/escape.test.ts`, and
+ * spelling it out again in every one of the assertions below would mean this
+ * file failed wholesale the next time it changed.
  */
-const eq = (field: string, param: string) =>
-	`(${field} = $${param} OR (type::is_array(${field}) AND ${field} CONTAINS $${param}))`;
-const inAny = (field: string, param: string) =>
-	`(${field} IN $${param} OR (type::is_array(${field}) AND ${field} ANYINSIDE $${param}))`;
+const eq = (name: string, param: string) => {
+	const field = escapeFieldPath(name);
+	return `(${field} = $${param} OR (type::is_array(${field}) AND ${field} CONTAINS $${param}))`;
+};
+const inAny = (name: string, param: string) => {
+	const field = escapeFieldPath(name);
+	return `(${field} IN $${param} OR (type::is_array(${field}) AND ${field} ANYINSIDE $${param}))`;
+};
 
 describe("translateFilter", () => {
 	// -----------------------------------------------------------------
@@ -37,7 +48,7 @@ describe("translateFilter", () => {
 	test("implicit equality with string", () => {
 		const { clause, bindings } = translateFilter({ name: "John" });
 		expect(clause).toBe(
-			"(name = $p0 OR (type::is_array(name) AND name CONTAINS $p0))",
+			"(`name` = $p0 OR (type::is_array(`name`) AND `name` CONTAINS $p0))",
 		);
 		expect(bindings).toEqual({ p0: "John" });
 	});
@@ -52,7 +63,7 @@ describe("translateFilter", () => {
 		// MongoDB `{f: null}` matches an explicit null *and* an absent field;
 		// SurrealDB spells those NULL and NONE. No value needs binding.
 		const { clause, bindings } = translateFilter({ field: null });
-		expect(clause).toBe("(field IS NULL OR field IS NONE)");
+		expect(clause).toBe("(`field` IS NULL OR `field` IS NONE)");
 		expect(bindings).toEqual({});
 	});
 
@@ -82,31 +93,33 @@ describe("translateFilter", () => {
 
 	test("$ne negates the whole equality, array arm included", () => {
 		const { clause, bindings } = translateFilter({ x: { $ne: 5 } });
-		expect(clause).toBe("!(x = $p0 OR (type::is_array(x) AND x CONTAINS $p0))");
+		expect(clause).toBe(
+			"!(`x` = $p0 OR (type::is_array(`x`) AND `x` CONTAINS $p0))",
+		);
 		expect(bindings).toEqual({ p0: 5 });
 	});
 
 	test("$gt", () => {
 		const { clause, bindings } = translateFilter({ x: { $gt: 10 } });
-		expect(clause).toBe("x > $p0");
+		expect(clause).toBe("`x` > $p0");
 		expect(bindings).toEqual({ p0: 10 });
 	});
 
 	test("$gte", () => {
 		const { clause, bindings } = translateFilter({ x: { $gte: 10 } });
-		expect(clause).toBe("x >= $p0");
+		expect(clause).toBe("`x` >= $p0");
 		expect(bindings).toEqual({ p0: 10 });
 	});
 
 	test("$lt", () => {
 		const { clause, bindings } = translateFilter({ x: { $lt: 10 } });
-		expect(clause).toBe("x < $p0");
+		expect(clause).toBe("`x` < $p0");
 		expect(bindings).toEqual({ p0: 10 });
 	});
 
 	test("$lte", () => {
 		const { clause, bindings } = translateFilter({ x: { $lte: 10 } });
-		expect(clause).toBe("x <= $p0");
+		expect(clause).toBe("`x` <= $p0");
 		expect(bindings).toEqual({ p0: 10 });
 	});
 
@@ -114,7 +127,7 @@ describe("translateFilter", () => {
 		const { clause, bindings } = translateFilter({
 			age: { $gt: 18, $lt: 65 },
 		});
-		expect(clause).toBe("age > $p0 AND age < $p1");
+		expect(clause).toBe("`age` > $p0 AND `age` < $p1");
 		expect(bindings).toEqual({ p0: 18, p1: 65 });
 	});
 
@@ -126,7 +139,7 @@ describe("translateFilter", () => {
 			status: { $in: ["active", "pending"] },
 		});
 		expect(clause).toBe(
-			"(status IN $p0 OR (type::is_array(status) AND status ANYINSIDE $p0))",
+			"(`status` IN $p0 OR (type::is_array(`status`) AND `status` ANYINSIDE $p0))",
 		);
 		expect(bindings).toEqual({ p0: ["active", "pending"] });
 	});
@@ -136,7 +149,7 @@ describe("translateFilter", () => {
 			role: { $nin: ["admin", "root"] },
 		});
 		expect(clause).toBe(
-			"!(role IN $p0 OR (type::is_array(role) AND role ANYINSIDE $p0))",
+			"!(`role` IN $p0 OR (type::is_array(`role`) AND `role` ANYINSIDE $p0))",
 		);
 		expect(bindings).toEqual({ p0: ["admin", "root"] });
 	});
@@ -145,14 +158,14 @@ describe("translateFilter", () => {
 		// `IN` already covers the explicit NULL; only NONE needs naming.
 		const { clause } = translateFilter({ a: { $in: [null, 1] } });
 		expect(clause).toBe(
-			"(a IN $p0 OR (type::is_array(a) AND a ANYINSIDE $p0) OR a IS NONE)",
+			"(`a` IN $p0 OR (type::is_array(`a`) AND `a` ANYINSIDE $p0) OR `a` IS NONE)",
 		);
 	});
 
 	test("$nin containing null excludes a missing field too", () => {
 		const { clause } = translateFilter({ a: { $nin: [null] } });
 		expect(clause).toBe(
-			"!(a IN $p0 OR (type::is_array(a) AND a ANYINSIDE $p0) OR a IS NONE)",
+			"!(`a` IN $p0 OR (type::is_array(`a`) AND `a` ANYINSIDE $p0) OR `a` IS NONE)",
 		);
 	});
 
@@ -163,7 +176,7 @@ describe("translateFilter", () => {
 		const { clause, bindings } = translateFilter({
 			email: { $exists: true },
 		});
-		expect(clause).toBe("email IS NOT NONE");
+		expect(clause).toBe("`email` IS NOT NONE");
 		expect(bindings).toEqual({});
 	});
 
@@ -171,7 +184,7 @@ describe("translateFilter", () => {
 		const { clause, bindings } = translateFilter({
 			email: { $exists: false },
 		});
-		expect(clause).toBe("email IS NONE");
+		expect(clause).toBe("`email` IS NONE");
 		expect(bindings).toEqual({});
 	});
 
@@ -186,7 +199,7 @@ describe("translateFilter", () => {
 
 	// `string::matches()` is typed on strings and raises on a NONE, so the call
 	// is guarded — a document simply missing the field must not abort the query.
-	const MATCHES = "(type::is_string(name) AND string::matches(name, $p0))";
+	const MATCHES = "(type::is_string(`name`) AND string::matches(`name`, $p0))";
 
 	test("$regex with string emits a guarded string::matches on v3", () => {
 		const { clause, bindings } = translateFilter(
@@ -269,7 +282,7 @@ describe("translateFilter", () => {
 		const { clause, bindings } = translateFilter({
 			age: { $not: { $gt: 18 } },
 		});
-		expect(clause).toBe("!(age > $p0)");
+		expect(clause).toBe("!(`age` > $p0)");
 		expect(bindings).toEqual({ p0: 18 });
 	});
 
@@ -277,7 +290,7 @@ describe("translateFilter", () => {
 		const { clause, bindings } = translateFilter({
 			age: { $not: { $gt: 18, $lt: 65 } },
 		});
-		expect(clause).toBe("!(age > $p0 AND age < $p1)");
+		expect(clause).toBe("!(`age` > $p0 AND `age` < $p1)");
 		expect(bindings).toEqual({ p0: 18, p1: 65 });
 	});
 
@@ -288,7 +301,7 @@ describe("translateFilter", () => {
 		const { clause, bindings } = translateFilter({
 			$and: [{ name: "John" }, { age: { $gt: 25 } }],
 		});
-		expect(clause).toBe(`(${eq("name", "p0")} AND age > $p1)`);
+		expect(clause).toBe(`(${eq("name", "p0")} AND \`age\` > $p1)`);
 		expect(bindings).toEqual({ p0: "John", p1: 25 });
 	});
 
@@ -332,7 +345,7 @@ describe("translateFilter", () => {
 		const { clause } = translateFilter({
 			"a.b.c.d": { $gt: 10 },
 		});
-		expect(clause).toBe("a.b.c.d > $p0");
+		expect(clause).toBe("`a`.`b`.`c`.`d` > $p0");
 	});
 
 	// -----------------------------------------------------------------
@@ -344,7 +357,7 @@ describe("translateFilter", () => {
 			$or: [{ role: "admin" }, { age: { $gte: 18 } }],
 		});
 		expect(clause).toBe(
-			`${eq("active", "p0")} AND (${eq("role", "p1")} OR age >= $p2)`,
+			`${eq("active", "p0")} AND (${eq("role", "p1")} OR \`age\` >= $p2)`,
 		);
 		expect(bindings).toEqual({ p0: true, p1: "admin", p2: 18 });
 	});
@@ -366,7 +379,7 @@ describe("translateFilter", () => {
 		const { clause, bindings } = translateFilter({
 			tags: { $all: ["a", "b"] },
 		});
-		expect(clause).toBe("tags CONTAINSALL $p0");
+		expect(clause).toBe("`tags` CONTAINSALL $p0");
 		expect(bindings).toEqual({ p0: ["a", "b"] });
 	});
 
@@ -374,7 +387,7 @@ describe("translateFilter", () => {
 		const { clause, bindings } = translateFilter({
 			items: { $size: 3 },
 		});
-		expect(clause).toBe("array::len(items) = $p0");
+		expect(clause).toBe("array::len(`items`) = $p0");
 		expect(bindings).toEqual({ p0: 3 });
 	});
 
@@ -382,7 +395,7 @@ describe("translateFilter", () => {
 		const { clause, bindings } = translateFilter({
 			items: { $size: 0 },
 		});
-		expect(clause).toBe("array::len(items) = $p0");
+		expect(clause).toBe("array::len(`items`) = $p0");
 		expect(bindings).toEqual({ p0: 0 });
 	});
 
@@ -394,7 +407,7 @@ describe("translateFilter", () => {
 			results: { $elemMatch: { product: "abc", score: 8 } },
 		});
 		expect(clause).toBe(
-			"(type::is_array(results) AND array::len(results[WHERE " +
+			"(type::is_array(`results`) AND array::len(`results`[WHERE " +
 				`${eq("product", "p0")} AND ${eq("score", "p1")}]) > 0)`,
 		);
 		expect(bindings).toEqual({ p0: "abc", p1: 8 });
@@ -405,7 +418,7 @@ describe("translateFilter", () => {
 			items: { $elemMatch: { x: 1 } },
 		});
 		expect(clause).toBe(
-			`(type::is_array(items) AND array::len(items[WHERE ${eq("x", "p0")}]) > 0)`,
+			`(type::is_array(\`items\`) AND array::len(\`items\`[WHERE ${eq("x", "p0")}]) > 0)`,
 		);
 		expect(bindings).toEqual({ p0: 1 });
 	});
@@ -415,8 +428,8 @@ describe("translateFilter", () => {
 			results: { $elemMatch: { score: { $gt: 80 }, grade: "A" } },
 		});
 		expect(clause).toBe(
-			"(type::is_array(results) AND array::len(results[WHERE " +
-				`score > $p0 AND ${eq("grade", "p1")}]) > 0)`,
+			"(type::is_array(`results`) AND array::len(`results`[WHERE " +
+				`\`score\` > $p0 AND ${eq("grade", "p1")}]) > 0)`,
 		);
 		expect(bindings).toEqual({ p0: 80, p1: "A" });
 	});
@@ -426,8 +439,8 @@ describe("translateFilter", () => {
 			items: { $elemMatch: { x: { $gte: 1, $lt: 5 }, y: 2 } },
 		});
 		expect(clause).toBe(
-			"(type::is_array(items) AND array::len(items[WHERE " +
-				`x >= $p0 AND x < $p1 AND ${eq("y", "p2")}]) > 0)`,
+			"(type::is_array(`items`) AND array::len(`items`[WHERE " +
+				`\`x\` >= $p0 AND \`x\` < $p1 AND ${eq("y", "p2")}]) > 0)`,
 		);
 		expect(bindings).toEqual({ p0: 1, p1: 5, p2: 2 });
 	});
@@ -438,7 +451,7 @@ describe("translateFilter", () => {
 		});
 		// Top-level operators apply to the element itself via $this
 		expect(clause).toBe(
-			"(type::is_array(scores) AND array::len(scores[WHERE $this >= $p0 AND $this < $p1]) > 0)",
+			"(type::is_array(`scores`) AND array::len(`scores`[WHERE $this >= $p0 AND $this < $p1]) > 0)",
 		);
 		expect(bindings).toEqual({ p0: 80, p1: 90 });
 	});
@@ -448,8 +461,8 @@ describe("translateFilter", () => {
 			items: { $elemMatch: { sku: /^ab/i } },
 		});
 		expect(clause).toBe(
-			"(type::is_array(items) AND array::len(items[WHERE " +
-				"(type::is_string(sku) AND string::matches(sku, $p0))]) > 0)",
+			"(type::is_array(`items`) AND array::len(`items`[WHERE " +
+				"(type::is_string(`sku`) AND string::matches(`sku`, $p0))]) > 0)",
 		);
 		expect(bindings).toEqual({ p0: "(?i)^ab" });
 	});
@@ -458,7 +471,9 @@ describe("translateFilter", () => {
 		// `array::len()` raises on a NONE, so the type guard's short-circuit is
 		// what keeps a document without the field from erroring.
 		const { clause } = translateFilter({ items: { $elemMatch: {} } });
-		expect(clause).toBe("(type::is_array(items) AND array::len(items) > 0)");
+		expect(clause).toBe(
+			"(type::is_array(`items`) AND array::len(`items`) > 0)",
+		);
 	});
 
 	test("$elemMatch escapes sub-field names", () => {
@@ -466,7 +481,7 @@ describe("translateFilter", () => {
 			items: { $elemMatch: { "a-b": 1 } },
 		});
 		expect(clause).toBe(
-			`(type::is_array(items) AND array::len(items[WHERE ${eq("`a-b`", "p0")}]) > 0)`,
+			`(type::is_array(\`items\`) AND array::len(\`items\`[WHERE ${eq("a-b", "p0")}]) > 0)`,
 		);
 	});
 
@@ -477,28 +492,28 @@ describe("translateFilter", () => {
 
 	test("$type with string alias", () => {
 		expect(translateFilter({ x: { $type: "string" } }, V3).clause).toBe(
-			"type::is_string(x)",
+			"type::is_string(`x`)",
 		);
 	});
 
 	test("$type with numeric BSON code", () => {
 		expect(translateFilter({ x: { $type: 2 } }, V3).clause).toBe(
-			"type::is_string(x)",
+			"type::is_string(`x`)",
 		);
 	});
 
 	test("$type 'number' matches any numeric type", () => {
 		expect(translateFilter({ x: { $type: "number" } }, V3).clause).toBe(
-			"type::is_number(x)",
+			"type::is_number(`x`)",
 		);
 	});
 
 	test("$type 'double' / 1 maps to float", () => {
 		expect(translateFilter({ x: { $type: "double" } }, V3).clause).toBe(
-			"type::is_float(x)",
+			"type::is_float(`x`)",
 		);
 		expect(translateFilter({ x: { $type: 1 } }, V3).clause).toBe(
-			"type::is_float(x)",
+			"type::is_float(`x`)",
 		);
 	});
 
@@ -508,50 +523,50 @@ describe("translateFilter", () => {
 		// JSON object, and is a BSON object to MongoDB.
 		for (const spec of ["object", 3]) {
 			expect(translateFilter({ x: { $type: spec } }, V3).clause).toBe(
-				"(type::is_object(x) OR type::is_geometry(x))",
+				"(type::is_object(`x`) OR type::is_geometry(`x`))",
 			);
 		}
 	});
 
 	test("$type 'array' / 4 maps to array", () => {
 		expect(translateFilter({ x: { $type: "array" } }, V3).clause).toBe(
-			"type::is_array(x)",
+			"type::is_array(`x`)",
 		);
 	});
 
 	test("$type 'bool' / 8 maps to bool", () => {
 		expect(translateFilter({ x: { $type: "bool" } }, V3).clause).toBe(
-			"type::is_bool(x)",
+			"type::is_bool(`x`)",
 		);
 	});
 
 	test("$type 'date' / 9 maps to datetime", () => {
 		expect(translateFilter({ x: { $type: "date" } }, V3).clause).toBe(
-			"type::is_datetime(x)",
+			"type::is_datetime(`x`)",
 		);
 	});
 
 	test("$type 'null' / 10 maps to null", () => {
 		expect(translateFilter({ x: { $type: "null" } }, V3).clause).toBe(
-			"type::is_null(x)",
+			"type::is_null(`x`)",
 		);
 	});
 
 	test("$type 'int' / 16 maps to int", () => {
 		expect(translateFilter({ x: { $type: "int" } }, V3).clause).toBe(
-			"type::is_int(x)",
+			"type::is_int(`x`)",
 		);
 	});
 
 	test("$type 'long' / 18 maps to int (no distinction)", () => {
 		expect(translateFilter({ x: { $type: "long" } }, V3).clause).toBe(
-			"type::is_int(x)",
+			"type::is_int(`x`)",
 		);
 	});
 
 	test("$type 'decimal' / 19 maps to decimal", () => {
 		expect(translateFilter({ x: { $type: "decimal" } }, V3).clause).toBe(
-			"type::is_decimal(x)",
+			"type::is_decimal(`x`)",
 		);
 	});
 
@@ -574,7 +589,7 @@ describe("translateFilter", () => {
 		const { clause, bindings } = translateFilter({
 			qty: { $mod: [4, 0] },
 		});
-		expect(clause).toBe("qty % $p0 = $p1");
+		expect(clause).toBe("`qty` % $p0 = $p1");
 		expect(bindings).toEqual({ p0: 4, p1: 0 });
 	});
 
@@ -582,7 +597,7 @@ describe("translateFilter", () => {
 		const { clause, bindings } = translateFilter({
 			qty: { $mod: [3, 1] },
 		});
-		expect(clause).toBe("qty % $p0 = $p1");
+		expect(clause).toBe("`qty` % $p0 = $p1");
 		expect(bindings).toEqual({ p0: 3, p1: 1 });
 	});
 
@@ -590,7 +605,7 @@ describe("translateFilter", () => {
 		const { clause, bindings } = translateFilter({
 			qty: { $mod: [4, 0], $gt: 10 },
 		});
-		expect(clause).toBe("qty % $p0 = $p1 AND qty > $p2");
+		expect(clause).toBe("`qty` % $p0 = $p1 AND `qty` > $p2");
 		expect(bindings).toEqual({ p0: 4, p1: 0, p2: 10 });
 	});
 
@@ -602,7 +617,7 @@ describe("translateFilter", () => {
 			{ $text: { $search: "coffee shop" } },
 			{ textFields: ["description"] },
 		);
-		expect(clause).toBe("description @@ $p0");
+		expect(clause).toBe("`description` @@ $p0");
 		expect(bindings).toEqual({ p0: "coffee shop" });
 	});
 
@@ -611,7 +626,7 @@ describe("translateFilter", () => {
 			{ $text: { $search: "hello" } },
 			{ textFields: ["title", "body"] },
 		);
-		expect(clause).toBe("(title @@ $p0 OR body @@ $p0)");
+		expect(clause).toBe("(`title` @@ $p0 OR `body` @@ $p0)");
 		expect(bindings).toEqual({ p0: "hello" });
 	});
 
@@ -620,7 +635,7 @@ describe("translateFilter", () => {
 			{ $text: { $search: "coffee" }, status: "active" },
 			{ textFields: ["content"] },
 		);
-		expect(clause).toBe(`content @@ $p0 AND ${eq("status", "p1")}`);
+		expect(clause).toBe(`\`content\` @@ $p0 AND ${eq("status", "p1")}`);
 		expect(bindings).toEqual({ p0: "coffee", p1: "active" });
 	});
 
@@ -657,7 +672,7 @@ describe("translateFilter", () => {
 	test("equality matches the whole array or one of its elements", () => {
 		const { clause, bindings } = translateFilter({ tags: "a" });
 		expect(clause).toBe(
-			"(tags = $p0 OR (type::is_array(tags) AND tags CONTAINS $p0))",
+			"(`tags` = $p0 OR (type::is_array(`tags`) AND `tags` CONTAINS $p0))",
 		);
 		expect(bindings).toEqual({ p0: "a" });
 	});
@@ -695,13 +710,13 @@ describe("translateFilter", () => {
 	// -----------------------------------------------------------------
 	test("$eq null matches an explicit null and an absent field", () => {
 		const { clause, bindings } = translateFilter({ a: { $eq: null } });
-		expect(clause).toBe("(a IS NULL OR a IS NONE)");
+		expect(clause).toBe("(`a` IS NULL OR `a` IS NONE)");
 		expect(bindings).toEqual({});
 	});
 
 	test("$ne null matches neither an explicit null nor an absent field", () => {
 		const { clause, bindings } = translateFilter({ a: { $ne: null } });
-		expect(clause).toBe("(a IS NOT NULL AND a IS NOT NONE)");
+		expect(clause).toBe("(`a` IS NOT NULL AND `a` IS NOT NONE)");
 		expect(bindings).toEqual({});
 	});
 

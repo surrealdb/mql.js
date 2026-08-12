@@ -78,12 +78,12 @@ describe("Db statements honour a session", () => {
 		[
 			"createCollection",
 			(db: Db, session: ClientSession) => db.createCollection("c", { session }),
-			"DEFINE TABLE c",
+			"DEFINE TABLE `c`",
 		],
 		[
 			"dropCollection",
 			(db: Db, session: ClientSession) => db.dropCollection("c", { session }),
-			"REMOVE TABLE c",
+			"REMOVE TABLE `c`",
 		],
 		[
 			"dropDatabase",
@@ -193,6 +193,9 @@ describe("createCollection collection-shaping options", () => {
 });
 
 describe("listCollections filter", () => {
+	// An `INFO FOR DB` reply. The name comes from the key — the DDL is what the
+	// server happens to send alongside it and is not read, so these values are
+	// abbreviated rather than the full `DEFINE TABLE … TYPE ANY SCHEMALESS …`.
 	const tables = {
 		tables: { users: "DEFINE TABLE users", logs: "DEFINE TABLE logs" },
 	};

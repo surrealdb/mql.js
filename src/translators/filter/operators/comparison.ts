@@ -10,6 +10,7 @@
  * `$elemMatch` sub-conditions in `./array.ts` both call them.
  */
 
+import { escapeIdentifier } from "../../../surreal/sql/escape.ts";
 import { MONGO_ID_FIELD, SURREAL_ID_FIELD } from "../id-field.ts";
 import type { FilterOperator } from "../operator-registry.ts";
 import type { TranslateContext } from "../translate-context.ts";
@@ -23,9 +24,18 @@ import type { TranslateContext } from "../translate-context.ts";
  * refuses to store an array `_id` — so identity comparisons stay plain `=` /
  * `!=` and skip the array- and null-aware arms below, which could only ever
  * add noise (and, for `CONTAINS`, false positives).
+ *
+ * What arrives here is emitted SurrealQL, not the caller's field name: the
+ * operators are handed an escaped path and nothing else. So the MongoDB spelling
+ * is recognised through `escapeIdentifier` rather than as a bare string, which is
+ * what keeps the two sides from drifting — `id` is the driver's own column name
+ * and is emitted as-is, while `_id` reaches an operator quoted, exactly as every
+ * other field path does.
  */
 export function isIdentityField(field: string): boolean {
-	return field === SURREAL_ID_FIELD || field === MONGO_ID_FIELD;
+	return (
+		field === SURREAL_ID_FIELD || field === escapeIdentifier(MONGO_ID_FIELD)
+	);
 }
 
 /**

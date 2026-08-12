@@ -25,7 +25,7 @@
  */
 
 import type { QueryExecutor } from "./query-executor.ts";
-import { quoteIdentifier } from "./sql/escape.ts";
+import { escapeIdentifier } from "./sql/escape.ts";
 
 /** A statement as it goes out, and the index of the frame holding its result. */
 export interface ScopedStatement {
@@ -38,15 +38,12 @@ export interface ScopedStatement {
 /**
  * Address `sql` at `database`, or leave it alone for the connected one.
  *
- * The name is quoted unconditionally rather than only when it looks unsafe. The
- * `USE DB` position accepts fewer bare words than the positions
- * `escapeIdentifier` was calibrated against: `USE DB function`, `USE DB alter`
- * and `USE DB sleep` are parse errors on 3.x, because each opens a statement or a
- * literal the parser then expects the rest of. Those are ordinary MongoDB
- * database names, and a caller who picks one would otherwise see a raw SurrealQL
- * parse error from every operation. Quoting is safe for every name — measured
- * across SurrealQL's keyword set, a backtick-quoted database name parses and
- * targets correctly in all of them.
+ * `USE DB` is the strictest identifier position SurrealQL has, because it reads
+ * its argument as an *expression* rather than as a name: bare `USE DB function`
+ * is a parse error, and bare `USE DB INFO FOR DB` panics the server outright
+ * (surrealdb/surrealdb-private#903). `escapeIdentifier` quoting every name is
+ * what keeps a caller-supplied database name from reaching that — a quoted name
+ * is only ever a name.
  *
  * Exported for the tests that pin the arithmetic: the frame index is only ever
  * correct because it is produced by whatever produced the prefix.
@@ -56,7 +53,7 @@ export function scopeStatement(
 	database: string | undefined,
 ): ScopedStatement {
 	if (database === undefined) return { sql, frame: 0 };
-	return { sql: `USE DB ${quoteIdentifier(database)}; ${sql}`, frame: 1 };
+	return { sql: `USE DB ${escapeIdentifier(database)}; ${sql}`, frame: 1 };
 }
 
 /** Send a statement and return every frame of the reply. */

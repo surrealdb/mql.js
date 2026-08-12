@@ -11,20 +11,20 @@ describe("translateSort", () => {
 	});
 
 	test("string shorthand", () => {
-		expect(translateSort("name")).toBe("ORDER BY name ASC");
+		expect(translateSort("name")).toBe("ORDER BY `name` ASC");
 	});
 
 	test("object with ascending", () => {
-		expect(translateSort({ name: 1 })).toBe("ORDER BY name ASC");
+		expect(translateSort({ name: 1 })).toBe("ORDER BY `name` ASC");
 	});
 
 	test("object with descending", () => {
-		expect(translateSort({ age: -1 })).toBe("ORDER BY age DESC");
+		expect(translateSort({ age: -1 })).toBe("ORDER BY `age` DESC");
 	});
 
 	test("object with multiple fields", () => {
 		expect(translateSort({ name: 1, age: -1 })).toBe(
-			"ORDER BY name ASC, age DESC",
+			"ORDER BY `name` ASC, `age` DESC",
 		);
 	});
 
@@ -34,7 +34,7 @@ describe("translateSort", () => {
 				["name", 1],
 				["age", -1],
 			]),
-		).toBe("ORDER BY name ASC, age DESC");
+		).toBe("ORDER BY `name` ASC, `age` DESC");
 	});
 
 	test("string direction values", () => {
@@ -43,7 +43,7 @@ describe("translateSort", () => {
 				string,
 				1 | -1 | "asc" | "desc"
 			>),
-		).toBe("ORDER BY name ASC, age DESC");
+		).toBe("ORDER BY `name` ASC, `age` DESC");
 	});
 
 	test("empty object returns empty string", () => {
@@ -56,10 +56,10 @@ describe("translateSort", () => {
 	// -----------------------------------------------------------------------
 
 	test("long-form 'ascending' / 'descending' are honoured", () => {
-		expect(translateSort({ name: "ascending" })).toBe("ORDER BY name ASC");
-		expect(translateSort({ name: "descending" })).toBe("ORDER BY name DESC");
+		expect(translateSort({ name: "ascending" })).toBe("ORDER BY `name` ASC");
+		expect(translateSort({ name: "descending" })).toBe("ORDER BY `name` DESC");
 		expect(translateSort({ name: "ascending", age: "descending" })).toBe(
-			"ORDER BY name ASC, age DESC",
+			"ORDER BY `name` ASC, `age` DESC",
 		);
 	});
 
@@ -69,33 +69,33 @@ describe("translateSort", () => {
 				["name", "ascending"],
 				["age", "descending"],
 			]),
-		).toBe("ORDER BY name ASC, age DESC");
+		).toBe("ORDER BY `name` ASC, `age` DESC");
 	});
 
 	test("numeric strings are accepted, as the official driver does", () => {
 		// mongodb/lib/sort.js stringifies the direction before matching, so "1"
 		// and "-1" are valid at runtime even though `SortDirection` omits them.
 		expect(translateSort({ name: "1" as unknown as SortDirection })).toBe(
-			"ORDER BY name ASC",
+			"ORDER BY `name` ASC",
 		);
 		expect(translateSort({ name: "-1" as unknown as SortDirection })).toBe(
-			"ORDER BY name DESC",
+			"ORDER BY `name` DESC",
 		);
 	});
 
 	test("direction matching is case-insensitive", () => {
 		expect(translateSort({ name: "ASC" as unknown as SortDirection })).toBe(
-			"ORDER BY name ASC",
+			"ORDER BY `name` ASC",
 		);
 		expect(
 			translateSort({ name: "Descending" as unknown as SortDirection }),
-		).toBe("ORDER BY name DESC");
+		).toBe("ORDER BY `name` DESC");
 	});
 
 	test("a missing direction defaults to ascending", () => {
 		// `prepareDirection(direction = 1)` in the official driver.
 		expect(translateSort({ name: undefined as unknown as SortDirection })).toBe(
-			"ORDER BY name ASC",
+			"ORDER BY `name` ASC",
 		);
 	});
 
@@ -130,14 +130,14 @@ describe("sortColumns", () => {
 	});
 
 	test("reads the same three shapes the clause does", () => {
-		expect(columns("name")).toEqual(["name"]);
-		expect(columns({ name: 1, age: -1 })).toEqual(["name", "age"]);
+		expect(columns("name")).toEqual(["`name`"]);
+		expect(columns({ name: 1, age: -1 })).toEqual(["`name`", "`age`"]);
 		expect(
 			columns([
 				["name", 1],
 				["age", -1],
 			] as Sort),
-		).toEqual(["name", "age"]);
+		).toEqual(["`name`", "`age`"]);
 	});
 
 	test("`_id` becomes SurrealDB's `id` column", () => {
@@ -145,7 +145,7 @@ describe("sortColumns", () => {
 	});
 
 	test("paths and awkward names are escaped as idioms", () => {
-		expect(columns({ "nested.d": -1 })).toEqual(["nested.d"]);
+		expect(columns({ "nested.d": -1 })).toEqual(["`nested`.`d`"]);
 		expect(columns({ "weird field": 1 })).toEqual(["`weird field`"]);
 	});
 
@@ -155,18 +155,18 @@ describe("sortColumns", () => {
 				["name", 1],
 				["name", -1],
 			] as Sort),
-		).toEqual(["name"]);
+		).toEqual(["`name`"]);
 	});
 
 	/**
 	 * The caller's spelling travels with the column because a sort the field list
-	 * cannot carry is *reported*, and the report has to name the field the caller
-	 * wrote rather than this driver's escaping of it. Keeping the pair together is
-	 * what stops the two from being assembled separately and drifting.
+	 * cannot carry is *reported*, and the report has to name `a.b` rather than
+	 * this driver's `` `a`.`b` ``. Keeping the pair together is what stops the two
+	 * from being assembled separately and drifting.
 	 */
 	test("each column carries the name the caller gave it", () => {
 		expect(sortColumns({ "nested.d": -1 })).toEqual([
-			{ key: "nested.d", column: "nested.d" },
+			{ key: "nested.d", column: "`nested`.`d`" },
 		]);
 		expect(sortColumns({ _id: 1 })).toEqual([{ key: "_id", column: "id" }]);
 		expect(sortColumns("weird field")).toEqual([

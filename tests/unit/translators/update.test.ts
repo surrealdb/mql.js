@@ -10,7 +10,7 @@ describe("translateUpdate", () => {
 	// -----------------------------------------------------------------
 	test("$set single field", () => {
 		const { clause, bindings } = translateUpdate({ $set: { name: "Jane" } });
-		expect(clause).toBe("SET name = $p0");
+		expect(clause).toBe("SET `name` = $p0");
 		expect(bindings).toEqual({ p0: "Jane" });
 	});
 
@@ -18,7 +18,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$set: { name: "Jane", age: 25 },
 		});
-		expect(clause).toBe("SET name = $p0, age = $p1");
+		expect(clause).toBe("SET `name` = $p0, `age` = $p1");
 		expect(bindings).toEqual({ p0: "Jane", p1: 25 });
 	});
 
@@ -29,7 +29,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$unset: { email: "", phone: "" },
 		});
-		expect(clause).toBe("SET email = NONE, phone = NONE");
+		expect(clause).toBe("SET `email` = NONE, `phone` = NONE");
 		expect(bindings).toEqual({});
 	});
 
@@ -38,13 +38,13 @@ describe("translateUpdate", () => {
 	// -----------------------------------------------------------------
 	test("$inc", () => {
 		const { clause, bindings } = translateUpdate({ $inc: { visits: 1 } });
-		expect(clause).toBe("SET visits += $p0");
+		expect(clause).toBe("SET `visits` += $p0");
 		expect(bindings).toEqual({ p0: 1 });
 	});
 
 	test("$inc negative (decrement)", () => {
 		const { clause, bindings } = translateUpdate({ $inc: { stock: -1 } });
-		expect(clause).toBe("SET stock += $p0");
+		expect(clause).toBe("SET `stock` += $p0");
 		expect(bindings).toEqual({ p0: -1 });
 	});
 
@@ -53,7 +53,7 @@ describe("translateUpdate", () => {
 	// -----------------------------------------------------------------
 	test("$mul", () => {
 		const { clause, bindings } = translateUpdate({ $mul: { price: 1.1 } });
-		expect(clause).toBe("SET price = price * $p0");
+		expect(clause).toBe("SET `price` = `price` * $p0");
 		expect(bindings).toEqual({ p0: 1.1 });
 	});
 
@@ -65,7 +65,7 @@ describe("translateUpdate", () => {
 	test("$min emits a conditional assignment, not math::min", () => {
 		const { clause, bindings } = translateUpdate({ $min: { low: 5 } });
 		expect(clause).toBe(
-			"SET low = IF low IS NONE OR $p0 < low THEN $p0 ELSE low END",
+			"SET `low` = IF `low` IS NONE OR $p0 < `low` THEN $p0 ELSE `low` END",
 		);
 		expect(bindings).toEqual({ p0: 5 });
 	});
@@ -73,21 +73,23 @@ describe("translateUpdate", () => {
 	test("$max emits a conditional assignment, not math::max", () => {
 		const { clause, bindings } = translateUpdate({ $max: { high: 100 } });
 		expect(clause).toBe(
-			"SET high = IF high IS NONE OR $p0 > high THEN $p0 ELSE high END",
+			"SET `high` = IF `high` IS NONE OR $p0 > `high` THEN $p0 ELSE `high` END",
 		);
 		expect(bindings).toEqual({ p0: 100 });
 	});
 
 	test("$min works on a non-numeric value", () => {
 		const { clause, bindings } = translateUpdate({ $min: { s: "b" } });
-		expect(clause).toBe("SET s = IF s IS NONE OR $p0 < s THEN $p0 ELSE s END");
+		expect(clause).toBe(
+			"SET `s` = IF `s` IS NONE OR $p0 < `s` THEN $p0 ELSE `s` END",
+		);
 		expect(bindings).toEqual({ p0: "b" });
 	});
 
 	test("$min on a dot-notation path", () => {
 		const { clause } = translateUpdate({ $min: { "a.b": 1 } });
 		expect(clause).toBe(
-			"SET a.b = IF a.b IS NONE OR $p0 < a.b THEN $p0 ELSE a.b END",
+			"SET `a`.`b` = IF `a`.`b` IS NONE OR $p0 < `a`.`b` THEN $p0 ELSE `a`.`b` END",
 		);
 	});
 
@@ -98,7 +100,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$push: { tags: "new" },
 		});
-		expect(clause).toBe("SET tags += [$p0]");
+		expect(clause).toBe("SET `tags` += [$p0]");
 		expect(bindings).toEqual({ p0: "new" });
 	});
 
@@ -106,7 +108,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$pull: { tags: "old" },
 		});
-		expect(clause).toBe("SET tags -= [$p0]");
+		expect(clause).toBe("SET `tags` -= [$p0]");
 		expect(bindings).toEqual({ p0: "old" });
 	});
 
@@ -114,7 +116,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$pull: { tags: ["a", "b"] },
 		});
-		expect(clause).toBe("SET tags -= [$p0]");
+		expect(clause).toBe("SET `tags` -= [$p0]");
 		expect(bindings).toEqual({ p0: ["a", "b"] });
 	});
 
@@ -124,7 +126,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$pull: { n: { $gte: 3 } },
 		});
-		expect(clause).toBe("SET n = n[WHERE !($this >= $p0)]");
+		expect(clause).toBe("SET `n` = `n`[WHERE !($this >= $p0)]");
 		expect(bindings).toEqual({ p0: 3 });
 	});
 
@@ -132,7 +134,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$pull: { n: { $gte: 2, $lt: 10 } },
 		});
-		expect(clause).toBe("SET n = n[WHERE !($this >= $p0 AND $this < $p1)]");
+		expect(clause).toBe("SET `n` = `n`[WHERE !($this >= $p0 AND $this < $p1)]");
 		expect(bindings).toEqual({ p0: 2, p1: 10 });
 	});
 
@@ -140,7 +142,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$pull: { n: { $in: [1, 2] } },
 		});
-		expect(clause).toBe("SET n = n[WHERE !($this IN $p0)]");
+		expect(clause).toBe("SET `n` = `n`[WHERE !($this IN $p0)]");
 		expect(bindings).toEqual({ p0: [1, 2] });
 	});
 
@@ -148,7 +150,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$pull: { items: { status: "old" } },
 		});
-		expect(clause).toBe("SET items = items[WHERE !($this.status = $p0)]");
+		expect(clause).toBe("SET `items` = `items`[WHERE !($this.`status` = $p0)]");
 		expect(bindings).toEqual({ p0: "old" });
 	});
 
@@ -157,7 +159,7 @@ describe("translateUpdate", () => {
 			$pull: { results: { score: { $gte: 8 }, item: "B" } },
 		});
 		expect(clause).toBe(
-			"SET results = results[WHERE !($this.score >= $p0 AND $this.item = $p1)]",
+			"SET `results` = `results`[WHERE !($this.`score` >= $p0 AND $this.`item` = $p1)]",
 		);
 		expect(bindings).toEqual({ p0: 8, p1: "B" });
 	});
@@ -166,7 +168,9 @@ describe("translateUpdate", () => {
 		const { clause } = translateUpdate({
 			$pull: { items: { "a-b.c": 1 } },
 		});
-		expect(clause).toBe("SET items = items[WHERE !($this.`a-b`.c = $p0)]");
+		expect(clause).toBe(
+			"SET `items` = `items`[WHERE !($this.`a-b`.`c` = $p0)]",
+		);
 	});
 
 	test("$pull throws on an unsupported predicate operator", () => {
@@ -190,7 +194,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$addToSet: { tags: "unique" },
 		});
-		expect(clause).toBe("SET tags = array::union(tags ?? [], [$p0])");
+		expect(clause).toBe("SET `tags` = array::union(`tags` ?? [], [$p0])");
 		expect(bindings).toEqual({ p0: "unique" });
 	});
 
@@ -200,7 +204,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$addToSet: { tags: { $each: ["b", "c"] } },
 		});
-		expect(clause).toBe("SET tags = array::union(tags ?? [], $p0)");
+		expect(clause).toBe("SET `tags` = array::union(`tags` ?? [], $p0)");
 		expect(bindings).toEqual({ p0: ["b", "c"] });
 	});
 
@@ -208,7 +212,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$addToSet: { tags: [1, 2] },
 		});
-		expect(clause).toBe("SET tags = array::union(tags ?? [], [$p0])");
+		expect(clause).toBe("SET `tags` = array::union(`tags` ?? [], [$p0])");
 		expect(bindings).toEqual({ p0: [1, 2] });
 	});
 
@@ -231,7 +235,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$rename: { oldName: "newName" },
 		});
-		expect(clause).toBe("SET newName = oldName, oldName = NONE");
+		expect(clause).toBe("SET `newName` = `oldName`, `oldName` = NONE");
 		expect(bindings).toEqual({});
 	});
 
@@ -242,7 +246,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$currentDate: { updatedAt: true },
 		});
-		expect(clause).toBe("SET updatedAt = time::now()");
+		expect(clause).toBe("SET `updatedAt` = time::now()");
 		expect(bindings).toEqual({});
 	});
 
@@ -250,7 +254,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$currentDate: { updatedAt: { $type: "date" } },
 		});
-		expect(clause).toBe("SET updatedAt = time::now()");
+		expect(clause).toBe("SET `updatedAt` = time::now()");
 		expect(bindings).toEqual({});
 	});
 
@@ -293,7 +297,9 @@ describe("translateUpdate", () => {
 			0,
 			{ upsert: true },
 		);
-		expect(clause).toBe("SET status = IF id IS NONE THEN $p0 ELSE status END");
+		expect(clause).toBe(
+			"SET `status` = IF id IS NONE THEN $p0 ELSE `status` END",
+		);
 		expect(bindings).toEqual({ p0: "new" });
 	});
 
@@ -304,7 +310,7 @@ describe("translateUpdate", () => {
 			{ upsert: true },
 		);
 		expect(clause).toBe(
-			"SET status = IF id IS NONE THEN $p0 ELSE status END, createdAt = IF id IS NONE THEN $p1 ELSE createdAt END",
+			"SET `status` = IF id IS NONE THEN $p0 ELSE `status` END, `createdAt` = IF id IS NONE THEN $p1 ELSE `createdAt` END",
 		);
 		expect(bindings).toEqual({ p0: "new", p1: "2024-01-01" });
 	});
@@ -316,7 +322,7 @@ describe("translateUpdate", () => {
 			{ upsert: true },
 		);
 		expect(clause).toBe(
-			"SET name = $p0, status = IF id IS NONE THEN $p1 ELSE status END",
+			"SET `name` = $p0, `status` = IF id IS NONE THEN $p1 ELSE `status` END",
 		);
 		expect(bindings).toEqual({ p0: "Jane", p1: "new" });
 	});
@@ -326,7 +332,7 @@ describe("translateUpdate", () => {
 			$set: { name: "Jane" },
 			$setOnInsert: { status: "new" },
 		});
-		expect(clause).toBe("SET name = $p0");
+		expect(clause).toBe("SET `name` = $p0");
 		expect(bindings).toEqual({ p0: "Jane" });
 	});
 
@@ -338,7 +344,7 @@ describe("translateUpdate", () => {
 			$set: { name: "Jane" },
 			$inc: { age: 1 },
 		});
-		expect(clause).toBe("SET name = $p0, age += $p1");
+		expect(clause).toBe("SET `name` = $p0, `age` += $p1");
 		expect(bindings).toEqual({ p0: "Jane", p1: 1 });
 	});
 
@@ -347,7 +353,7 @@ describe("translateUpdate", () => {
 	// -----------------------------------------------------------------
 	test("startIndex offsets parameter names", () => {
 		const { clause, bindings } = translateUpdate({ $set: { x: 1 } }, 5);
-		expect(clause).toBe("SET x = $p5");
+		expect(clause).toBe("SET `x` = $p5");
 		expect(bindings).toEqual({ p5: 1 });
 	});
 
@@ -358,7 +364,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$set: { "address.city": "NYC" },
 		});
-		expect(clause).toBe("SET address.city = $p0");
+		expect(clause).toBe("SET `address`.`city` = $p0");
 		expect(bindings).toEqual({ p0: "NYC" });
 	});
 
@@ -378,7 +384,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$push: { scores: { $each: [85, 90] } },
 		});
-		expect(clause).toBe("SET scores = array::concat(scores, $p0)");
+		expect(clause).toBe("SET `scores` = array::concat(`scores`, $p0)");
 		expect(bindings).toEqual({ p0: [85, 90] });
 	});
 
@@ -387,7 +393,7 @@ describe("translateUpdate", () => {
 			$push: { scores: { $each: [85], $sort: 1 } },
 		});
 		expect(clause).toBe(
-			"SET scores = array::sort::asc(array::concat(scores, $p0))",
+			"SET `scores` = array::sort::asc(array::concat(`scores`, $p0))",
 		);
 		expect(bindings).toEqual({ p0: [85] });
 	});
@@ -397,7 +403,7 @@ describe("translateUpdate", () => {
 			$push: { scores: { $each: [85], $sort: -1 } },
 		});
 		expect(clause).toBe(
-			"SET scores = array::sort::desc(array::concat(scores, $p0))",
+			"SET `scores` = array::sort::desc(array::concat(`scores`, $p0))",
 		);
 		expect(bindings).toEqual({ p0: [85] });
 	});
@@ -407,7 +413,7 @@ describe("translateUpdate", () => {
 			$push: { scores: { $each: [85, 90], $slice: 5 } },
 		});
 		expect(clause).toBe(
-			"SET scores = array::slice(array::concat(scores, $p0), 0, $p1)",
+			"SET `scores` = array::slice(array::concat(`scores`, $p0), 0, $p1)",
 		);
 		expect(bindings).toEqual({ p0: [85, 90], p1: 5 });
 	});
@@ -417,7 +423,7 @@ describe("translateUpdate", () => {
 			$push: { scores: { $each: [85, 90], $slice: -3 } },
 		});
 		expect(clause).toBe(
-			"SET scores = array::slice(array::concat(scores, $p0), $p1)",
+			"SET `scores` = array::slice(array::concat(`scores`, $p0), $p1)",
 		);
 		expect(bindings).toEqual({ p0: [85, 90], p1: -3 });
 	});
@@ -427,7 +433,7 @@ describe("translateUpdate", () => {
 			$push: { scores: { $each: [85], $position: 0 } },
 		});
 		expect(clause).toBe(
-			"SET scores = array::concat(array::concat(array::slice(scores, 0, $p1), $p0), array::slice(scores, $p1))",
+			"SET `scores` = array::concat(array::concat(array::slice(`scores`, 0, $p1), $p0), array::slice(`scores`, $p1))",
 		);
 		expect(bindings).toEqual({ p0: [85], p1: 0 });
 	});
@@ -437,7 +443,7 @@ describe("translateUpdate", () => {
 			$push: { scores: { $each: [85, 90], $sort: 1, $slice: 5 } },
 		});
 		expect(clause).toBe(
-			"SET scores = array::slice(array::sort::asc(array::concat(scores, $p0)), 0, $p1)",
+			"SET `scores` = array::slice(array::sort::asc(array::concat(`scores`, $p0)), 0, $p1)",
 		);
 		expect(bindings).toEqual({ p0: [85, 90], p1: 5 });
 	});
@@ -450,7 +456,7 @@ describe("translateUpdate", () => {
 			$pop: { tags: 1 },
 		});
 		expect(clause).toBe(
-			"SET tags = array::slice(tags, 0, array::len(tags) - 1)",
+			"SET `tags` = array::slice(`tags`, 0, array::len(`tags`) - 1)",
 		);
 		expect(bindings).toEqual({});
 	});
@@ -459,7 +465,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$pop: { tags: -1 },
 		});
-		expect(clause).toBe("SET tags = array::slice(tags, 1)");
+		expect(clause).toBe("SET `tags` = array::slice(`tags`, 1)");
 		expect(bindings).toEqual({});
 	});
 
@@ -470,7 +476,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$pullAll: { tags: ["a", "b"] },
 		});
-		expect(clause).toBe("SET tags = array::complement(tags, $p0)");
+		expect(clause).toBe("SET `tags` = array::complement(`tags`, $p0)");
 		expect(bindings).toEqual({ p0: ["a", "b"] });
 	});
 
@@ -481,7 +487,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$set: { "grades.$[].score": 100 },
 		});
-		expect(clause).toBe("SET grades[*].score = $p0");
+		expect(clause).toBe("SET `grades`[*].`score` = $p0");
 		expect(bindings).toEqual({ p0: 100 });
 	});
 
@@ -489,7 +495,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$inc: { "scores.$[].value": 5 },
 		});
-		expect(clause).toBe("SET scores[*].`value` += $p0");
+		expect(clause).toBe("SET `scores`[*].`value` += $p0");
 		expect(bindings).toEqual({ p0: 5 });
 	});
 
@@ -497,7 +503,7 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$unset: { "items.$[].oldField": "" },
 		});
-		expect(clause).toBe("SET items[*].oldField = NONE");
+		expect(clause).toBe("SET `items`[*].`oldField` = NONE");
 		expect(bindings).toEqual({});
 	});
 
@@ -510,7 +516,7 @@ describe("translateUpdate", () => {
 			0,
 			{ arrayFilters: [{ "elem.grade": "A" }] },
 		);
-		expect(clause).toBe("SET grades[WHERE grade = $p0].score = $p1");
+		expect(clause).toBe("SET `grades`[WHERE `grade` = $p0].`score` = $p1");
 		expect(bindings).toEqual({ p0: "A", p1: 100 });
 	});
 
@@ -520,7 +526,7 @@ describe("translateUpdate", () => {
 			0,
 			{ arrayFilters: [{ "high.value": { $gte: 90 } }] },
 		);
-		expect(clause).toBe("SET scores[WHERE `value` >= $p0].passed = $p1");
+		expect(clause).toBe("SET `scores`[WHERE `value` >= $p0].`passed` = $p1");
 		expect(bindings).toEqual({ p0: 90, p1: true });
 	});
 
@@ -533,7 +539,7 @@ describe("translateUpdate", () => {
 			},
 		);
 		expect(clause).toBe(
-			"SET items[WHERE status = $p0 AND qty < $p1].qty += $p2",
+			"SET `items`[WHERE `status` = $p0 AND `qty` < $p1].`qty` += $p2",
 		);
 		expect(bindings).toEqual({ p0: "active", p1: 100, p2: 1 });
 	});

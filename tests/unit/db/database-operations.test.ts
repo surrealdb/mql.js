@@ -11,7 +11,7 @@ describe("listCollections", () => {
 	test("maps SurrealDB INFO FOR DB tables to CollectionInfo[]", async () => {
 		const exec = new FakeQueryExecutor();
 		exec.enqueue({
-			tables: { users: "DEFINE TABLE users", logs: "DEFINE TABLE logs" },
+			tables: { users: "DEFINE TABLE `users`", logs: "DEFINE TABLE logs" },
 		});
 		const out = await listCollections(exec);
 
@@ -47,7 +47,7 @@ describe("createCollectionTable", () => {
 		const exec = new FakeQueryExecutor();
 		exec.enqueue(undefined);
 		await createCollectionTable(exec, "users");
-		expect(exec.queries[0].sql).toBe("DEFINE TABLE users");
+		expect(exec.queries[0].sql).toBe("DEFINE TABLE `users`");
 	});
 
 	test("escapes weird names with backticks", async () => {
@@ -64,7 +64,7 @@ describe("dropCollectionTable", () => {
 		exec.enqueue(undefined);
 		const ok = await dropCollectionTable(exec, "users");
 		expect(ok).toBe(true);
-		expect(exec.queries[0].sql).toBe("REMOVE TABLE users");
+		expect(exec.queries[0].sql).toBe("REMOVE TABLE `users`");
 	});
 
 	test("swallows errors and returns false (Mongo-compat)", async () => {

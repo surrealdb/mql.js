@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Geometry, GeometryPoint, GeometryPolygon } from "surrealdb";
 import { MongoInvalidArgumentError } from "../../../src/errors.ts";
+import { escapeFieldPath } from "../../../src/surreal/sql/escape.ts";
 import {
 	MONGO_EARTH_RADIUS_M,
 	SURREAL_EARTH_RADIUS_M,
@@ -10,10 +11,18 @@ import { translateFilter } from "../../../src/translators/filter.ts";
 /**
  * The "the field, or any element of an array field" form the containment
  * operators emit, since MongoDB matches an array of geometries element-wise.
+ *
+ * `field` is the path as the caller wrote it, escaped here so these assertions
+ * stay about the shape of the clause; the escaping itself is pinned in
+ * tests/unit/surreal/sql/escape.test.ts.
  */
-const anyOf = (field: string, test: (target: string) => string) =>
-	`((${test(field)}) OR (type::is_array(${field}) AND array::any(${field}, ` +
-	`|$__mql_element| (${test("$__mql_element")}))))`;
+const anyOf = (field: string, test: (target: string) => string) => {
+	const path = escapeFieldPath(field);
+	return (
+		`((${test(path)}) OR (type::is_array(${path}) AND array::any(${path}, ` +
+		`|$__mql_element| (${test("$__mql_element")}))))`
+	);
+};
 
 /**
  * The containment test `$geoWithin: {$geometry: …}` emits.
@@ -385,13 +394,13 @@ describe("$near and $nearSphere", () => {
 		// `ORDER BY geo::distance(...)` is a parse error — SurrealDB's ORDER BY
 		// takes a field path — so the expression travels out to be projected under
 		// an alias instead.
-		expect(nearDistance).toBe("geo::distance(location, $p0)");
+		expect(nearDistance).toBe("geo::distance(`location`, $p0)");
 		expect(nearDistance).not.toContain("ORDER BY");
 
 		// Without a band, the predicate is still the point guard: the ordering
 		// cannot be computed for a document with no point in that field, and
 		// MongoDB does not return one either.
-		expect(clause).toBe("type::is_point(location)");
+		expect(clause).toBe("type::is_point(`location`)");
 		expect(bindings.p0).toBeInstanceOf(GeometryPoint);
 		expect(geoJson(bindings.p0)).toEqual(NY);
 	});
@@ -402,7 +411,7 @@ describe("$near and $nearSphere", () => {
 		});
 
 		expect(clause).toBe(
-			"type::is_point(location) AND geo::distance(location, $p0) <= $p1",
+			"type::is_point(`location`) AND geo::distance(`location`, $p0) <= $p1",
 		);
 		// MongoDB measures metres on a 6 378 100 m sphere and `geo::distance` on a
 		// 6 371 008.8 m one, so passing the number through would move the boundary
@@ -421,9 +430,9 @@ describe("$near and $nearSphere", () => {
 		});
 
 		expect(clause).toBe(
-			"type::is_point(location) AND " +
-				"geo::distance(location, $p0) >= $p1 AND " +
-				"geo::distance(location, $p0) <= $p2",
+			"type::is_point(`location`) AND " +
+				"geo::distance(`location`, $p0) >= $p1 AND " +
+				"geo::distance(`location`, $p0) <= $p2",
 		);
 		expect(bindings.p1).toBeCloseTo(499.44, 1);
 		expect(bindings.p2).toBeCloseTo(2996.66, 1);
@@ -446,9 +455,9 @@ describe("$near and $nearSphere", () => {
 			location: { $nearSphere: [-73.9667, 40.78], $maxDistance: 0.01 },
 		});
 
-		expect(nearDistance).toBe("geo::distance(location, $p0)");
+		expect(nearDistance).toBe("geo::distance(`location`, $p0)");
 		expect(clause).toBe(
-			"type::is_point(location) AND geo::distance(location, $p0) <= $p1",
+			"type::is_point(`location`) AND geo::distance(`location`, $p0) <= $p1",
 		);
 		expect(geoJson(bindings.p0)).toEqual(NY);
 		// An angle needs no earth model to convert: radians times SurrealDB's own
@@ -534,14 +543,14 @@ describe("$near and $nearSphere", () => {
 		const { nearDistance } = translateFilter({
 			$or: [{ location: { $near: { $geometry: NY } } }],
 		});
-		expect(nearDistance).toBe("geo::distance(location, $p0)");
+		expect(nearDistance).toBe("geo::distance(`location`, $p0)");
 	});
 
 	test("$and carries the ordering: it holds for every row returned", () => {
 		const { nearDistance } = translateFilter({
 			$and: [{ location: { $near: { $geometry: NY } } }, { status: "open" }],
 		});
-		expect(nearDistance).toBe("geo::distance(location, $p0)");
+		expect(nearDistance).toBe("geo::distance(`location`, $p0)");
 	});
 
 	test("a filter with no $near reports no distance ordering", () => {
@@ -554,9 +563,9 @@ describe("$near and $nearSphere", () => {
 			location: { $near: { $geometry: NY, $maxDistance: 1000 } },
 		});
 
-		expect(clause).toContain("status = $p0");
+		expect(clause).toContain("`status` = $p0");
 		expect(clause).toContain(
-			"type::is_point(location) AND geo::distance(location, $p1) <= $p2",
+			"type::is_point(`location`) AND geo::distance(`location`, $p1) <= $p2",
 		);
 	});
 });
@@ -576,7 +585,7 @@ describe("field paths", () => {
 
 		expect(clause).toBe(
 			anyOf(
-				"`my loc`",
+				"my loc",
 				(t) =>
 					`type::is_point(${t}) AND ` +
 					`(${t}.coordinates[0] - $p0) * (${t}.coordinates[0] - $p0) + ` +

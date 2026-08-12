@@ -27,7 +27,7 @@ describe("updateOne", () => {
 		// into a pair of queries is the regression this guards.
 		expect(executor.queries.length).toBe(1);
 		expect(executor.queries[0].sql).toBe(
-			"UPDATE (SELECT VALUE id FROM (SELECT id FROM users WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0)) LIMIT 1)) SET age = $p1",
+			"UPDATE (SELECT VALUE id FROM (SELECT id FROM `users` WHERE (`name` = $p0 OR (type::is_array(`name`) AND `name` CONTAINS $p0)) LIMIT 1)) SET `age` = $p1",
 		);
 		// The filter's placeholders are numbered first, so the update's continue
 		// from where they stopped rather than colliding with them.
@@ -64,7 +64,7 @@ describe("updateOne", () => {
 		// The created document carries the filter's `name`, without which the
 		// next call with the same filter would insert a second one.
 		expect(executor.queries[1].sql).toBe(
-			"UPSERT $__rid SET name = $p0, age = $p1 RETURN AFTER",
+			"UPSERT $__rid SET `name` = $p0, `age` = $p1 RETURN AFTER",
 		);
 		expect(executor.queries[1].bindings?.p0).toBe("X");
 		expect(result.upsertedId).toBeTruthy();
@@ -110,7 +110,7 @@ describe("updateMany", () => {
 
 		expect(executor.queries.length).toBe(1);
 		expect(executor.queries[0].sql).toBe(
-			"UPDATE users SET tier = $p1 WHERE (status = $p0 OR (type::is_array(status) AND status CONTAINS $p0))",
+			"UPDATE `users` SET `tier` = $p1 WHERE (`status` = $p0 OR (type::is_array(`status`) AND `status` CONTAINS $p0))",
 		);
 		expect(executor.queries[0].bindings).toEqual({
 			p0: "active",
@@ -124,7 +124,7 @@ describe("updateMany", () => {
 		const { ctx, executor } = makeContext();
 		executor.enqueue([]);
 		await updateMany(ctx, {}, { $set: { x: 1 } });
-		expect(executor.queries[0].sql).toBe("UPDATE users SET x = $p0");
+		expect(executor.queries[0].sql).toBe("UPDATE `users` SET `x` = $p0");
 	});
 
 	test("forwards arrayFilters into the SET clause translator", async () => {
@@ -136,7 +136,9 @@ describe("updateMany", () => {
 			{ $inc: { "items.$[item].qty": 1 } },
 			{ arrayFilters: [{ "item.status": "active" }] },
 		);
-		expect(executor.queries[0].sql).toContain("WHERE status = $p0");
-		expect(executor.queries[0].sql).toContain("items[WHERE status = $p0].qty");
+		expect(executor.queries[0].sql).toContain("WHERE `status` = $p0");
+		expect(executor.queries[0].sql).toContain(
+			"`items`[WHERE `status` = $p0].`qty`",
+		);
 	});
 });
