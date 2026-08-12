@@ -19,6 +19,7 @@ import {
 	reviveBsonDocument,
 	toTaggedObjectId,
 } from "../surreal/bson-codec.ts";
+import { rejectGeometryDocument } from "../surreal/geometry-codec.ts";
 import { unescapeSurrealString } from "../surreal/sql/escape.ts";
 import type { Document } from "../types.ts";
 
@@ -88,6 +89,10 @@ export function toRecordId(table: string, id: unknown): RecordId | undefined {
  */
 export function prepareInsert(table: string, doc: Document): PreparedInsert {
 	const { _id, ...rest } = doc;
+
+	// Checked on the id-stripped payload, since that is what becomes the record's
+	// content and therefore what the codec sees.
+	rejectGeometryDocument(rest);
 
 	if (_id === undefined || _id === null) {
 		const oid = new ObjectId();
