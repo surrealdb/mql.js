@@ -154,16 +154,17 @@ export class Collection<TSchema extends Document = Document> {
 		options?: AnyOperationOptions,
 	): Promise<OperationContext> {
 		const client = this._db._client;
+		const connection = this._db._connection;
 		const executor = await sessionExecutor(
 			options?.session,
 			client,
-			client._executor,
+			this._db.databaseName,
 		);
-		const inTransaction = executor !== client._executor;
+		const inTransaction = executor !== connection;
 		return {
 			executor,
 			inTransaction,
-			connection: client._executor,
+			connection,
 			collectionName: this.collectionName,
 			escapedTable: escapeIdentifier(this.collectionName),
 			// Read after the executor, which for a session has just brought the

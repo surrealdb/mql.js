@@ -6,16 +6,17 @@
 
 import { Features, type Surreal } from "surrealdb";
 import { MongoCompatibilityError } from "../errors.ts";
+import { ScopedExecutor } from "./database-scope.ts";
 import { mapQueryError } from "./error-mapper.ts";
-import type { QueryExecutor } from "./query-executor.ts";
 import type { TransactionScope } from "./transaction-executor.ts";
 import { TransactionExecutor } from "./transaction-executor.ts";
 
-export class SurrealdbExecutor implements QueryExecutor {
+export class SurrealdbExecutor extends ScopedExecutor {
 	private readonly surreal: Surreal;
 	private _serverVersion: string | undefined;
 
 	constructor(surreal: Surreal, serverVersion?: string) {
+		super(undefined);
 		this.surreal = surreal;
 		this._serverVersion = serverVersion;
 	}
@@ -29,13 +30,12 @@ export class SurrealdbExecutor implements QueryExecutor {
 		this._serverVersion = version;
 	}
 
-	async query<T = unknown>(
+	protected async dispatch(
 		sql: string,
 		bindings?: Record<string, unknown>,
-	): Promise<T> {
+	): Promise<readonly unknown[]> {
 		try {
-			const results = await this.surreal.query<[T]>(sql, bindings);
-			return results[0];
+			return await this.surreal.query(sql, bindings);
 		} catch (err) {
 			throw mapQueryError(err);
 		}
@@ -43,6 +43,9 @@ export class SurrealdbExecutor implements QueryExecutor {
 
 	/**
 	 * Open a SurrealDB transaction and return an executor scoped to it.
+	 *
+	 * The transaction is opened on the connection rather than on any one database:
+	 * a session may touch several, and a statement in it says which as it goes out.
 	 *
 	 * The connection must already be up, because whether transactions are
 	 * available is a property of the engine that was selected for it. The SDK

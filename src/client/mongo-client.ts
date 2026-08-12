@@ -39,6 +39,7 @@ import type {
 } from "../types.ts";
 import { CHANGE_STREAMS, unsupported } from "../unsupported.ts";
 import { resolveAuthentication } from "./authentication.ts";
+import type { ConnectionGate } from "./client-executor.ts";
 import { ClientExecutor } from "./client-executor.ts";
 import type { ClientSettings } from "./client-options.ts";
 import { ConnectionManager } from "./connection-manager.ts";
@@ -57,6 +58,24 @@ export class MongoClient {
 	private readonly _parsed: ParsedConnection;
 	private readonly _settings: ClientSettings;
 	private readonly _connectionManager: ConnectionManager;
+	/**
+	 * Executors for databases other than the connected one, by name.
+	 *
+	 * Shared rather than built per call, and that is load-bearing rather than
+	 * merely thrifty: an operation tells whether it is running in a transaction by
+	 * comparing the executor it was given against the one this database would
+	 * otherwise use, so two `db(name)` handles naming the same database must hand
+	 * back the *same* executor or every statement would look transactional. It also
+	 * keeps `db(name)` cheap, which it has to be — it is written inline and in
+	 * loops.
+	 *
+	 * Each entry is a view of the one connection — nothing is held server-side and
+	 * nothing needs re-establishing after a reconnect — so they outlive a `close()`
+	 * as harmlessly as `_executor` does, and are never pruned: pruning one a caller
+	 * still holds a `Db` for would silently turn its operations transactional.
+	 */
+	private readonly _scopedExecutors = new Map<string, QueryExecutor>();
+	private readonly _gate: ConnectionGate;
 	private _serverVersion: string | undefined;
 	private _closed = false;
 	/** In-flight or completed connect, so concurrent operations share one. */
@@ -83,10 +102,11 @@ export class MongoClient {
 		// is what makes an `ObjectId` come back an `ObjectId` and a `Date` a `Date`.
 		this._surreal = new Surreal({ codecOptions: BSON_CODEC_OPTIONS });
 		this._inner = new SurrealdbExecutor(this._surreal);
-		this._executor = new ClientExecutor(this._inner, {
+		this._gate = {
 			ensureConnected: () => this.ensureConnected(),
 			isClosed: () => this._closed,
-		});
+		};
+		this._executor = new ClientExecutor(this._inner, this._gate);
 		this._connectionManager = new ConnectionManager(this._surreal);
 		this._connected = false;
 	}
@@ -270,20 +290,60 @@ export class MongoClient {
 	}
 
 	/**
-	 * Return a `Db` instance. If `dbName` is omitted the database from the
+	 * Return a `Db` addressing `dbName`. If it is omitted the database from the
 	 * connection string is used, or MongoDB's default of `test`.
 	 *
 	 * Available before `connect()`, as it is in the official driver: the
-	 * connection is established by the first operation the `Db` performs.
+	 * connection is established by the first operation the `Db` performs. Cheap
+	 * and repeatable, also as it is there — `client.db("x").collection("y")`
+	 * inline in a loop allocates two façades and asks nothing of the server.
+	 *
+	 * An empty name is the same as none, which is what the official driver does
+	 * with it (measured: `db("")` reports the connection string's database). The
+	 * only name refused is one containing `.`, again matching the official driver
+	 * — everything else it accepts client-side and leaves to the server, and
+	 * SurrealDB accepts names a mongod would reject at that point. See the
+	 * README's divergences.
 	 */
 	db(dbName?: string): Db {
-		const name = dbName ?? this._parsed.database;
+		const name = dbName || this._parsed.database;
 		if (name.includes(".")) {
 			throw new MongoInvalidArgumentError(
 				"Database names cannot contain the character '.'",
 			);
 		}
 		return createDb(this, name);
+	}
+
+	/**
+	 * @internal How `database` has to be addressed: `undefined` when it is the one
+	 * the connection is already pointed at.
+	 *
+	 * The distinction is the whole of the common-path guarantee. A statement for
+	 * the connected database is emitted exactly as it was before per-database
+	 * addressing existed — no prefix, no extra frame, no extra round trip — and
+	 * only a caller who named a different database pays for one.
+	 */
+	_scopeFor(database: string): string | undefined {
+		return database === this._parsed.database ? undefined : database;
+	}
+
+	/** @internal The connection executor for a scope, shared per database name. */
+	_executorFor(scope: string | undefined): QueryExecutor {
+		if (scope === undefined) return this._executor;
+
+		const existing = this._scopedExecutors.get(scope);
+		if (existing) return existing;
+
+		// The same connection gate the connected database goes through, so a
+		// `db(name)` obtained before `connect()` connects on its first statement and
+		// a `db(name)` used after `close()` fails rather than reopening.
+		const scoped = new ClientExecutor(
+			this._inner.forDatabase(scope),
+			this._gate,
+		);
+		this._scopedExecutors.set(scope, scoped);
+		return scoped;
 	}
 
 	/**

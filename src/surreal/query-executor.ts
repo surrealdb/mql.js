@@ -26,8 +26,13 @@ export type RecordIdLike = RecordId | string;
  */
 export interface QueryExecutor {
 	/**
-	 * Run a SurrealQL statement (or batch) and return the result of the
+	 * Run a SurrealQL statement (or batch) and return the result of the caller's
 	 * first statement only. Errors are mapped to `MongoServerError`.
+	 *
+	 * "The caller's" rather than "the query's": an executor addressing a database
+	 * other than the connected one sends a `USE DB` ahead of what it was given, and
+	 * skipping that reply is its business rather than the caller's — see
+	 * `src/surreal/database-scope.ts`.
 	 */
 	query<T = unknown>(
 		sql: string,

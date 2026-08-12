@@ -164,9 +164,12 @@ function commandArguments(command: Document, name: string): Document {
  * `RETURN 1` is the cheapest statement SurrealDB answers, and it is safe inside
  * a transaction, so a command given a session does not disturb the transaction
  * it runs in.
+ *
+ * Sent without a database, because it asks about the deployment: `ping` on a
+ * `Db` whose database does not exist must not be what brings it into existence.
  */
 async function reachServer(db: Db, options: DelegateOptions): Promise<void> {
-	await (await db._commandExecutor(options)).query("RETURN 1");
+	await (await db._namespaceExecutor(options)).query("RETURN 1");
 }
 
 /** A field the command's definition requires and the caller did not send. */
@@ -330,8 +333,11 @@ export async function runCommand(
 			// Spread rather than returned directly: `ListDatabasesResult` names its
 			// fields, and a command reply is an open `Document`.
 			return {
+				// Read through the namespace rather than through this `Db`: the reply
+				// enumerates the deployment, and addressing a database to ask would add
+				// it to the very list being reported.
 				...(await listDatabasesReply(
-					await db._commandExecutor(delegate),
+					await db._namespaceExecutor(delegate),
 					command.filter as Document | undefined,
 				)),
 			};

@@ -42,6 +42,7 @@ A drop-in MongoDB driver replacement powered by SurrealDB. Use the MongoDB API y
 - **Full-text search** - $text queries with createIndex for text indexes
 - **Positional array updates** - $[] and $[identifier] with arrayFilters
 - **Sessions and transactions** - startSession, startTransaction, commit/abort and withTransaction, backed by real SurrealDB transactions
+- **Every database from one client** - `client.db(name)` addresses the database it names, for every operation and command, and one transaction can span two of them — see [Addressing more than one database](#addressing-more-than-one-database)
 - **Cursor chaining** - sort, limit, skip, project, plus `for await...of` async iteration
 - **BSON identities that round-trip** - ObjectIds and Dates come back as ObjectIds and Dates, nested and in arrays, and ids from `bson`/mongoose interoperate with this driver's own
 - **Admin commands** - db.command and db.admin() answer ping, buildInfo, listDatabases, dbStats, collStats and the create/drop/index commands, reporting only what SurrealDB can actually tell you
@@ -391,7 +392,8 @@ no effect, or rejected with a reason. Nothing is accepted and silently dropped.
 | `forceServerObjectId: true` | throws | the reported `insertedId` would have nothing truthful to say |
 | `min`, `max` | throws | no index-bound clause, so the scan would not be restricted (in `createIndex` these are a `2d` index's coordinate limits, and are accepted there) |
 | `returnKey`, `showRecordId`, `singleBatch`, `tailable`, `awaitData` | throws | no index-key projection, no storage-level record id and no capped collections |
-| `out`, `dbName` | throws | the results would not be written where the caller asked, or read from the database they named |
+| `out` | throws | the results would not be written where the caller asked |
+| `dbName` | throws | the official driver has three behaviours for it depending on the operation, so there is no one behaviour to honour (measured against 7.5.0: `db.command({dbStats: 1}, {dbName: other})` ignores it and reports the handle's own database, `db.stats` and `distinct` re-target to `other`, and `createCollection` forwards it to the server and fails with `IDLUnknownField`); the database a statement runs against here is the one its `Db` names — see [Addressing more than one database](#addressing-more-than-one-database) |
 | `raw`, `promote*`, `useBigInt64`, `bsonRegExp`, `serializeFunctions`, `checkKeys`, `fieldsAsRaw`, `enableUtf8Validation` | throws | this driver encodes CBOR and has no BSON layer |
 
 An option this driver does not recognise **at all** is tolerated, deliberately:
@@ -426,6 +428,15 @@ string look exactly like an empty dataset. The error the SDK carries says which
 of the three it was, and only a missing **table**, naming **this** collection, is
 read as emptiness. A namespace or database that is reported missing still raises
 `26` from every operation, reads included.
+
+What that protects is the connected database — the one a connection string names,
+where "not there" means the store the application was pointed at is not there. A
+`client.db("other")` naming a database that does not exist reads as empty
+instead, because the statement selects that database as it goes out and SurrealDB
+brings it into existence to run it, then reports the missing table. That is what
+MongoDB answers for a database it has never seen, so the two cases differ in the
+same direction as MongoDB's own answers do — see
+[Addressing more than one database](#addressing-more-than-one-database).
 
 One case escapes that guarantee, and it is SurrealDB's to give rather than this
 driver's: a non-root user whose session names a database that does not exist is
@@ -1151,12 +1162,65 @@ being written to, rather than merely omitting a refinement.
 handles rather than as `{name, type}` documents. `Collection.drop()` is
 `Db.dropCollection(collectionName)` addressed from the collection.
 
-> **A `Db` other than the connected one reads the connected one.** The connection
-> is bound to a single SurrealDB database, so `client.db("other")` produces a
-> handle whose reads — `listCollections`, `collections`, `stats`, and every
-> collection under it — still see the database named in the connection string.
-> Only the statements that name a database explicitly (`dropDatabase`) act on the
-> other one. Use one client per database.
+### Addressing more than one database
+
+```typescript
+const client = new MongoClient("mongodb://127.0.0.1:8000/mydb?namespace=ns");
+
+await client.db().collection("users").find({}).toArray();        // mydb
+await client.db("mydb").collection("users").find({}).toArray();  // mydb
+await client.db("reports").collection("daily").insertOne({});    // reports
+```
+
+One client addresses every database in its namespace. `client.db(name)` is
+synchronous, cheap and repeatable — `client.db("x").collection("y")` inline in a
+loop allocates two façades and asks nothing of the server — and the statements it
+issues name the database they belong to, so `listCollections`, `collections`,
+`stats`, `dropDatabase`, `db.command`, `db.admin()`, every index method and every
+collection operation act on the database named rather than on the connected one.
+
+A statement for the connected database is unchanged by any of this: it carries no
+database prefix, costs no extra round trip, and holds nothing open server-side —
+and neither does one for another database, which is a prefix on the statement
+rather than a second connection.
+
+A **transaction spans databases**, as MongoDB's does: hand one session to
+operations on two databases and a commit applies to both, an abort rolls back
+both, and a read in the transaction sees its own write to either.
+
+```typescript
+const session = client.startSession();
+await session.withTransaction(async () => {
+  await client.db("ledger").collection("entries").insertOne({ n: 1 }, { session });
+  await client.db("audit").collection("log").insertOne({ n: 1 }, { session });
+});
+await session.endSession();
+```
+
+A database is created on first use, as MongoDB creates one on first write, and
+reading one that does not exist answers emptily rather than failing. Two details
+differ from MongoDB, both of them SurrealDB's `USE` semantics rather than this
+driver's bookkeeping:
+
+- **Addressing a database creates it, even to read.** MongoDB creates a database
+  only on a write, so a `find` against one that does not exist leaves it absent
+  from `listDatabases`; here it will be listed, empty. This is what `connect()`
+  has always done for the connected database. The two commands that report on the
+  *deployment* rather than on a database — `ping` and `listDatabases` — are
+  exempt, because they name no database and a `listDatabases` that did would
+  report one the question had just invented.
+- **A missing database reads as empty only when it is not the connected one.** A
+  `db("gone")` whose database has been dropped answers `[]`, `null` and `0`, as
+  MongoDB does. The connected database going missing still throws — see
+  [A collection that has never been written to](#a-collection-that-has-never-been-written-to)
+  for why that distinction is kept: a mistyped connection string must not look
+  like an empty dataset.
+
+`client.db(name)` refuses a name containing `.`, which is the only name the
+official driver refuses client-side (measured against 7.5.0), and an empty name
+means the connection string's database, as it does there. Names a mongod would
+then reject at the server — over 63 bytes, or containing `$` — are accepted here,
+because SurrealDB has no such restriction to reject them with.
 
 ### Commands
 
@@ -1419,6 +1483,10 @@ committing has not committed.
 Every method that issues a statement takes `session`, including the `Db` methods
 and the index methods: SurrealDB's DDL is transactional, so a `createIndex` in a
 transaction is rolled back with it.
+
+A transaction may span **more than one database**, as MongoDB's may: one session
+handed to operations on two databases commits or rolls back both together — see
+[Addressing more than one database](#addressing-more-than-one-database).
 
 ### Session behaviour that differs from MongoDB
 

@@ -76,7 +76,11 @@ async function run(
 	sql: string,
 	client: MongoClient = ctx.client,
 ): Promise<unknown> {
-	const executor = await sessionExecutor(session, client, client._executor);
+	const executor = await sessionExecutor(
+		session,
+		client,
+		client.db().databaseName,
+	);
 	return executor.query(sql);
 }
 
@@ -311,7 +315,7 @@ describe("misuse", () => {
 		const session = outside.startSession();
 
 		await expect(
-			sessionExecutor(session, ctx.client, ctx.client._executor),
+			sessionExecutor(session, ctx.client, ctx.client.db().databaseName),
 		).rejects.toBeInstanceOf(MongoInvalidArgumentError);
 
 		await session.endSession();

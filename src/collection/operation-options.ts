@@ -315,7 +315,7 @@ const REJECTED_OPTIONS: readonly RejectionRule[] = [
 		applies: supplied,
 		reject: unsupported(
 			"dbName",
-			"the operation would run against the connected database rather than the one named",
+			"the database an operation runs against is the one its Db handle names; MongoDB's own driver does three different things with this option depending on the operation (measured against 7.5.0: db.command ignores it, db.stats and distinct re-target, createCollection forwards it to the server and fails), so there is no single behaviour to honour — use client.db(name) to address another database",
 		),
 	},
 	...BSON_OPTIONS.map((option) => ({

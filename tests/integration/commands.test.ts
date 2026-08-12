@@ -15,7 +15,6 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Db, ObjectId } from "../../src/index.ts";
 import {
 	MongoAPIError,
-	MongoClient,
 	MongoCompatibilityError,
 	MongoErrorCode,
 	type MongoServerError,
@@ -45,26 +44,21 @@ function freshName(prefix: string): string {
 }
 
 /**
- * A `Db` on its own SurrealDB database, so a count over "every collection" has a
- * known total.
+ * A `Db` on a SurrealDB database of its own, so a count over "every collection"
+ * has a known total that the rest of the file cannot disturb.
  *
- * Its own client, not `ctx.client.db(other)`: the connection is bound to one
- * SurrealDB database, so a `Db` naming a different one still reads the connected
- * one. Counting through such a handle would report the wrong database's contents,
- * which is exactly what these assertions must not depend on.
+ * One client serves it: `ctx.client.db(name)` addresses that database, so the
+ * counts it reports are that database's. Dropping it afterwards leaves the
+ * connected database — and the connection — untouched.
  */
 async function isolatedDatabase(
 	name: string,
 ): Promise<{ db: Db; close: () => Promise<void> }> {
-	const client = new MongoClient(
-		`mongodb://root:root@127.0.0.1:${PORT}/${name}?namespace=test`,
-	);
-	await client.connect();
+	const db = ctx.client.db(name);
 	return {
-		db: client.db(name),
+		db,
 		close: async () => {
-			await client.db(name).dropDatabase();
-			await client.close();
+			await db.dropDatabase();
 		},
 	};
 }
