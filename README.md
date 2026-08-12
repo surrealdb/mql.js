@@ -270,6 +270,41 @@ console.log(result.insertedCount); // 2
 console.log(result.insertedIds);   // { 0: ObjectId, 1: ObjectId }
 ```
 
+#### A batch insert that partly fails
+
+`insertMany` is not one write. When a document is refused — a duplicate `_id`, an
+`ASSERT` — what happens to the rest depends on `ordered`, exactly as in MongoDB:
+
+```typescript
+// ordered (the default): stop at the refusal, keep what came before
+try {
+  await users.insertMany([{ _id: "a" }, { _id: "dup" }, { _id: "c" }]);
+} catch (err) {
+  err.code;          // 11000
+  err.writeErrors;   // [{ index: 1, code: 11000, keyValue: { _id: "dup" } }]
+  err.insertedCount; // 1  — "a" is in the collection, "c" was never attempted
+  err.insertedIds;   // { 0: "a" }
+}
+
+// unordered: attempt all of them, keep every success
+try {
+  await users.insertMany([{ _id: "a" }, { _id: "dup" }, { _id: "c" }], {
+    ordered: false,
+  });
+} catch (err) {
+  err.writeErrors;   // [{ index: 1, ... }]
+  err.insertedCount; // 2  — both "a" and "c" are in the collection
+  err.insertedIds;   // { 0: "a", 2: "c" }
+}
+```
+
+The error is a `MongoBulkWriteError`, and it throws in both cases — as MongoDB
+does — even though documents were written, so a caller who never inspects it is
+not left believing the whole batch landed.
+
+Inside a session's transaction the batch is all-or-nothing instead, again as in
+MongoDB: the refusal aborts the transaction, so nothing is kept.
+
 ### Find
 
 ```typescript
@@ -378,7 +413,8 @@ no effect, or rejected with a reason. Nothing is accepted and silently dropped.
 | `comment` | accepted, no effect | SurrealDB has no query-level comment mechanism, and a comment cannot change the answer |
 | `readPreference`, `readConcern` of `local`/`majority`/`available` | accepted, no effect | reading the only node is at least what they ask for |
 | `writeConcern`, other than `w: 0` and `w > 1` | accepted, no effect | every write waits for SurrealDB to acknowledge |
-| `batchSize`, `maxAwaitTimeMS`, `noCursorTimeout`, `allowDiskUse`, `allowPartialResults`, `oplogReplay`, `ordered: true` | accepted, no effect | server-cursor and sharding mechanics; results are materialised in one round trip |
+| `batchSize`, `maxAwaitTimeMS`, `noCursorTimeout`, `allowDiskUse`, `allowPartialResults`, `oplogReplay` | accepted, no effect | server-cursor and sharding mechanics; results are materialised in one round trip |
+| `ordered` | honoured | decides what an `insertMany` keeps when part of the batch is refused — see [A batch insert that partly fails](#a-batch-insert-that-partly-fails) |
 | `session` | honoured | while the session has a transaction in progress, the operation's statements run inside it and are committed or rolled back with it — see [Sessions and transactions](#sessions-and-transactions) |
 | `readConcern` of `snapshot` | accepted, no effect | asks that every read come from one consistent point in time, which is what a SurrealDB transaction is: a statement is a transaction, and a read inside an open one does not observe a commit another connection made after it began |
 | `readConcern` of `linearizable` | throws `123` | needs a replica set, as it does in MongoDB: it asks the server to confirm no newer primary was elected before answering, and there is no election to confirm |
@@ -388,7 +424,6 @@ no effect, or rejected with a reason. Nothing is accepted and silently dropped.
 | `let` | throws | `$$var` references need an expression compiler this driver does not have |
 | `explain` | throws | SurrealDB's `EXPLAIN` describes a different planner |
 | `bypassDocumentValidation: true` | throws | `ASSERT`s are enforced inside the storage engine |
-| `ordered: false` | throws | a SurrealDB batch insert is atomic, so the documents it promises to keep would not be written |
 | `forceServerObjectId: true` | throws | the reported `insertedId` would have nothing truthful to say |
 | `min`, `max` | throws | no index-bound clause, so the scan would not be restricted (in `createIndex` these are a `2d` index's coordinate limits, and are accepted there) |
 | `returnKey`, `showRecordId`, `singleBatch`, `tailable`, `awaitData` | throws | no index-key projection, no storage-level record id and no capped collections |
@@ -1407,8 +1442,10 @@ Why each is refused rather than approximated:
 - **Aggregation** — a partial translation is worse than none. A pipeline whose
   later stages were silently dropped still returns documents, so the caller gets a
   plausible wrong answer instead of an error.
-- **Bulk writes** — the gap is not the loop but the per-model result accounting and
-  the ordered/unordered failure semantics that `BulkWriteResult` reports.
+- **Bulk writes** — the gap is the per-model result accounting across mixed
+  insert, update and delete models. The ordered/unordered failure semantics
+  themselves are implemented, for `insertMany` — see [A batch insert that partly
+  fails](#a-batch-insert-that-partly-fails).
 - **Change streams** — SurrealDB's live queries carry a different event shape and
   no resume token, so a `ChangeStream` built on them could not be resumed after a
   disconnect the way callers depend on. This driver also has no event emitter to

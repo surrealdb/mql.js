@@ -15,6 +15,7 @@ export {
 export { Admin } from "./db/admin.ts";
 export { Db } from "./db/db.ts";
 export type {
+	BulkWriteOutcome,
 	MongoErrorCodeValue,
 	MongoServerErrorOptions,
 	WriteError,
@@ -22,6 +23,7 @@ export type {
 export {
 	codeNameFor,
 	MongoAPIError,
+	MongoBulkWriteError,
 	MongoClientError,
 	MongoCompatibilityError,
 	MongoCursorExhaustedError,
