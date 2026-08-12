@@ -29,7 +29,7 @@ export interface FindCursorState {
 	sort: Sort | undefined;
 	limit: number | undefined;
 	skip: number | undefined;
-	projectionFields: string | undefined;
+	projectionColumns: readonly string[] | undefined;
 	projectionExcludeFields: string[] | undefined;
 	projectionIncludeId: boolean | undefined;
 }
@@ -211,7 +211,7 @@ export class FindCursor<TSchema extends Document = Document> {
 			sort: this._sort,
 			limit: this._limit,
 			skip: this._skip,
-			projectionFields: proj.fields || undefined,
+			projectionColumns: proj.columns.length > 0 ? proj.columns : undefined,
 			projectionExcludeFields: proj.isExclusion
 				? proj.excludeFields
 				: undefined,

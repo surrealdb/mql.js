@@ -153,7 +153,7 @@ describe("executeFind", () => {
 		const { ctx, executor } = makeContext();
 		executor.enqueue([]);
 		await executeFind(ctx, undefined, {
-			projectionFields: "name, age",
+			projectionColumns: ["name", "age"],
 		});
 		expect(executor.queries[0].sql).toBe("SELECT name, age FROM `users`");
 	});
@@ -177,7 +177,7 @@ describe("executeFind", () => {
 		const { ctx, executor } = makeContext();
 		executor.enqueue([{ id: new RecordId("users", "a"), name: "Alice" }]);
 		const docs = await executeFind(ctx, undefined, {
-			projectionFields: "name",
+			projectionColumns: ["name"],
 			projectionIncludeId: false,
 		});
 		expect(docs[0]._id).toBeUndefined();

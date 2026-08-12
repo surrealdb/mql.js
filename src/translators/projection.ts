@@ -23,10 +23,17 @@ import { SURREAL_ID_FIELD } from "./filter/id-field.ts";
 
 export interface TranslatedProjection {
 	/**
-	 * Comma-separated field list for SELECT, e.g. "id, name, age".
-	 * Empty string means SELECT * (no projection or exclusion-only).
+	 * The escaped columns for the `SELECT` field list, e.g. `["id", "`name`"]`.
+	 * Empty means `SELECT *` (no projection, or exclusion-only).
+	 *
+	 * A list rather than the comma-joined string it is emitted as, because the
+	 * ordering has to be checked against it: SurrealDB requires every `ORDER BY`
+	 * idiom to appear in the field list, and asking "does this list carry that
+	 * column?" of a joined string means splitting it on a comma again — which a
+	 * field name containing a comma, legal in MongoDB, breaks into fragments that
+	 * match nothing. Joining is left to the one place that emits SQL.
 	 */
-	fields: string;
+	columns: readonly string[];
 	/**
 	 * When true, the projection is exclusion-based and must be applied
 	 * as post-processing (remove listed fields from results).
@@ -48,7 +55,7 @@ export function translateProjection(
 ): TranslatedProjection {
 	if (!projection || Object.keys(projection).length === 0) {
 		return {
-			fields: "",
+			columns: [],
 			isExclusion: false,
 			excludeFields: [],
 			includeId: true,
@@ -73,7 +80,7 @@ export function translateProjection(
 		// `{_id: 0}` names no field to include, so everything except `_id` comes
 		// back — a `SELECT *` with `includeId` false, which post-processing honours.
 		return {
-			fields: includeId ? SURREAL_ID_FIELD : "",
+			columns: includeId ? [SURREAL_ID_FIELD] : [],
 			isExclusion: false,
 			excludeFields: [],
 			includeId,
@@ -118,7 +125,7 @@ export function translateProjection(
 		return {
 			// Escaped for SurrealQL; `excludeFields` below stays unescaped
 			// because it is used for in-memory post-processing, not SQL.
-			fields: columns.join(", "),
+			columns,
 			isExclusion: false,
 			excludeFields: [],
 			includeId,
@@ -128,7 +135,7 @@ export function translateProjection(
 	// Exclusion: must be applied as post-processing. `excludeFields` stays
 	// unescaped — `applyProjection` walks it as document keys, not as SQL.
 	return {
-		fields: "",
+		columns: [],
 		isExclusion: true,
 		excludeFields: excluded.map(([key]) => key),
 		includeId,

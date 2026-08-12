@@ -5,20 +5,20 @@ import { translateProjection } from "../../../src/translators/projection.ts";
 describe("translateProjection", () => {
 	test("null / undefined returns defaults", () => {
 		const r = translateProjection(null);
-		expect(r.fields).toBe("");
+		expect(r.columns).toEqual([]);
 		expect(r.isExclusion).toBe(false);
 		expect(r.includeId).toBe(true);
 	});
 
 	test("empty object returns defaults", () => {
 		const r = translateProjection({});
-		expect(r.fields).toBe("");
+		expect(r.columns).toEqual([]);
 		expect(r.includeId).toBe(true);
 	});
 
 	test("inclusion projection returns field list", () => {
 		const r = translateProjection({ name: 1, age: 1 });
-		expect(r.fields).toBe("id, `name`, `age`");
+		expect(r.columns).toEqual(["id", "`name`", "`age`"]);
 		expect(r.isExclusion).toBe(false);
 		expect(r.includeId).toBe(true);
 	});
@@ -27,23 +27,28 @@ describe("translateProjection", () => {
 	// for it, and `_id` is SurrealDB's `id` column rather than a document field —
 	// so a field list that does not name `id` yields documents with no identity.
 	test("an inclusion projection selects the identity column", () => {
-		expect(translateProjection({ name: 1 }).fields).toBe("id, `name`");
-		expect(translateProjection({ _id: 1, name: 1 }).fields).toBe("id, `name`");
+		expect(translateProjection({ name: 1 }).columns).toEqual(["id", "`name`"]);
+		expect(translateProjection({ _id: 1, name: 1 }).columns).toEqual([
+			"id",
+			"`name`",
+		]);
 	});
 
 	test("a suppressed _id keeps the identity column out of the field list", () => {
-		expect(translateProjection({ name: 1, _id: 0 }).fields).toBe("`name`");
+		expect(translateProjection({ name: 1, _id: 0 }).columns).toEqual([
+			"`name`",
+		]);
 	});
 
 	test("inclusion with _id: 0 excludes id", () => {
 		const r = translateProjection({ _id: 0, name: 1 });
-		expect(r.fields).toBe("`name`");
+		expect(r.columns).toEqual(["`name`"]);
 		expect(r.includeId).toBe(false);
 	});
 
 	test("exclusion projection sets isExclusion", () => {
 		const r = translateProjection({ password: 0, secret: 0 });
-		expect(r.fields).toBe("");
+		expect(r.columns).toEqual([]);
 		expect(r.isExclusion).toBe(true);
 		expect(r.excludeFields).toEqual(["password", "secret"]);
 		expect(r.includeId).toBe(true);
@@ -58,7 +63,7 @@ describe("translateProjection", () => {
 
 	test("only _id: 0 returns defaults with includeId false", () => {
 		const r = translateProjection({ _id: 0 });
-		expect(r.fields).toBe("");
+		expect(r.columns).toEqual([]);
 		expect(r.isExclusion).toBe(false);
 		expect(r.includeId).toBe(false);
 	});
@@ -70,7 +75,7 @@ describe("translateProjection", () => {
 	// document's contents is the opposite of what it asked.
 	test("only _id: 1 selects the identity column alone", () => {
 		const r = translateProjection({ _id: 1 });
-		expect(r.fields).toBe("id");
+		expect(r.columns).toEqual(["id"]);
 		expect(r.isExclusion).toBe(false);
 		expect(r.includeId).toBe(true);
 	});
@@ -100,8 +105,16 @@ describe("translateProjection", () => {
 	});
 
 	test("a pure projection gives the same result in either key order", () => {
-		expect(translateProjection({ a: 1, b: 1 }).fields).toBe("id, `a`, `b`");
-		expect(translateProjection({ b: 1, a: 1 }).fields).toBe("id, `b`, `a`");
+		expect(translateProjection({ a: 1, b: 1 }).columns).toEqual([
+			"id",
+			"`a`",
+			"`b`",
+		]);
+		expect(translateProjection({ b: 1, a: 1 }).columns).toEqual([
+			"id",
+			"`b`",
+			"`a`",
+		]);
 		expect(translateProjection({ a: 0, b: 0 }).excludeFields).toEqual([
 			"a",
 			"b",
@@ -115,7 +128,7 @@ describe("translateProjection", () => {
 	test("_id is exempt from the mixing rule in both directions", () => {
 		// `{ a: 1, _id: 0 }` — the documented exception.
 		const inclusion = translateProjection({ a: 1, _id: 0 });
-		expect(inclusion.fields).toBe("`a`");
+		expect(inclusion.columns).toEqual(["`a`"]);
 		expect(inclusion.isExclusion).toBe(false);
 		expect(inclusion.includeId).toBe(false);
 
@@ -139,6 +152,6 @@ describe("translateProjection", () => {
 			string,
 			0 | 1 | boolean
 		>);
-		expect(r.fields).toBe("id, `name`, `age`");
+		expect(r.columns).toEqual(["id", "`name`", "`age`"]);
 	});
 });

@@ -255,3 +255,53 @@ describe("the ways to read those documents instead", () => {
 		expect(page).toEqual([{ _id: 3, tag: "t3", k: 2 }]);
 	});
 });
+
+/**
+ * Whether the projection covers the sort is decided by comparing what the field
+ * list carries against what the ordering names. Both sides are SurrealQL, and the
+ * comparison used to go through the emitted field list as one comma-joined string
+ * — split on `,` and matched entry by entry — which a field name containing a
+ * comma silently defeats: the one column becomes two fragments, neither of which
+ * matches, and a read MongoDB answers is refused.
+ *
+ * MongoDB allows a comma in a field name, so these are documents a caller can
+ * really have.
+ */
+describe("a field name the field list cannot be split on", () => {
+	test("a projection and sort on a comma-containing name is served", async () => {
+		const coll = db.collection<Doc>("comma_names");
+		await coll.insertMany([
+			{ _id: 1, "a,b": 2 },
+			{ _id: 2, "a,b": 1 },
+		] as never);
+
+		const found = await coll
+			.find({}, { projection: { "a,b": 1 }, sort: { "a,b": 1 } })
+			.toArray();
+
+		expect(found).toEqual([
+			{ _id: 2, "a,b": 1 },
+			{ _id: 1, "a,b": 2 },
+		] as never);
+	});
+
+	test("a sort the projection really does not cover is still refused", async () => {
+		const coll = db.collection<Doc>("comma_names_refused");
+		await coll.insertOne({ _id: 1, "a,b": 2, other: 3 } as never);
+
+		await expect(
+			coll.find({}, { projection: { "a,b": 1 }, sort: { other: 1 } }).toArray(),
+		).rejects.toThrow(MongoCompatibilityError);
+	});
+
+	test("a comma in one of several projected names does not hide the others", async () => {
+		const coll = db.collection<Doc>("comma_names_multi");
+		await coll.insertOne({ _id: 1, "a,b": 2, tag: "t" } as never);
+
+		const found = await coll
+			.find({}, { projection: { "a,b": 1, tag: 1 }, sort: { tag: 1 } })
+			.toArray();
+
+		expect(found).toEqual([{ _id: 1, "a,b": 2, tag: "t" }] as never);
+	});
+});

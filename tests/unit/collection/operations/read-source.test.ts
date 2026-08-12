@@ -21,13 +21,58 @@ const NEAR_POINT = {
 	location: { $near: { $geometry: { type: "Point", coordinates: [0, 0] } } },
 };
 
+/**
+ * Whether the field list carries the ordering is asked of the columns as a list.
+ * Asking it of the comma-joined string they are emitted as means splitting that
+ * string again, and a field name may contain a comma — MongoDB allows it — so the
+ * one column became two fragments matching nothing and the read was refused.
+ */
+describe("a field list that cannot be split on a comma", () => {
+	test("a projection and sort on a comma-containing column is served", async () => {
+		const { ctx, executor } = makeContext();
+		executor.enqueue([]);
+
+		await executeFind(ctx, undefined, {
+			sort: { "a,b": 1 },
+			projectionColumns: ["id", "`a,b`"],
+		});
+
+		expect(executor.queries[0].sql).toBe(
+			"SELECT id, `a,b` FROM `users` ORDER BY `a,b` ASC",
+		);
+	});
+
+	test("a comma in one column does not make the others look unprojected", async () => {
+		const { ctx, executor } = makeContext();
+		executor.enqueue([]);
+
+		await executeFind(ctx, undefined, {
+			sort: { tag: 1 },
+			projectionColumns: ["id", "`a,b`", "`tag`"],
+		});
+
+		expect(executor.queries[0].sql).toContain("ORDER BY `tag` ASC");
+	});
+
+	test("a sort the field list really does not carry is still refused", async () => {
+		const { ctx } = makeContext();
+
+		await expect(
+			executeFind(ctx, undefined, {
+				sort: { other: 1 },
+				projectionColumns: ["id", "`a,b`"],
+			}),
+		).rejects.toThrow(/Sorting by other while/);
+	});
+});
+
 describe("a sort the field list does not name", () => {
 	test("is refused, naming the column that cannot be ordered by", async () => {
 		const { ctx } = makeContext();
 
 		const failure = executeFind(ctx, undefined, {
 			sort: { k: 1 },
-			projectionFields: "id, `tag`",
+			projectionColumns: ["id", "`tag`"],
 		});
 
 		await expect(failure).rejects.toBeInstanceOf(MongoCompatibilityError);
@@ -44,7 +89,7 @@ describe("a sort the field list does not name", () => {
 
 		const failure = executeFind(ctx, undefined, {
 			sort: { extra: 1, k: -1, tag: 1 },
-			projectionFields: "id, `tag`",
+			projectionColumns: ["id", "`tag`"],
 		});
 
 		// `tag` is projected, so it is not part of the complaint.
@@ -56,7 +101,7 @@ describe("a sort the field list does not name", () => {
 
 		const failure = executeFind(ctx, undefined, {
 			sort: { k: 1 },
-			projectionFields: "id, `tag`",
+			projectionColumns: ["id", "`tag`"],
 		});
 
 		// Every one of the three ways out is a change the caller makes, so the error
@@ -78,7 +123,7 @@ describe("a sort the field list does not name", () => {
 		await expect(
 			executeFind(ctx, undefined, {
 				sort: { k: 1 },
-				projectionFields: "id, `tag`",
+				projectionColumns: ["id", "`tag`"],
 			}),
 		).rejects.toBeInstanceOf(MongoCompatibilityError);
 
@@ -94,7 +139,7 @@ describe("a sort the field list does not name", () => {
 		await expect(
 			executeFind(ctx, undefined, {
 				sort: { "a.b": 1 },
-				projectionFields: "id, `a`.`c`",
+				projectionColumns: ["id", "`a`.`c`"],
 			}),
 		).rejects.toThrow(/Sorting by a\.b while/);
 	});
@@ -107,7 +152,7 @@ describe("a sort the field list does not name", () => {
 		await expect(
 			executeFind(ctx, undefined, {
 				sort: { _id: -1 },
-				projectionFields: "`tag`",
+				projectionColumns: ["`tag`"],
 				projectionIncludeId: false,
 			}),
 		).rejects.toThrow(/Sorting by _id while/);
@@ -130,7 +175,7 @@ describe("a sort the field list carries", () => {
 
 		await executeFind(ctx, undefined, {
 			sort: { k: 1 },
-			projectionFields: "id, `tag`, `k`",
+			projectionColumns: ["id", "`tag`", "`k`"],
 		});
 
 		expect(executor.queries[0].sql).toBe(
@@ -163,7 +208,7 @@ describe("a sort the field list carries", () => {
 		// returns it — which means a sort on `_id` is always carried by one.
 		await executeFind(ctx, undefined, {
 			sort: { _id: -1 },
-			projectionFields: "id, `tag`",
+			projectionColumns: ["id", "`tag`"],
 		});
 
 		expect(executor.queries[0].sql).toBe(
@@ -177,7 +222,7 @@ describe("a sort the field list carries", () => {
 
 		await executeFind(ctx, undefined, {
 			sort: { extra: 1, k: -1 },
-			projectionFields: "id, `extra`, `k`",
+			projectionColumns: ["id", "`extra`", "`k`"],
 		});
 
 		expect(executor.queries[0].sql).toBe(
@@ -191,7 +236,7 @@ describe("a sort the field list carries", () => {
 
 		await executeFind(ctx, undefined, {
 			sort: { "a.b": 1 },
-			projectionFields: "id, `a`.`b`",
+			projectionColumns: ["id", "`a`.`b`"],
 		});
 
 		expect(executor.queries[0].sql).toBe(
@@ -211,7 +256,7 @@ describe("a sort the field list carries", () => {
 		await executeFind(
 			ctx,
 			{ active: true },
-			{ sort: { k: -1 }, projectionFields: "id, `k`" },
+			{ sort: { k: -1 }, projectionColumns: ["id", "`k`"] },
 			{ hint: "active_1" },
 		);
 
@@ -229,7 +274,7 @@ describe("a sort the field list carries", () => {
 		await executeFind(
 			ctx,
 			undefined,
-			{ sort: { k: 1 }, limit: 5, skip: 10, projectionFields: "id, `k`" },
+			{ sort: { k: 1 }, limit: 5, skip: 10, projectionColumns: ["id", "`k`"] },
 			{ maxTimeMS: 1000 },
 		);
 
@@ -251,7 +296,7 @@ describe("a sort the field list carries", () => {
 		await executeFind(ctx, undefined, {
 			sort: { k: 1 },
 			skip: 2,
-			projectionFields: "id, `k`",
+			projectionColumns: ["id", "`k`"],
 		});
 
 		expect(executor.queries[0].sql).toBe(
@@ -290,7 +335,7 @@ describe("a sort the field list carries", () => {
 
 		const docs = await executeFind(ctx, undefined, {
 			sort: { k: 1 },
-			projectionFields: "id, `tag`, `k`",
+			projectionColumns: ["id", "`tag`", "`k`"],
 		});
 
 		expect(docs).toEqual([
@@ -307,7 +352,7 @@ describe("a sort composed with $near", () => {
 
 		await executeFind(ctx, NEAR_POINT, {
 			sort: { k: 1 },
-			projectionFields: "id, `name`, `k`",
+			projectionColumns: ["id", "`name`", "`k`"],
 		});
 
 		// MongoDB lets an explicit sort win over the ordering `$near` implies, so the
@@ -328,7 +373,9 @@ describe("a sort composed with $near", () => {
 		// list can carry this ordering however the caller projects. The alias in the
 		// subquery's `*` is the only thing that can.
 		expect(
-			await executeFind(ctx, NEAR_POINT, { projectionFields: "id, `name`" }),
+			await executeFind(ctx, NEAR_POINT, {
+				projectionColumns: ["id", "`name`"],
+			}),
 		).toEqual([]);
 
 		expect(executor.queries[0].sql).toBe(
@@ -344,7 +391,7 @@ describe("a sort composed with $near", () => {
 		await executeFind(
 			ctx,
 			NEAR_POINT,
-			{ limit: 5, skip: 10, projectionFields: "id, `name`" },
+			{ limit: 5, skip: 10, projectionColumns: ["id", "`name`"] },
 			{ maxTimeMS: 250 },
 		);
 
