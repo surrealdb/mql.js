@@ -41,6 +41,7 @@ const SURREALDB_INTERNAL_PORT = 8000;
 
 export class SurrealDbDockerProvider implements DatabaseProvider {
 	readonly name = "mql.js + surrealdb (docker)";
+	readonly requiresGeospatialIndex = false;
 
 	private readonly _image: string;
 	private readonly _hostPort: number;

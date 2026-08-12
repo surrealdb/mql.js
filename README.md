@@ -38,7 +38,7 @@ A drop-in MongoDB driver replacement powered by SurrealDB. Use the MongoDB API y
 - **Standard CRUD operations** - insertOne, insertMany, find, findOne, updateOne, updateMany, deleteOne, deleteMany, and more
 - **Query filter operators** - $eq, $gt, $lt, $in, $and, $or, $regex, $elemMatch, $type, $mod, and more
 - **Update operators** - $set, $setOnInsert, $inc, $push, $pull, $addToSet, $min, $max, $rename, and more
-- **Geospatial queries** - $geoWithin, $geoIntersects, $near, $nearSphere with full GeoJSON support
+- **Geospatial queries** - $geoWithin, $geoIntersects, $near, $nearSphere over real SurrealDB geometry, GeoJSON in and out, with the legacy $box/$center/$centerSphere/$polygon shapes
 - **Full-text search** - $text queries with createIndex for text indexes
 - **Positional array updates** - $[] and $[identifier] with arrayFilters
 - **Sessions and transactions** - startSession, startTransaction, commit/abort and withTransaction, backed by real SurrealDB transactions
@@ -551,9 +551,11 @@ own with a `_bsontype` field in it is data, and is stored as written.
 | `MinKey`, `MaxKey` | nothing: there are no sentinel bounds to sort against |
 | `DBRef` | the fields themselves — an `ObjectId` plus the collection name |
 
-A value from the `surrealdb` package (`Decimal`, `Uuid`, `Duration`, `RecordId`,
-a geometry) passes through untouched in both directions, so a document can hold
-SurrealDB-native values as long as your own code expects them back.
+A value from the `surrealdb` package (`Decimal`, `Uuid`, `Duration`, `RecordId`)
+passes through untouched in both directions, so a document can hold
+SurrealDB-native values as long as your own code expects them back. A geometry is
+the exception: it is written the same way a GeoJSON object is and reads back as
+GeoJSON, because the two are the same stored value — see [Geospatial](#geospatial).
 
 The BSON serialisation options — `raw`, `promoteValues`, `promoteLongs`,
 `promoteBuffers`, `useBigInt64`, `bsonRegExp`, `serializeFunctions`, `checkKeys`,
@@ -622,42 +624,155 @@ Supported `$type` values: `"double"`, `"string"`, `"object"`, `"array"`, `"bool"
 
 ### Geospatial
 
-The driver supports MongoDB's geospatial query operators, mapped to SurrealDB's native geo functions and operators.
+A GeoJSON geometry a caller writes is stored as SurrealDB's own geometry type and
+read back as GeoJSON, which is what MongoDB returns and what `JSON.stringify`
+will produce. All seven geometry types are supported — `Point`, `LineString`,
+`Polygon`, `MultiPoint`, `MultiLineString`, `MultiPolygon` and
+`GeometryCollection` — in a top-level field, nested, inside an array, as an
+`$set`/`$push` operand and as a filter operand.
 
 ```typescript
-// Documents within a polygon
+await places.insertOne({
+  name: "Grand Central",
+  location: { type: "Point", coordinates: [-73.9772, 40.7527] },
+});
+
+const found = await places.findOne({ name: "Grand Central" });
+// { _id: ..., name: 'Grand Central',
+//   location: { type: 'Point', coordinates: [ -73.9772, 40.7527 ] } }
+```
+
+#### What is recognised as a geometry
+
+A GeoJSON object is a plain object with a `type` and some coordinates, which a
+caller could legitimately have written as data. Recognition is therefore narrow.
+A value is stored as a geometry only when it is a plain object with **exactly
+two** keys, whose `type` is one of the seven above and whose other key is
+`coordinates` (or `geometries`, for a `GeometryCollection`) holding an array.
+
+- `{type: "Point", coordinates: [1, 2]}` → a geometry.
+- `{type: "Point", coordinates: [1, 2], label: "home"}` → **data**, stored as
+  written. SurrealDB's geometry holds coordinates and nothing else, so converting
+  it would silently drop `label`. Being an ordinary object, it matches no
+  geospatial query.
+- `{type: "Polygon", coordinates: "see attachment"}` → **data**: the payload is
+  not an array, so nothing about it says "geometry".
+- `{type: "Circle", coordinates: [1, 2]}` → **data**: not a GeoJSON geometry type.
+
+Once an object *is* recognised, coordinates SurrealDB's geometry cannot hold
+**throw** rather than falling back to plain-object storage: an unclosed linear
+ring, a `LineString` with one point, an empty `MultiPolygon`, a position that is
+not a pair of finite numbers. Stored as an object it would match no geospatial
+query ever again, and guessing — closing the ring, dropping an ordinate — would
+hand back something other than what was written. MongoDB rejects a malformed
+geometry too, once the collection has the `2dsphere` index that makes it
+queryable.
+
+One of those rules is stricter than MongoDB's, and not because the value is
+wrong: a position with a **third ordinate** — GeoJSON's optional altitude,
+`[lng, lat, alt]` — throws. MongoDB stores it, ignoring the altitude when it
+indexes; SurrealDB's geometry has nowhere to put it, so storing it would mean
+dropping what a caller wrote.
+
+Coordinates out of range go the other way: a `lng` outside ±180 or a `lat`
+outside ±90 is stored, and compared, as written. MongoDB rejects both. See the
+divergence table.
+
+#### $geoWithin
+
+```typescript
+// Inside a GeoJSON Polygon, MultiPolygon or GeometryCollection
 { location: { $geoWithin: { $geometry: {
   type: "Polygon",
   coordinates: [[[-74, 40.7], [-73.9, 40.7], [-73.9, 40.8], [-74, 40.8], [-74, 40.7]]]
 } } } }
 
-// Documents within a spherical radius (radians)
-{ location: { $geoWithin: { $centerSphere: [[-73.93, 40.82], 5 / 3963.2] } } }
-
-// Documents within a bounding box
+// Legacy shapes
 { location: { $geoWithin: { $box: [[-74.0, 40.7], [-73.9, 40.8]] } } }
+{ location: { $geoWithin: { $polygon: [[-74, 40.7], [-73.9, 40.7], [-73.9, 40.8]] } } }
+{ location: { $geoWithin: { $center: [[-73.93, 40.82], 0.05] } } }        // degrees
+{ location: { $geoWithin: { $centerSphere: [[-73.93, 40.82], 5 / 6378.1] } } } // radians
+```
 
-// Documents intersecting a geometry
+`$geometry` must name a geometry that encloses an area; a `Point` or
+`LineString` throws, as it does in MongoDB. The four legacy shapes match
+point-valued fields only, again as in MongoDB, and are exact rather than
+approximated: `$box` and `$polygon` become the ring they describe, `$center` the
+flat circle its degrees describe, `$centerSphere` an angle compared against
+`geo::distance`. A point sitting exactly **on** the boundary is within, as it is
+in MongoDB, for every one of the five forms.
+
+Only a GeoJSON geometry is a geometry here. MongoDB also reads a bare
+`[longitude, latitude]` pair, and a two-field object such as `{lng, lat}`, as a
+legacy point and matches it; those are ordinary data to this driver and match no
+geospatial query. See the divergence table.
+
+#### $geoIntersects
+
+```typescript
 { area: { $geoIntersects: { $geometry: {
   type: "Polygon",
   coordinates: [[[0, 0], [3, 6], [6, 1], [0, 0]]]
 } } } }
+```
 
-// Nearest documents (sorted by distance)
+Any of the seven geometry types may be the query geometry. The legacy shapes are
+rejected here, as MongoDB rejects them.
+
+#### $near and $nearSphere
+
+```typescript
+// Nearest first, bounded in metres
 { location: { $near: {
   $geometry: { type: "Point", coordinates: [-73.9667, 40.78] },
-  $maxDistance: 5000,  // metres
-  $minDistance: 100,   // metres (optional)
+  $minDistance: 100,    // metres, optional
+  $maxDistance: 5000,   // metres, optional
 } } }
 
-// Nearest with spherical geometry (same as $near for SurrealDB)
+// The same, spherical
 { location: { $nearSphere: {
   $geometry: { type: "Point", coordinates: [-73.9667, 40.78] },
   $maxDistance: 5000,
 } } }
+
+// Legacy coordinate pair: the bound is in radians
+{ location: { $nearSphere: [-73.9667, 40.78], $maxDistance: 5000 / 6378100 } }
 ```
 
-`$geoWithin` supports `$geometry`, `$centerSphere`, `$center`, `$box`, and `$polygon` shape specifiers. `$near` and `$nearSphere` automatically sort results by distance ascending.
+Both order results by distance ascending, and both compose with the rest of a
+query: other filter conditions, `limit`, `skip`, a projection, a cursor, and a
+transaction. An explicit `sort` replaces the distance ordering, which is what
+MongoDB does. `findOne`, `updateOne`, `deleteOne` and the `findOneAnd*` methods
+act on the nearest matching document.
+
+**Distances are metres, and the two engines measure them on different spheres.**
+`geo::distance` measures on a sphere of radius 6 371 008.8 m; MongoDB measures a
+metre distance on one of radius 6 378 100 m. A `$maxDistance` in metres is a
+MongoDB metre, so the driver converts it — passing the number through unchanged
+would move the boundary by 0.11 %, taking the documents nearest it with it. A
+radian bound (`$centerSphere`, legacy-pair `$nearSphere`) needs no earth model at
+all and is exact.
+
+#### Geospatial behaviour that differs from MongoDB
+
+| Behaviour | This driver | MongoDB |
+| --- | --- | --- |
+| Index | none: `2dsphere` and `2d` are rejected by `createIndex`, so every geospatial query is a **full collection scan** | `$near`/`$nearSphere` *require* a `2dsphere` index and refuse to run without one |
+| A field holding a legacy `[longitude, latitude]` pair, or a `{lng, lat}`-style object, instead of GeoJSON | ordinary data: matches no geospatial query, in any operator | read as a point and matched |
+| A stored **line or polygon** lying exactly along the query polygon's edge | not `$geoWithin` (`INSIDE` tests the interior); it *does* `$geoIntersects`. A stored **point** on the edge is within, as in MongoDB | within |
+| A point on a **slanted** edge of a legacy `$polygon` | within, as for every other boundary point | not within — though MongoDB *does* count a vertex, an axis-aligned edge, and the same point under `$geometry` |
+| A coordinate out of range (`lng` beyond ±180, `lat` beyond ±90), stored or in a query geometry | accepted and compared planar | rejected (`Longitude/latitude is out of bounds`) |
+| A position with a third ordinate, `[lng, lat, alt]` | throws: SurrealDB's geometry holds two ordinates, and storing it would drop the altitude | stored, altitude ignored when indexing |
+| `$minDistance`/`$maxDistance` written *beside* a `$near`/`$nearSphere` whose operand is a `$geometry` | accepted, and applied | rejected: the bound belongs inside the operand unless the operand is a legacy pair |
+| Several documents at exactly the same distance under `$near` | ordered arbitrarily among themselves | ordered arbitrarily among themselves (neither engine promises a tie-break) |
+| `$near` over a field holding an *array* of points | no match: there is no single distance to order by, so a point per document is required. `$geoWithin` and `$geoIntersects` do match element-wise | matches, ordering by the nearest element |
+| `$near` over a non-`Point` geometry | no match: `geo::distance` is defined for points | matches, measuring to the nearest point of the geometry |
+| `$near` with a legacy coordinate pair | throws, naming `$nearSphere` — the flat measurement needs a `2d` index | supported with a `2d` index |
+| `$near` in `countDocuments` or `distinct` | works; the distance band applies and ordering is irrelevant to both | rejected, because both run as aggregations |
+| `$near` inside `$not`, `$nor`, `$elemMatch`, or an `$or` with more than one branch | throws | throws (`geo $near must be top-level expr`) |
+| A document whose *only* fields are `type` and `coordinates` | throws: that is how a geometry is stored, and SurrealDB cannot hold one where a document belongs. Nest it under a field of its own | stored as written |
+| A `Polygon` spanning more than half the globe, or a `$geoWithin` polygon with very long edges | edges are straight lines in coordinate space | `$geometry` edges are geodesics, so a large polygon covers a different area |
+| A geometry written as an SDK `GeometryPoint`/`GeometryPolygon`/… | reads back as GeoJSON | not applicable |
 
 ### Full-text search
 
@@ -855,7 +970,7 @@ never believes an index does something it does not:
 | `hidden: true` | throws | indexes cannot be hidden from the planner |
 | `wildcardProjection` | throws | no wildcard indexes |
 | `sparse: false` | throws | see below |
-| `2d`, `2dsphere`, `geoHaystack`, `hashed` keys | throws | no equivalent index type; a plain index would not make `$near` index-backed |
+| `2d`, `2dsphere`, `geoHaystack`, `hashed` keys | throws | no equivalent index type, and a plain index would not make `$near` index-backed. Geospatial queries still run — as full scans; see [Geospatial](#geospatial) |
 | `background`, `storageEngine`, `commitQuorum`, version fields | accepted, no effect | no meaning here, and MongoDB itself ignores several of them |
 
 Other differences worth knowing:

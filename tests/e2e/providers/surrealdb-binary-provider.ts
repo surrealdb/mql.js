@@ -40,6 +40,7 @@ const DEFAULT_READINESS_TIMEOUT_MS = 30_000;
 
 export class SurrealDbBinaryProvider implements DatabaseProvider {
 	readonly name = "mql.js + surrealdb (in-memory)";
+	readonly requiresGeospatialIndex = false;
 
 	private readonly _hostPort: number;
 	private readonly _databaseName: string;

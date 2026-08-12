@@ -21,6 +21,7 @@ import { isDockerAvailable } from "./providers/docker-container.ts";
 import { MongoDbDockerProvider } from "./providers/mongodb-provider.ts";
 import { SurrealDbDockerProvider } from "./providers/surrealdb-provider.ts";
 import { registerCrudScenarios } from "./scenarios/crud-scenarios.ts";
+import { registerGeospatialScenarios } from "./scenarios/geospatial-scenarios.ts";
 
 type DriverChoice = "mongodb" | "mql" | "both";
 
@@ -32,13 +33,14 @@ function resolveDriver(): DriverChoice {
 	);
 }
 
-function buildProviders(driver: DriverChoice): DatabaseProvider[] {
-	const providers: DatabaseProvider[] = [];
+/** One factory per engine: see the loop below for why these are not instances. */
+function buildProviders(driver: DriverChoice): (() => DatabaseProvider)[] {
+	const providers: (() => DatabaseProvider)[] = [];
 	if (driver === "mongodb" || driver === "both") {
-		providers.push(new MongoDbDockerProvider());
+		providers.push(() => new MongoDbDockerProvider());
 	}
 	if (driver === "mql" || driver === "both") {
-		providers.push(new SurrealDbDockerProvider());
+		providers.push(() => new SurrealDbDockerProvider());
 	}
 	return providers;
 }
@@ -52,7 +54,10 @@ if (!dockerAvailable) {
 		});
 	});
 } else {
-	for (const provider of buildProviders(resolveDriver())) {
-		registerCrudScenarios(provider);
+	// A provider per suite: each scenario file starts and stops its own store, so
+	// one instance shared between two of them would be restarted in between.
+	for (const build of buildProviders(resolveDriver())) {
+		registerCrudScenarios(build());
+		registerGeospatialScenarios(build());
 	}
 }

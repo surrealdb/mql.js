@@ -31,6 +31,7 @@ const DEFAULT_READINESS_TIMEOUT_MS = 60_000;
 
 export class MongoDbMemoryProvider implements DatabaseProvider {
 	readonly name = "mongodb (in-memory)";
+	readonly requiresGeospatialIndex = true;
 
 	private readonly _databaseName: string;
 	private readonly _readinessTimeoutMs: number;

@@ -35,6 +35,7 @@ import {
 	SurrealDbBinaryProvider,
 } from "./providers/surrealdb-binary-provider.ts";
 import { registerCrudScenarios } from "./scenarios/crud-scenarios.ts";
+import { registerGeospatialScenarios } from "./scenarios/geospatial-scenarios.ts";
 
 type DriverChoice = "mongodb" | "mql" | "both";
 
@@ -47,7 +48,15 @@ function resolveDriver(): DriverChoice {
 }
 
 interface ResolvedProvider {
-	readonly provider: DatabaseProvider;
+	/**
+	 * Builds a provider, rather than being one.
+	 *
+	 * Each scenario file brings its provider up in `beforeAll` and down in
+	 * `afterAll`, so two suites sharing one instance would stop and restart the
+	 * same store between them. A factory gives each suite a store of its own.
+	 */
+	readonly create: () => DatabaseProvider;
+	readonly name: string;
 	readonly available: boolean;
 	readonly skipReason: string;
 }
@@ -60,7 +69,8 @@ async function buildProviders(
 	if (driver === "mongodb" || driver === "both") {
 		const available = await isMongoMemoryServerAvailable();
 		resolved.push({
-			provider: new MongoDbMemoryProvider(),
+			create: () => new MongoDbMemoryProvider(),
+			name: "mongodb (in-memory)",
 			available,
 			skipReason:
 				"mongodb-memory-server cannot bootstrap a mongod binary in this environment",
@@ -70,7 +80,8 @@ async function buildProviders(
 	if (driver === "mql" || driver === "both") {
 		const available = await isSurrealBinaryAvailable();
 		resolved.push({
-			provider: new SurrealDbBinaryProvider(),
+			create: () => new SurrealDbBinaryProvider(),
+			name: "mql.js + surrealdb (in-memory)",
 			available,
 			skipReason:
 				"`surreal` binary not found on PATH; install SurrealDB to run the mql.js side",
@@ -88,11 +99,12 @@ if (!anyAvailable) {
 		test.skip("No in-memory backend is available on this machine. Install SurrealDB and ensure mongodb-memory-server can download mongod, then re-run.", () => {});
 	});
 } else {
-	for (const { provider, available, skipReason } of resolvedProviders) {
+	for (const { create, name, available, skipReason } of resolvedProviders) {
 		if (available) {
-			registerCrudScenarios(provider);
+			registerCrudScenarios(create());
+			registerGeospatialScenarios(create());
 		} else {
-			describe(`E2E parity – ${provider.name} (skipped)`, () => {
+			describe(`E2E parity – ${name} (skipped)`, () => {
 				test.skip(skipReason, () => {});
 			});
 		}
