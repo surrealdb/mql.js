@@ -39,12 +39,13 @@
  */
 
 import { MongoErrorCode, MongoServerError } from "../../errors.ts";
+import { isMissingTableError } from "../../surreal/error-mapper.ts";
 import { statement } from "../../surreal/sql/statement.ts";
 import { sortColumns, translateSort } from "../../translators/sort.ts";
 import type { Sort } from "../../types.ts";
 import type { OperationContext } from "../operation-context.ts";
 import type { OperationPlan } from "../operation-options.ts";
-import { DISTANCE_ALIAS } from "./near-query.ts";
+import { DISTANCE_ALIAS } from "./read-source.ts";
 
 /**
  * How many times a write conflict is re-issued before it reaches the caller.
@@ -112,7 +113,9 @@ export function oneRecordTarget(
  *     it holds no definition for. Reading that refusal as "no match" is what
  *     makes `updateOne(filter, update, {upsert: true})` create the first
  *     document of a collection, and `deleteOne` on an empty collection a
- *     `deletedCount` of `0`;
+ *     `deletedCount` of `0`. Only *this* collection being undefined counts, and
+ *     only as a missing table — see `isMissingTableError`, which is what keeps a
+ *     mistyped database name from reading as an empty one;
  *   - a write conflict means a concurrent transaction reached the same record
  *     first, and that the statement rolled back whole — so re-issuing it can
  *     neither duplicate nor half-apply anything. MongoDB resolves the same
@@ -170,7 +173,7 @@ async function run<T>(
 		try {
 			return (await ctx.executor.query<T[]>(sql, bindings)) ?? [];
 		} catch (err) {
-			if (isMissingCollection(err)) return [];
+			if (isMissingTableError(err, ctx.collectionName)) return [];
 			if (
 				ctx.inTransaction ||
 				attempt >= CONFLICT_ATTEMPTS ||
@@ -181,14 +184,6 @@ async function run<T>(
 			await sleep(Math.random() * CONFLICT_BACKOFF_MS * 2 ** (attempt - 1));
 		}
 	}
-}
-
-/** SurrealDB's refusal to read a table or database that has no definition. */
-function isMissingCollection(err: unknown): boolean {
-	return (
-		err instanceof MongoServerError &&
-		err.code === MongoErrorCode.NamespaceNotFound
-	);
 }
 
 /** A concurrent transaction having written the same record first. */

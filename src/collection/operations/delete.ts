@@ -22,6 +22,7 @@ import {
 } from "../operation-context.ts";
 import { resolveOperationPlan } from "../operation-options.ts";
 import { oneRecordTarget, writeOneRecord } from "./modify-one.ts";
+import { selectRows } from "./select-rows.ts";
 
 export async function deleteOne<TSchema extends Document>(
 	ctx: OperationContext,
@@ -67,9 +68,6 @@ export async function deleteMany<TSchema extends Document>(
 		plan.timeout,
 	);
 
-	const rows = await ctx.executor.query<Record<string, unknown>[]>(
-		sql,
-		bindings,
-	);
-	return makeDeleteResult(rows ? rows.length : 0);
+	const rows = await selectRows(ctx, sql, bindings);
+	return makeDeleteResult(rows.length);
 }

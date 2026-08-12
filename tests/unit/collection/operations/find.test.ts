@@ -25,7 +25,7 @@ describe("findOne", () => {
 		await findOne(ctx, { name: "Alice" }, { projection: { name: 1 } });
 
 		expect(executor.queries[0].sql).toBe(
-			"SELECT name FROM users WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0)) LIMIT 1",
+			"SELECT id, name FROM users WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0)) LIMIT 1",
 		);
 		expect(executor.queries[0].bindings).toEqual({ p0: "Alice" });
 	});
@@ -79,8 +79,8 @@ describe("findOne", () => {
 			"SELECT * OMIT __mql_distance FROM (" +
 				"SELECT *, geo::distance(location, $p0) AS __mql_distance FROM users " +
 				"WHERE type::is_point(location) AND geo::distance(location, $p0) <= $p1 " +
-				"ORDER BY __mql_distance ASC" +
-				") LIMIT 1",
+				"ORDER BY __mql_distance ASC LIMIT 1" +
+				")",
 		);
 	});
 
@@ -123,10 +123,10 @@ describe("findOne", () => {
 		// nothing to OMIT — and the ordering still has to live inside, because an
 		// outer `ORDER BY __mql_distance` fails to parse against this field list.
 		expect(executor.queries[0].sql).toBe(
-			"SELECT name FROM (" +
+			"SELECT id, name FROM (" +
 				"SELECT *, geo::distance(location, $p0) AS __mql_distance FROM users " +
-				"WHERE type::is_point(location) ORDER BY __mql_distance ASC" +
-				") LIMIT 1",
+				"WHERE type::is_point(location) ORDER BY __mql_distance ASC LIMIT 1" +
+				")",
 		);
 	});
 });
@@ -191,7 +191,7 @@ describe("executeFind", () => {
 		expect(docs).toEqual([]);
 	});
 
-	test("$near keeps LIMIT, START and TIMEOUT outside the ordering subquery", async () => {
+	test("$near pages inside the ordering subquery and times out outside it", async () => {
 		const { ctx, executor } = makeContext();
 		executor.enqueue([]);
 
@@ -207,15 +207,18 @@ describe("executeFind", () => {
 			{ maxTimeMS: 250 },
 		);
 
-		// Paging inside the subquery would truncate the set before the caller's
-		// window applied to it, and SurrealQL takes one TIMEOUT, last.
+		// The enclosing select filters nothing, so paging the ordered rows and
+		// paging the projection of them are the same rows — and pairing the paging
+		// with the `ORDER BY` is what lets SurrealDB stop at a page instead of
+		// ordering everything the filter matched. `TIMEOUT` cannot join them:
+		// SurrealQL takes one, last, so it bounds the whole statement.
 		expect(executor.queries[0].sql).toBe(
 			"SELECT * OMIT __mql_distance FROM (" +
 				"SELECT *, geo::distance(location, $p1) AS __mql_distance FROM users " +
 				"WHERE (status = $p0 OR (type::is_array(status) AND status CONTAINS $p0)) " +
 				"AND type::is_point(location) " +
-				"ORDER BY __mql_distance ASC" +
-				") LIMIT 5 START 10 TIMEOUT 250ms",
+				"ORDER BY __mql_distance ASC LIMIT 5 START 10" +
+				") TIMEOUT 250ms",
 		);
 	});
 

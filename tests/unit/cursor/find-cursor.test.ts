@@ -267,7 +267,7 @@ describe("FindCursor – projection forwarding", () => {
 	test("inclusion projection is forwarded as projectionFields", async () => {
 		const { runner, calls } = recordingRunner([]);
 		await new FindCursor<User>(runner).project({ name: 1 }).toArray();
-		expect(calls[0].projectionFields).toBe("name");
+		expect(calls[0].projectionFields).toBe("id, name");
 		expect(calls[0].projectionExcludeFields).toBeUndefined();
 		expect(calls[0].projectionIncludeId).toBe(true);
 	});
