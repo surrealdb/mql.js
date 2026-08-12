@@ -216,12 +216,26 @@ describe("unique index violation", () => {
 });
 
 describe("other server errors keep their own codes", () => {
-	test("querying a collection that does not exist is not reported as a duplicate key", async () => {
+	test("a hint naming no index is not reported as a duplicate key", async () => {
+		const col = db.collection<Account>("hint_miss");
+		await col.insertOne({ email: "one@x.y" });
+
 		const err = await captureError(() =>
-			db.collection<Account>("no_such_collection_here").find({}).toArray(),
+			col.find({}, { hint: "no_such_index" }).toArray(),
 		);
 
 		expect(err.code).not.toBe(11000);
+	});
+
+	test("reading a collection that does not exist is not an error at all", async () => {
+		// MongoDB treats a collection it has never seen as an empty one, so there is
+		// no error here to mistake for anything — including a duplicate key.
+		expect(
+			await db
+				.collection<Account>("no_such_collection_here")
+				.find({})
+				.toArray(),
+		).toEqual([]);
 	});
 });
 

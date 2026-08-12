@@ -36,6 +36,7 @@ import {
 } from "./providers/surrealdb-binary-provider.ts";
 import { registerCrudScenarios } from "./scenarios/crud-scenarios.ts";
 import { registerGeospatialScenarios } from "./scenarios/geospatial-scenarios.ts";
+import { registerParityGapScenarios } from "./scenarios/parity-gap-scenarios.ts";
 
 type DriverChoice = "mongodb" | "mql" | "both";
 
@@ -103,6 +104,7 @@ if (!anyAvailable) {
 		if (available) {
 			registerCrudScenarios(create());
 			registerGeospatialScenarios(create());
+			registerParityGapScenarios(create());
 		} else {
 			describe(`E2E parity – ${name} (skipped)`, () => {
 				test.skip(skipReason, () => {});
