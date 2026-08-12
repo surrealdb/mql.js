@@ -7,11 +7,7 @@ import {
 	test,
 } from "bun:test";
 import type { Collection, ObjectId } from "../../src/index.ts";
-import {
-	MongoClient,
-	MongoInvalidArgumentError,
-	MongoNotConnectedError,
-} from "../../src/index.ts";
+import { MongoClient, MongoNotConnectedError } from "../../src/index.ts";
 import {
 	type SurrealTestContext,
 	setupSurreal,
@@ -55,36 +51,35 @@ beforeEach(async () => {
 });
 
 // ---------------------------------------------------------------------------
-// replaceOne with empty filter
+// An empty filter on a replacement, which MongoDB accepts
 // ---------------------------------------------------------------------------
 
-describe("replaceOne errors", () => {
-	test("throws MongoInvalidArgumentError with empty filter", async () => {
-		await col.insertOne({ name: "Alice", age: 30 });
-		try {
-			await col.replaceOne({}, { name: "Replacement" } as TestDoc);
-			// Should not reach here
-			expect(true).toBe(false);
-		} catch (err) {
-			expect(err).toBeInstanceOf(MongoInvalidArgumentError);
-		}
+describe("replacing with an empty filter", () => {
+	test("replaceOne replaces one of the matching documents", async () => {
+		await col.insertMany([
+			{ name: "Alice", age: 30 },
+			{ name: "Bob", age: 25 },
+		]);
+
+		const result = await col.replaceOne({}, { name: "Replacement" } as TestDoc);
+
+		// An empty filter matches everything, and MongoDB replaces the first of
+		// them — one document, leaving the rest alone.
+		expect(result.matchedCount).toBe(1);
+		expect(result.modifiedCount).toBe(1);
+		expect(await col.countDocuments({})).toBe(2);
+		expect(await col.countDocuments({ name: "Replacement" })).toBe(1);
 	});
-});
 
-// ---------------------------------------------------------------------------
-// findOneAndReplace with empty filter
-// ---------------------------------------------------------------------------
-
-describe("findOneAndReplace errors", () => {
-	test("throws MongoInvalidArgumentError with empty filter", async () => {
+	test("findOneAndReplace hands back the document it replaced", async () => {
 		await col.insertOne({ name: "Alice", age: 30 });
-		try {
-			await col.findOneAndReplace({}, { name: "Replacement" } as TestDoc);
-			// Should not reach here
-			expect(true).toBe(false);
-		} catch (err) {
-			expect(err).toBeInstanceOf(MongoInvalidArgumentError);
-		}
+
+		const before = await col.findOneAndReplace({}, {
+			name: "Replacement",
+		} as TestDoc);
+
+		expect(before?.name).toBe("Alice");
+		expect(await col.countDocuments({ name: "Replacement" })).toBe(1);
 	});
 });
 

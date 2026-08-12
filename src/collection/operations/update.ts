@@ -36,6 +36,7 @@ import {
 	oneRecordTarget,
 	writeOneRecord,
 } from "./modify-one.ts";
+import { selectRows } from "./select-rows.ts";
 import { insertUpserted } from "./upsert.ts";
 
 export async function updateOne<TSchema extends Document>(
@@ -164,9 +165,9 @@ async function updateWhere(
 		plan.timeout,
 	);
 
-	const rows = await ctx.executor.query<Record<string, unknown>[]>(sql, {
+	const rows = await selectRows(ctx, sql, {
 		...filterBindings,
 		...bindings,
 	});
-	return makeUpdateResult(rows || []);
+	return makeUpdateResult(rows);
 }

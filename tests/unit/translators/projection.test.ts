@@ -18,9 +18,21 @@ describe("translateProjection", () => {
 
 	test("inclusion projection returns field list", () => {
 		const r = translateProjection({ name: 1, age: 1 });
-		expect(r.fields).toBe("name, age");
+		expect(r.fields).toBe("id, name, age");
 		expect(r.isExclusion).toBe(false);
 		expect(r.includeId).toBe(true);
+	});
+
+	// MongoDB returns `_id` alongside an inclusion projection without being asked
+	// for it, and `_id` is SurrealDB's `id` column rather than a document field —
+	// so a field list that does not name `id` yields documents with no identity.
+	test("an inclusion projection selects the identity column", () => {
+		expect(translateProjection({ name: 1 }).fields).toBe("id, name");
+		expect(translateProjection({ _id: 1, name: 1 }).fields).toBe("id, name");
+	});
+
+	test("a suppressed _id keeps the identity column out of the field list", () => {
+		expect(translateProjection({ name: 1, _id: 0 }).fields).toBe("name");
 	});
 
 	test("inclusion with _id: 0 excludes id", () => {
@@ -51,6 +63,18 @@ describe("translateProjection", () => {
 		expect(r.includeId).toBe(false);
 	});
 
+	// `{_id: 1}` names one field to include, so the answer carries `_id` and
+	// nothing else. Reading "no keys besides `_id`" as "nothing was named,
+	// therefore `SELECT *`" handed back every field the caller had just declined to
+	// ask for — which for a caller projecting `{_id: 1}` to *avoid* reading a
+	// document's contents is the opposite of what it asked.
+	test("only _id: 1 selects the identity column alone", () => {
+		const r = translateProjection({ _id: 1 });
+		expect(r.fields).toBe("id");
+		expect(r.isExclusion).toBe(false);
+		expect(r.includeId).toBe(true);
+	});
+
 	// -----------------------------------------------------------------------
 	// Mixing inclusion and exclusion. The mode used to be taken from the first
 	// key, so `{ a: 1, b: 0 }` and `{ b: 0, a: 1 }` gave different results.
@@ -76,8 +100,8 @@ describe("translateProjection", () => {
 	});
 
 	test("a pure projection gives the same result in either key order", () => {
-		expect(translateProjection({ a: 1, b: 1 }).fields).toBe("a, b");
-		expect(translateProjection({ b: 1, a: 1 }).fields).toBe("b, a");
+		expect(translateProjection({ a: 1, b: 1 }).fields).toBe("id, a, b");
+		expect(translateProjection({ b: 1, a: 1 }).fields).toBe("id, b, a");
 		expect(translateProjection({ a: 0, b: 0 }).excludeFields).toEqual([
 			"a",
 			"b",
@@ -115,6 +139,6 @@ describe("translateProjection", () => {
 			string,
 			0 | 1 | boolean
 		>);
-		expect(r.fields).toBe("name, age");
+		expect(r.fields).toBe("id, name, age");
 	});
 });

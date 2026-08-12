@@ -19,10 +19,11 @@
 import { MongoInvalidArgumentError } from "../errors.ts";
 import { escapeFieldPath } from "../surreal/sql/escape.ts";
 import type { Projection } from "../types.ts";
+import { SURREAL_ID_FIELD } from "./filter/id-field.ts";
 
 export interface TranslatedProjection {
 	/**
-	 * Comma-separated field list for SELECT, e.g. "name, age".
+	 * Comma-separated field list for SELECT, e.g. "id, name, age".
 	 * Empty string means SELECT * (no projection or exclusion-only).
 	 */
 	fields: string;
@@ -62,8 +63,21 @@ export function translateProjection(
 	const includeId = idEntry ? Boolean(idEntry[1]) : true;
 
 	if (otherEntries.length === 0) {
-		// Only _id was specified
-		return { fields: "", isExclusion: false, excludeFields: [], includeId };
+		// `_id` was the only key, and its two values mean opposite things.
+		//
+		// `{_id: 1}` is an inclusion projection that happens to name one field, so
+		// the answer is a document carrying `_id` and nothing else. Treating it as
+		// "no fields named, therefore `SELECT *`" returned every field the caller
+		// had just declined to ask for.
+		//
+		// `{_id: 0}` names no field to include, so everything except `_id` comes
+		// back — a `SELECT *` with `includeId` false, which post-processing honours.
+		return {
+			fields: includeId ? SURREAL_ID_FIELD : "",
+			isExclusion: false,
+			excludeFields: [],
+			includeId,
+		};
 	}
 
 	// Partition the non-`_id` keys by mode.
@@ -90,12 +104,21 @@ export function translateProjection(
 	}
 
 	if (included.length > 0) {
-		// Inclusion: SELECT specific fields
-		const fieldNames = included.map(([key]) => key);
+		// Inclusion: SELECT specific fields.
+		//
+		// The identity column leads the list unless the projection suppressed it.
+		// MongoDB returns `_id` alongside an inclusion projection without being
+		// asked, and `_id` lives in SurrealDB's `id` column rather than in the
+		// document — so a field list that does not name `id` comes back without one,
+		// and `recordToDocument` then reports an `_id` of `undefined` for a document
+		// that has a perfectly good primary key.
+		const columns = included.map(([key]) => escapeFieldPath(key));
+		if (includeId) columns.unshift(SURREAL_ID_FIELD);
+
 		return {
 			// Escaped for SurrealQL; `excludeFields` below stays unescaped
 			// because it is used for in-memory post-processing, not SQL.
-			fields: fieldNames.map(escapeFieldPath).join(", "),
+			fields: columns.join(", "),
 			isExclusion: false,
 			excludeFields: [],
 			includeId,

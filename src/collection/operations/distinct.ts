@@ -18,6 +18,7 @@ import {
 	type OperationContext,
 } from "../operation-context.ts";
 import { resolveOperationPlan } from "../operation-options.ts";
+import { selectRows } from "./select-rows.ts";
 
 export async function distinct<
 	T = unknown,
@@ -45,9 +46,9 @@ export async function distinct<
 		plan.timeout,
 	);
 
-	const rows = await ctx.executor.query<{ vals: T[] }[]>(sql, bindings);
+	const rows = await selectRows<{ vals: T[] }>(ctx, sql, bindings);
 
-	if (!rows || rows.length === 0) return [];
+	if (rows.length === 0) return [];
 	const values = rows[0].vals ?? [];
 
 	// `distinct` hands raw column values to the caller rather than documents, so

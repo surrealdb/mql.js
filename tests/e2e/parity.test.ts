@@ -22,6 +22,7 @@ import { MongoDbDockerProvider } from "./providers/mongodb-provider.ts";
 import { SurrealDbDockerProvider } from "./providers/surrealdb-provider.ts";
 import { registerCrudScenarios } from "./scenarios/crud-scenarios.ts";
 import { registerGeospatialScenarios } from "./scenarios/geospatial-scenarios.ts";
+import { registerParityGapScenarios } from "./scenarios/parity-gap-scenarios.ts";
 
 type DriverChoice = "mongodb" | "mql" | "both";
 
@@ -59,5 +60,6 @@ if (!dockerAvailable) {
 	for (const build of buildProviders(resolveDriver())) {
 		registerCrudScenarios(build());
 		registerGeospatialScenarios(build());
+		registerParityGapScenarios(build());
 	}
 }

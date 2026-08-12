@@ -27,6 +27,7 @@ import {
 	type OperationPlan,
 	resolveOperationPlan,
 } from "../operation-options.ts";
+import { selectRows } from "./select-rows.ts";
 
 /** How far a count is bounded, once validated. */
 interface CountBounds {
@@ -47,12 +48,13 @@ export async function countDocuments<TSchema extends Document>(
 		await filterOptionsFor(ctx, filter as Document),
 	);
 
-	const rows = await ctx.executor.query<{ count: number }[]>(
+	const rows = await selectRows<{ count: number }>(
+		ctx,
 		countSql(ctx, clause, plan, bounds),
 		bindings,
 	);
 
-	if (!rows || rows.length === 0) return 0;
+	if (rows.length === 0) return 0;
 	return rows[0].count ?? 0;
 }
 
@@ -63,11 +65,12 @@ export async function estimatedDocumentCount(
 	// No filter, and no `hint`/`skip`/`limit` in MongoDB's option surface either:
 	// this counts the whole collection, so there is nothing to narrow.
 	const plan = await resolveOperationPlan(ctx, options);
-	const rows = await ctx.executor.query<{ count: number }[]>(
+	const rows = await selectRows<{ count: number }>(
+		ctx,
 		countSql(ctx, "", plan, {}),
 	);
 
-	if (!rows || rows.length === 0) return 0;
+	if (rows.length === 0) return 0;
 	return rows[0].count ?? 0;
 }
 

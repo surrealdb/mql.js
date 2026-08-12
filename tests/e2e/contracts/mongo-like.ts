@@ -37,10 +37,22 @@ export interface MongoLikeInsertManyResult {
 	insertedIds: Record<number, unknown>;
 }
 
+/** Projection spec accepted by `find`/`findOne`/`cursor.project()`. */
+export type MongoLikeProjection = Record<string, 0 | 1>;
+
+/** The `find`/`findOne` options both drivers read the same way. */
+export interface MongoLikeFindOptions {
+	projection?: MongoLikeProjection;
+	sort?: MongoLikeSort;
+	limit?: number;
+	skip?: number;
+}
+
 export interface MongoLikeUpdateResult {
 	acknowledged: boolean;
 	matchedCount: number;
 	modifiedCount: number;
+	upsertedId: unknown;
 }
 
 export interface MongoLikeDeleteResult {
@@ -53,6 +65,7 @@ export interface MongoLikeFindCursor<TSchema extends MongoLikeDocument> {
 	sort(spec: MongoLikeSort): MongoLikeFindCursor<TSchema>;
 	limit(value: number): MongoLikeFindCursor<TSchema>;
 	skip(value: number): MongoLikeFindCursor<TSchema>;
+	project(spec: MongoLikeProjection): MongoLikeFindCursor<MongoLikeDocument>;
 	toArray(): Promise<TSchema[]>;
 	next(): Promise<TSchema | null>;
 }
@@ -62,19 +75,43 @@ export interface MongoLikeCollection<
 > {
 	insertOne(doc: TSchema): Promise<MongoLikeInsertOneResult>;
 	insertMany(docs: TSchema[]): Promise<MongoLikeInsertManyResult>;
-	findOne(filter: MongoLikeFilter): Promise<TSchema | null>;
-	find(filter?: MongoLikeFilter): MongoLikeFindCursor<TSchema>;
+	findOne(
+		filter: MongoLikeFilter,
+		options?: MongoLikeFindOptions,
+	): Promise<TSchema | null>;
+	find(
+		filter?: MongoLikeFilter,
+		options?: MongoLikeFindOptions,
+	): MongoLikeFindCursor<TSchema>;
 	updateOne(
 		filter: MongoLikeFilter,
 		update: MongoLikeUpdate,
+		options?: { upsert?: boolean },
 	): Promise<MongoLikeUpdateResult>;
 	updateMany(
 		filter: MongoLikeFilter,
 		update: MongoLikeUpdate,
 	): Promise<MongoLikeUpdateResult>;
+	replaceOne(
+		filter: MongoLikeFilter,
+		replacement: MongoLikeDocument,
+		options?: { upsert?: boolean },
+	): Promise<MongoLikeUpdateResult>;
 	deleteOne(filter: MongoLikeFilter): Promise<MongoLikeDeleteResult>;
 	deleteMany(filter?: MongoLikeFilter): Promise<MongoLikeDeleteResult>;
 	countDocuments(filter?: MongoLikeFilter): Promise<number>;
+	estimatedDocumentCount(): Promise<number>;
+	distinct(key: string, filter?: MongoLikeFilter): Promise<unknown[]>;
+	findOneAndUpdate(
+		filter: MongoLikeFilter,
+		update: MongoLikeUpdate,
+	): Promise<TSchema | null>;
+	findOneAndReplace(
+		filter: MongoLikeFilter,
+		replacement: MongoLikeDocument,
+		options?: { sort?: MongoLikeSort },
+	): Promise<TSchema | null>;
+	findOneAndDelete(filter: MongoLikeFilter): Promise<TSchema | null>;
 	createIndex(spec: Record<string, unknown>): Promise<string>;
 }
 

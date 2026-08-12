@@ -16,9 +16,11 @@
  * document that no longer matches the filter). The projection is applied to the
  * document the write returns, because `RETURN BEFORE`/`RETURN AFTER` hand back
  * the whole record.
+ *
+ * All three accept an empty filter, which matches every document and so names the
+ * first one — the same thing an empty filter means to `find`.
  */
 
-import { MongoInvalidArgumentError } from "../../errors.ts";
 import { statement } from "../../surreal/sql/statement.ts";
 import { translateFilter } from "../../translators/filter.ts";
 import {
@@ -214,12 +216,6 @@ export async function findOneAndReplace<TSchema extends Document>(
 		criteria,
 		await filterOptionsFor(ctx, filter as Document),
 	);
-
-	if (!whereClause) {
-		throw new MongoInvalidArgumentError(
-			"findOneAndReplace requires a non-empty filter",
-		);
-	}
 
 	const { clause: contentClause, bindings: contentBindings } =
 		translateReplacement(document, Object.keys(filterBindings).length);

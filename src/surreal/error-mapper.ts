@@ -566,6 +566,37 @@ const QUERY_ERROR_RULES: ReadonlyArray<{
 ];
 
 /**
+ * True when `err` is SurrealDB refusing to read the table `collection` is
+ * stored in because no definition for it exists.
+ *
+ * MongoDB has no such refusal: a collection that was never written to is an
+ * empty one, and a read of it answers `[]`/`null`/`0`. Reading this particular
+ * failure as "no rows" is what lets a caller query a collection before anything
+ * has been inserted into it.
+ *
+ * Which is why the test is this narrow. SurrealDB reports a missing table, a
+ * missing namespace and a missing database all as `NotFoundError`, and this
+ * driver maps all three onto MongoDB's single code 26 — so the code alone cannot
+ * tell "your collection is empty" from "the database you named is not there".
+ * Answering `[]` for the second would be far worse than throwing: a typo in a
+ * connection string would look like an empty dataset. The SDK's structured
+ * detail keeps them apart (`kind` is `"Table"`, `"Namespace"` or `"Database"`),
+ * and the table's *name* is checked too, so a `NotFound` raised for some other
+ * table — a nested query, a future statement referencing a second table — is
+ * never mistaken for this one.
+ *
+ * `MissingNamespaceDatabaseError` is deliberately not accepted here. It means no
+ * namespace or database was ever selected, which no amount of emptiness explains.
+ */
+export function isMissingTableError(err: unknown, collection: string): boolean {
+	const cause = err instanceof MongoServerError ? err.cause : err;
+	if (!(cause instanceof NotFoundError)) return false;
+
+	const detail = cause.details;
+	return detail?.kind === "Table" && detail.details.name === collection;
+}
+
+/**
  * Map an error thrown by `surrealdb.Surreal.query()`/`create()`/`insert()`
  * into the closest MongoDB error. Existing `MongoError`s pass through so a
  * translated error is never re-wrapped.

@@ -312,6 +312,10 @@ await users.replaceOne(
   { name: "Alice", age: 31, role: "admin" },
 );
 
+// An empty filter matches everything, and replaces the first of them.
+// A `sort` decides which document that is.
+await users.replaceOne({}, { name: "Alice", age: 31 });
+
 // Upsert (insert if no match)
 await users.updateOne(
   { name: "Dave" },
@@ -366,8 +370,8 @@ no effect, or rejected with a reason. Nothing is accepted and silently dropped.
 | --- | --- | --- |
 | `maxTimeMS`, `timeoutMS` | honoured | becomes a SurrealQL `TIMEOUT`; the tightest of the two and the client's `timeoutMS` binds. `0` means no limit, and a value above MongoDB's 32-bit ceiling is refused as MongoDB refuses it. Not available on index operations — SurrealDB's DDL takes no `TIMEOUT` clause |
 | `hint` | honoured | becomes `WITH INDEX <name>`, or `WITH NOINDEX` for `{$natural: …}`. Validated against the collection's real indexes first: SurrealDB *silently ignores* a `WITH INDEX` naming an index that does not exist, so an unmatched hint raises `2` (`BadValue`) as MongoDB does rather than scanning unnoticed |
-| `sort` | honoured | orders the subquery that names the record a `findOneAnd*`/`replaceOne` writes to, which is what decides *which* document is modified |
-| `projection` | honoured | a field list in the `SELECT` for `find`/`findOne`, applied to the returned document for the `findOneAnd*` methods |
+| `sort` | honoured | on a `find`/`findOne` it becomes the statement's `ORDER BY`; on a `findOneAnd*`/`replaceOne` it orders the subquery that names the record being written to, which is what decides *which* document is modified. An inclusion `projection` must name every field the sort orders by — see [Sorting by a field an inclusion projection omits](#sorting-by-a-field-an-inclusion-projection-omits) |
+| `projection` | honoured | a field list in the `SELECT` for `find`/`findOne`, applied to the returned document for the `findOneAnd*` methods. `_id` is included unless the projection suppresses it. An inclusion projection combined with a `sort` on a field it does not name is refused — see [Sorting by a field an inclusion projection omits](#sorting-by-a-field-an-inclusion-projection-omits) |
 | `upsert`, `returnDocument`, `includeResultMetadata`, `arrayFilters` | honoured | the created document is seeded from the filter's equalities, as MongoDB seeds it |
 | `ignoreUndefined` | honoured | decides whether an `undefined` property is dropped or stored as `null`; overrides the client's setting, including with an explicit `false` |
 | `comment` | accepted, no effect | SurrealDB has no query-level comment mechanism, and a comment cannot change the answer |
@@ -396,14 +400,107 @@ compute their options objects and attach bookkeeping of their own.
 
 ### A collection that has never been written to
 
-SurrealDB refuses to read a table it holds no definition for, where MongoDB
-treats a missing collection as an empty one. The single-document write paths —
-`updateOne`, `deleteOne`, `replaceOne` and the `findOneAnd*` methods — read that
-refusal as "no match", so `upsert: true` creates the first document of a
-collection and a `deleteOne` reports `deletedCount: 0`. The read paths
-(`find`, `findOne`, `countDocuments`, `estimatedDocumentCount`, `distinct`) and
-the multi-document writes (`updateMany`, `deleteMany`) still raise `26`
-(`NamespaceNotFound`) where MongoDB would return nothing.
+MongoDB treats a collection it has never seen as an empty one, and so does this
+driver. SurrealDB itself refuses to read a table it holds no definition for, and
+that refusal is translated into the answer MongoDB gives:
+
+| Operation | Answer |
+| --- | --- |
+| `find`, cursor iteration | `[]` |
+| `findOne`, all three `findOneAnd*` | `null` |
+| `countDocuments`, `estimatedDocumentCount` | `0` |
+| `distinct` | `[]` |
+| `deleteOne`, `deleteMany` | `{deletedCount: 0}` |
+| `updateOne`, `updateMany`, `replaceOne` | `{matchedCount: 0, modifiedCount: 0}` |
+
+An `insertOne`/`insertMany`, and the inserting half of an `upsert`, still
+*create* the collection — their whole purpose is to bring it into existence, so a
+missing table reported to one of them is a real failure rather than an answer.
+
+The tolerance is deliberately narrow. SurrealDB reports a missing table, a
+missing database and a missing namespace all as the same error, which this driver
+maps onto MongoDB's single code `26` (`NamespaceNotFound`) — so the code alone
+cannot tell "your collection is empty" from "the database you named is not
+there", and answering `[]` for the second would make a typo in a connection
+string look exactly like an empty dataset. The error the SDK carries says which
+of the three it was, and only a missing **table**, naming **this** collection, is
+read as emptiness. A namespace or database that is reported missing still raises
+`26` from every operation, reads included.
+
+One case escapes that guarantee, and it is SurrealDB's to give rather than this
+driver's: a non-root user whose session names a database that does not exist is
+told the *table* does not exist, not the database. Such a session reads as an
+empty collection — which is what MongoDB answers for a database it has never seen
+too, so it is parity rather than a silent wrong answer, but it does mean the loud
+failure is guaranteed only where SurrealDB names the namespace or database
+itself. A root connection is not affected: it creates the namespace and database
+it is pointed at, and is told which one is missing if either is later removed.
+
+On **SurrealDB 3.0**, a removed namespace or database is reported as an uncoded
+key-value-store error rather than a named `26`. The guarantee that matters holds
+— the read fails instead of answering `[]` — but the message does not say which
+namespace is missing, and `err.code` is absent. 3.1 and later name it.
+
+### Sorting by a field an inclusion projection omits
+
+SurrealDB requires every `ORDER BY` idiom to appear in the statement's own field
+list. `SELECT tag FROM t ORDER BY k` is a parse error — ``Missing order idiom `k`
+in statement selection`` — not a slower query. MongoDB has no such rule, so this is
+the one place where a projection and a sort cannot be chosen independently, and
+this driver **refuses the read** rather than silently answering something else:
+
+```ts
+// MongoCompatibilityError: Sorting by k while projecting a different set of
+// fields is not supported: SurrealDB requires every ORDER BY field to appear in
+// the statement's own field list. Include that field in the projection, use an
+// exclusion projection instead, or sort the results after reading them.
+await users.find({}, { projection: { tag: 1 }, sort: { k: 1 } }).toArray();
+```
+
+The error names the columns the field list is missing, and is raised before
+anything is sent to the server. It applies to `find`, `findOne` and a cursor
+however it was chained (`.project().sort()` and `.sort().project()` alike), and to
+a `sort` on several fields when any one of them is unprojected, on `_id` where the
+projection sets `_id: 0`, and on a dotted path — `sort({'a.b': 1})` needs `a.b`
+itself in the projection, since a projection of `a` names `a` rather than `a.b`.
+
+There are three ways to get the documents, all of which behave exactly as MongoDB
+does:
+
+```ts
+// 1. Name the sort's field in the projection. It comes back in the documents.
+await users.find({}, { projection: { tag: 1, k: 1 }, sort: { k: 1 } }).toArray();
+
+// 2. Use an exclusion projection. It selects everything and removes fields
+//    afterwards, so it can order by a field it hides — `k` orders the read and
+//    appears in none of the documents.
+await users.find({}, { projection: { k: 0 }, sort: { k: 1 } }).toArray();
+
+// 3. Read the documents whole and shape them in your own code, when the sort's
+//    field must not appear in what you hand on. Sorting the array yourself,
+//    rather than in the read, works the same way.
+const docs = (await users.find({}, { sort: { k: 1 } }).toArray()).map(
+  ({ _id, tag }) => ({ _id, tag }),
+);
+```
+
+An inclusion projection always leads with the identity column, so a sort on `_id`
+needs nothing added unless the projection suppresses `_id`.
+
+The constraint is SurrealDB's rather than this driver's, and is filed upstream as
+`surrealdb/surrealdb-private#900`. A subquery — ordering a `SELECT *` inside and
+projecting outside it — would satisfy it, and is not used: measured on 3.2.x, a
+sorted, projected, paged read in that shape costs 2.7 to 4.1 times what the same
+read ordered in place costs, widening as the table grows. Paying that on every
+projected read to serve one shape trades a loud, explainable refusal for a quiet
+cliff under the reads that already work. When the constraint is relaxed upstream,
+these reads order in place like any other.
+
+One ordering is exempt, because no field list could ever carry it: the distance
+[`$near`](#geospatial) orders by is an expression rather than a field, so that
+read projects the distance under an alias in a subquery and orders by the alias
+inside it. An explicit `sort` replaces the distance ordering, exactly as it does
+in MongoDB — and is then subject to the rule above.
 
 ## BSON types
 
@@ -744,8 +841,11 @@ rejected here, as MongoDB rejects them.
 Both order results by distance ascending, and both compose with the rest of a
 query: other filter conditions, `limit`, `skip`, a projection, a cursor, and a
 transaction. An explicit `sort` replaces the distance ordering, which is what
-MongoDB does. `findOne`, `updateOne`, `deleteOne` and the `findOneAnd*` methods
-act on the nearest matching document.
+MongoDB does — and that sort is then an ordinary one, so an inclusion projection
+has to name its fields (see [Sorting by a field an inclusion projection
+omits](#sorting-by-a-field-an-inclusion-projection-omits)). `findOne`,
+`updateOne`, `deleteOne` and the `findOneAnd*` methods act on the nearest matching
+document.
 
 **Distances are metres, and the two engines measure them on different spheres.**
 `geo::distance` measures on a sphere of radius 6 371 008.8 m; MongoDB measures a
