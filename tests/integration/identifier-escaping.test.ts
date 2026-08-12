@@ -19,6 +19,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Subprocess } from "bun";
 import type { Collection, Db } from "../../src/index.ts";
+import { MongoCompatibilityError } from "../../src/index.ts";
 import type { Document } from "../../src/types.ts";
 import { setupSurreal, teardownSurreal } from "./helpers.ts";
 
@@ -236,6 +237,88 @@ describe("keyword-named fields and indexes", () => {
 		expect(await keyword.createIndex({ rand: 1 })).toBe("rand_1");
 
 		await keyword.drop();
+	});
+
+	/**
+	 * The one thing quoting a field name does *not* make safe.
+	 *
+	 * SurrealDB accepts `DEFINE INDEX … FIELDS \`select\`` and then re-renders the
+	 * stored idiom unquoted, so reading the definition back fails — and from then
+	 * on the table cannot be scanned, its indexes cannot be listed, and neither
+	 * the index, the table nor the database can be dropped
+	 * (surrealdb/surrealdb-private#906). `createIndex` reads the definition back
+	 * inside the transaction that wrote it, so the failure rolls the definition
+	 * away instead of keeping it.
+	 *
+	 * `function` is the case this driver newly reached: unquoted it was a parse
+	 * error, so before quoting the definition was refused by accident. The other
+	 * words were quoted already and *did* brick the collection.
+	 */
+	describe("an index on a field SurrealDB cannot read back", () => {
+		for (const field of ["select", "function", "alter", "none", "true"]) {
+			test(`{ ${field}: 1 } is refused and the collection survives`, async () => {
+				const name = `unindexable_${field}`;
+				const keyword = db.collection<Doc>(name);
+				await keyword.insertOne({ normal: 1 } as Doc);
+
+				await expect(
+					keyword.createIndex({ [field]: 1 } as never),
+				).rejects.toThrow(MongoCompatibilityError);
+
+				// Nothing was stored, so everything still answers. Each of these threw
+				// a raw SurrealQL conversion error once the definition was kept.
+				expect(await keyword.countDocuments({})).toBe(1);
+				expect((await keyword.find({}).toArray()).length).toBe(1);
+				expect(
+					(await keyword.listIndexes().toArray()).map((i) => i.name),
+				).toEqual(["_id_"]);
+				expect(await keyword.createIndex({ normal: 1 })).toBe("normal_1");
+				expect(await keyword.drop()).toBe(true);
+			});
+		}
+
+		test("a nested path under such a name is indexable, and works", async () => {
+			// Only the leading segment is affected — measured for all 26 words.
+			const keyword = db.collection<Doc>("nested_keyword_index");
+			await keyword.insertOne({ doc: { select: 1 } } as never);
+
+			expect(await keyword.createIndex({ "doc.select": 1 })).toBe(
+				"doc.select_1",
+			);
+			expect(await keyword.countDocuments({ "doc.select": 1 } as never)).toBe(
+				1,
+			);
+			expect(await keyword.drop()).toBe(true);
+		});
+
+		test("the refusal names the field and the nested path that works", async () => {
+			const keyword = db.collection<Doc>("unindexable_message");
+			await keyword.insertOne({ normal: 1 } as Doc);
+
+			const err = await keyword
+				.createIndex({ select: 1 } as never)
+				.catch((e: Error) => e);
+			expect(err).toBeInstanceOf(MongoCompatibilityError);
+			expect((err as Error).message).toContain("'select'");
+			expect((err as Error).message).toContain("doc.select");
+
+			await keyword.drop();
+		});
+
+		test("a compound index is refused for the one field, before anything runs", async () => {
+			const keyword = db.collection<Doc>("unindexable_compound");
+			await keyword.insertOne({ normal: 1 } as Doc);
+
+			await expect(
+				keyword.createIndex({ normal: 1, select: 1 } as never),
+			).rejects.toThrow(/'select'/);
+			// Refused during validation, so not even the leading field was indexed.
+			expect(
+				(await keyword.listIndexes().toArray()).map((i) => i.name),
+			).toEqual(["_id_"]);
+
+			await keyword.drop();
+		});
 	});
 
 	test("an index named after a keyword can be created, hinted and dropped", async () => {

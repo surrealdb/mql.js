@@ -932,6 +932,27 @@ otherwise read some of these as something else entirely. Bare, `{'a-b': 1}` is
 subtraction, `{'x` = 1 OR true OR `': 1}` is a predicate that matches every row,
 and a collection called `none` reads as permanently empty rather than failing.
 
+One exception, and it is SurrealDB's rather than this driver's: **you cannot
+index a field whose name is a SurrealQL statement keyword.**
+
+```typescript
+await collection.createIndex({ select: 1 });      // MongoCompatibilityError
+await collection.createIndex({ "doc.select": 1 }); // fine
+```
+
+SurrealDB accepts such an index and then cannot read its own stored definition
+back, which leaves the collection unreadable and the database undroppable
+(`surrealdb/surrealdb-private#906`). `createIndex` refuses these 26 names up
+front — `alter`, `break`, `continue`, `create`, `define`, `delete`, `explain`,
+`false`, `for`, `function`, `if`, `info`, `insert`, `let`, `none`, `null`,
+`rebuild`, `relate`, `remove`, `return`, `select`, `sleep`, `throw`, `true`,
+`update`, `upsert` — and only as the *leading* segment of a path, which is why
+`doc.select` is fine. Everything else about such a field works: it can be
+queried, sorted, projected and updated. Should a later SurrealDB version add a
+keyword this list has not heard of, `createIndex` reads every definition back
+inside the transaction that wrote it, so the attempt fails and leaves the
+collection untouched rather than damaging it.
+
 ## Update operators
 
 ### Field operators
@@ -1108,6 +1129,13 @@ never believes an index does something it does not:
 
 Other differences worth knowing:
 
+- **A field whose name is a SurrealQL statement keyword cannot be indexed.**
+  `createIndex({ select: 1 })` throws. SurrealDB accepts the index and then
+  cannot read its own definition back, leaving the collection unreadable and the
+  database undroppable (`surrealdb/surrealdb-private#906`), so the driver refuses
+  it up front and reads every definition it does send back inside the
+  transaction that wrote it. Only the leading path segment is affected — see
+  [Names](#names).
 - **Unique indexes are always sparse.** Two documents that both omit a
   unique-indexed field are both accepted; MongoDB indexes the absent field as
   `null` and rejects the second. Because `sparse: false` is MongoDB's *default*,

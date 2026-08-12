@@ -30,6 +30,21 @@ function serverIndexes(
 /** The `INFO FOR TABLE` read every index operation starts with. */
 const INFO_SQL = "INFO FOR TABLE `users` STRUCTURE";
 
+/**
+ * A `DEFINE INDEX` as `createIndex` actually sends it: the definition and a
+ * read-back of the table, atomically.
+ *
+ * SurrealDB accepts an index on a field name it cannot re-render — it stores the
+ * idiom and re-parses it unquoted — after which the table cannot be read and
+ * neither it nor the database can be dropped. Reading the definition back inside
+ * the transaction that wrote it is what turns that into a refusal with nothing
+ * stored; see `defineOneIndex`. Inside a caller's transaction the atomicity is
+ * already theirs, so the wrapper is dropped.
+ */
+const defining = (sql: string) =>
+	`BEGIN; ${sql}; INFO FOR TABLE \`users\`; COMMIT`;
+const definingWithin = (sql: string) => `${sql}; INFO FOR TABLE \`users\``;
+
 /** Metadata comment for an index this driver would have written. */
 function meta(
 	name: string,
@@ -47,7 +62,9 @@ describe("createIndex – SQL emitted", () => {
 		expect(name).toBe("age_1");
 		expect(executor.queries.map((q) => q.sql)).toEqual([
 			INFO_SQL,
-			"DEFINE INDEX `age_1` ON `users` FIELDS `age` COMMENT $mqlIndexMeta",
+			defining(
+				"DEFINE INDEX `age_1` ON `users` FIELDS `age` COMMENT $mqlIndexMeta",
+			),
 		]);
 		expect(executor.queries[1].bindings).toEqual({
 			mqlIndexMeta: meta("age_1", { age: 1 }),
@@ -60,7 +77,9 @@ describe("createIndex – SQL emitted", () => {
 
 		expect(name).toBe("age_-1");
 		expect(executor.queries[1].sql).toBe(
-			"DEFINE INDEX `age_-1` ON `users` FIELDS `age` COMMENT $mqlIndexMeta",
+			defining(
+				"DEFINE INDEX `age_-1` ON `users` FIELDS `age` COMMENT $mqlIndexMeta",
+			),
 		);
 		// `-1` has nowhere to go in the DDL, so the metadata is what keeps it.
 		expect(executor.queries[1].bindings).toEqual({
@@ -74,7 +93,9 @@ describe("createIndex – SQL emitted", () => {
 
 		expect(name).toBe("a_1_b_-1");
 		expect(executor.queries[1].sql).toBe(
-			"DEFINE INDEX `a_1_b_-1` ON `users` FIELDS `a`, `b` COMMENT $mqlIndexMeta",
+			defining(
+				"DEFINE INDEX `a_1_b_-1` ON `users` FIELDS `a`, `b` COMMENT $mqlIndexMeta",
+			),
 		);
 	});
 
@@ -83,7 +104,9 @@ describe("createIndex – SQL emitted", () => {
 		await createIndex(ctx, { email: 1 }, { unique: true });
 
 		expect(executor.queries[1].sql).toBe(
-			"DEFINE INDEX `email_1` ON `users` FIELDS `email` UNIQUE COMMENT $mqlIndexMeta",
+			defining(
+				"DEFINE INDEX `email_1` ON `users` FIELDS `email` UNIQUE COMMENT $mqlIndexMeta",
+			),
 		);
 		expect(executor.queries[1].bindings).toEqual({
 			mqlIndexMeta: meta("email_1", { email: 1 }, { unique: true }),
@@ -96,7 +119,9 @@ describe("createIndex – SQL emitted", () => {
 
 		expect(name).toBe("by age");
 		expect(executor.queries[1].sql).toBe(
-			"DEFINE INDEX `by age` ON `users` FIELDS `age` COMMENT $mqlIndexMeta",
+			defining(
+				"DEFINE INDEX `by age` ON `users` FIELDS `age` COMMENT $mqlIndexMeta",
+			),
 		);
 	});
 
@@ -110,7 +135,9 @@ describe("createIndex – SQL emitted", () => {
 		const { ctx, executor } = makeContext();
 		await createIndex(ctx, { _id: 1, tenant: 1 });
 		expect(executor.queries[1].sql).toBe(
-			"DEFINE INDEX `_id_1_tenant_1` ON `users` FIELDS `id`, `tenant` COMMENT $mqlIndexMeta",
+			defining(
+				"DEFINE INDEX `_id_1_tenant_1` ON `users` FIELDS `id`, `tenant` COMMENT $mqlIndexMeta",
+			),
 		);
 	});
 
@@ -184,7 +211,9 @@ describe("createIndex – text indexes", () => {
 		expect(executor.queries.map((q) => q.sql)).toEqual([
 			INFO_SQL,
 			"DEFINE ANALYZER IF NOT EXISTS blank TOKENIZERS blank FILTERS lowercase",
-			"DEFINE INDEX `title_text` ON `users` FIELDS `title` FULLTEXT ANALYZER blank BM25 HIGHLIGHTS COMMENT $mqlIndexMeta",
+			defining(
+				"DEFINE INDEX `title_text` ON `users` FIELDS `title` FULLTEXT ANALYZER blank BM25 HIGHLIGHTS COMMENT $mqlIndexMeta",
+			),
 		]);
 		expect(ctx.indexes.textFields).toEqual(["title"]);
 	});
@@ -210,7 +239,9 @@ describe("createIndex – text indexes", () => {
 		]);
 		expect(executor.queries.map((q) => q.sql)).toEqual([
 			INFO_SQL,
-			"DEFINE INDEX `title_text` ON `users` FIELDS `title` FULLTEXT ANALYZER blank BM25 HIGHLIGHTS COMMENT $mqlIndexMeta",
+			definingWithin(
+				"DEFINE INDEX `title_text` ON `users` FIELDS `title` FULLTEXT ANALYZER blank BM25 HIGHLIGHTS COMMENT $mqlIndexMeta",
+			),
 		]);
 	});
 
@@ -224,10 +255,14 @@ describe("createIndex – text indexes", () => {
 		expect(name).toBe("title_text_body_text");
 		const defines = executor.queries
 			.map((q) => q.sql)
-			.filter((sql) => sql.startsWith("DEFINE INDEX"));
+			.filter((sql) => sql.includes("DEFINE INDEX"));
 		expect(defines).toEqual([
-			"DEFINE INDEX `title_text_body_text_title` ON `users` FIELDS `title` FULLTEXT ANALYZER blank BM25 HIGHLIGHTS COMMENT $mqlIndexMeta",
-			"DEFINE INDEX `title_text_body_text_body` ON `users` FIELDS `body` FULLTEXT ANALYZER blank BM25 HIGHLIGHTS COMMENT $mqlIndexMeta",
+			defining(
+				"DEFINE INDEX `title_text_body_text_title` ON `users` FIELDS `title` FULLTEXT ANALYZER blank BM25 HIGHLIGHTS COMMENT $mqlIndexMeta",
+			),
+			defining(
+				"DEFINE INDEX `title_text_body_text_body` ON `users` FIELDS `body` FULLTEXT ANALYZER blank BM25 HIGHLIGHTS COMMENT $mqlIndexMeta",
+			),
 		]);
 		expect(ctx.indexes.textFields).toEqual(["title", "body"]);
 	});
@@ -315,10 +350,74 @@ describe("createIndex – accepted-but-ignored options", () => {
 			const { ctx, executor } = makeContext();
 			expect(await createIndex(ctx, { a: 1 }, options)).toBe("a_1");
 			expect(executor.queries[1].sql).toBe(
-				"DEFINE INDEX `a_1` ON `users` FIELDS `a` COMMENT $mqlIndexMeta",
+				defining(
+					"DEFINE INDEX `a_1` ON `users` FIELDS `a` COMMENT $mqlIndexMeta",
+				),
 			);
 		});
 	}
+});
+
+/**
+ * SurrealDB accepts an index on a field it cannot re-render and then chokes on
+ * its own stored definition, which leaves the collection unreadable and the
+ * database undroppable (surrealdb/surrealdb-private#906). Two mechanisms answer
+ * that, and both are pinned here: the measured names are refused before a
+ * statement is sent, and every definition that *is* sent is read back inside the
+ * transaction that wrote it — see `defining` above — so a name the measured list
+ * has never heard of costs a failed operation rather than the collection.
+ */
+describe("createIndex – fields the server cannot store an index on", () => {
+	for (const field of ["select", "function", "alter", "none", "true"]) {
+		test(`{ ${field}: 1 } is refused before any statement runs`, async () => {
+			const { ctx, executor } = makeContext();
+			await expect(createIndex(ctx, { [field]: 1 })).rejects.toThrow(
+				MongoCompatibilityError,
+			);
+			expect(executor.queries).toHaveLength(0);
+		});
+	}
+
+	test("the refusal names the field and the nested path that works", async () => {
+		const { ctx } = makeContext();
+		await expect(createIndex(ctx, { select: 1 })).rejects.toThrow(
+			/An index on 'select' is not supported/,
+		);
+		await expect(createIndex(ctx, { select: 1 })).rejects.toThrow(
+			/doc\.select/,
+		);
+	});
+
+	test("matching is case-insensitive, as SurrealQL keywords are", async () => {
+		const { ctx } = makeContext();
+		await expect(createIndex(ctx, { SELECT: 1 })).rejects.toThrow(
+			MongoCompatibilityError,
+		);
+	});
+
+	test("only the leading segment is refused", async () => {
+		// `doc.select` round-trips: the server quotes non-leading segments when it
+		// re-renders the idiom.
+		const { ctx } = makeContext();
+		expect(await createIndex(ctx, { "doc.select": 1 })).toBe("doc.select_1");
+	});
+
+	test("a compound index is refused for the one offending field", async () => {
+		const { ctx, executor } = makeContext();
+		await expect(createIndex(ctx, { ok: 1, delete: 1 })).rejects.toThrow(
+			/'delete'/,
+		);
+		expect(executor.queries).toHaveLength(0);
+	});
+
+	test("names that are keywords elsewhere but safe here are allowed", async () => {
+		// Measured safe as index fields, and all plausible field names, so refusing
+		// them would cost a caller an index that works.
+		for (const field of ["value", "table", "all", "where", "rand", "before"]) {
+			const { ctx } = makeContext();
+			expect(await createIndex(ctx, { [field]: 1 })).toBe(`${field}_1`);
+		}
+	});
 });
 
 describe("createIndex – rejected index types", () => {
@@ -511,7 +610,7 @@ describe("createIndexes", () => {
 
 		expect(names).toEqual(["m_1", "custom"]);
 		expect(
-			executor.queries.filter((q) => q.sql.startsWith("DEFINE INDEX")),
+			executor.queries.filter((q) => q.sql.includes("DEFINE INDEX")),
 		).toHaveLength(2);
 	});
 
