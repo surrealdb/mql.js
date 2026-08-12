@@ -335,6 +335,7 @@ export function resolveIndexDefinition(
 
 	assertSupportedIndexOptions(options);
 	assertValidIdIndexKey(key);
+	assertIndexableColumns(key);
 	const kind = resolveIndexKind(key);
 
 	const name = options?.name ?? generateIndexName(key);
@@ -357,6 +358,74 @@ export function resolveIndexDefinition(
 		sparse: options?.sparse === true,
 		comment: options?.comment,
 	};
+}
+
+/**
+ * Field names SurrealDB accepts an index on and then cannot read back.
+ *
+ * `DEFINE INDEX … FIELDS \`select\`` succeeds, stores the idiom, and re-renders
+ * it *unquoted* on the way out; the re-render does not re-parse. From then on the
+ * table cannot be scanned, its indexes cannot be listed, and neither the index,
+ * the table nor the **database** can be removed — the rows survive only as direct
+ * record-id reads. Filed as `surrealdb/surrealdb-private#906`.
+ *
+ * This is the measured set, on 3.2.3: every word in SurrealQL's 353-word keyword
+ * table was defined as an index field in its own database and the table then
+ * re-read. Two things narrow it, and both are load-bearing here:
+ *
+ *   - only the **leading** segment of a path is affected, so `doc.select` is fine
+ *     and is what the refusal suggests;
+ *   - only quoting-*by-keyword*. `\`first name\``, `\`a-b\`` and `\`café\`` all
+ *     round-trip, so the server does quote on charset grounds when re-rendering —
+ *     it just does not consult its own reserved-keyword set.
+ *
+ * Deliberately the measured set rather than a superset: `value`, `table`, `all`,
+ * `where`, `rand`, `by`, `after` and `before` are safe here and are ordinary field
+ * names, so refusing them would cost a caller an index that works. A word a later
+ * SurrealDB adds would be missed — which is why `defineOneIndex` reads every
+ * definition back inside the transaction that wrote it. That, not this list, is
+ * what keeps the collection intact; the list is what makes the refusal say
+ * something useful.
+ */
+const UNINDEXABLE_LEADING_SEGMENTS = new Set([
+	"alter",
+	"break",
+	"continue",
+	"create",
+	"define",
+	"delete",
+	"explain",
+	"false",
+	"for",
+	"function",
+	"if",
+	"info",
+	"insert",
+	"let",
+	"none",
+	"null",
+	"rebuild",
+	"relate",
+	"remove",
+	"return",
+	"select",
+	"sleep",
+	"throw",
+	"true",
+	"update",
+	"upsert",
+]);
+
+/** Refuse an index whose field the server would store and then choke on. */
+function assertIndexableColumns(key: ResolvedIndexKey): void {
+	for (const field of key.keys()) {
+		const leading = field.split(".")[0] ?? field;
+		if (!UNINDEXABLE_LEADING_SEGMENTS.has(leading.toLowerCase())) continue;
+
+		throw new MongoCompatibilityError(
+			`An index on '${field}' is not supported: SurrealDB stores an index on a field named '${leading}' and then cannot read the definition back, which leaves the collection unreadable and the database undroppable. Index a nested path such as 'doc.${leading}', which is unaffected, or rename the field.`,
+		);
+	}
 }
 
 /** True when `key` is the implicit `_id` index every collection already has. */
