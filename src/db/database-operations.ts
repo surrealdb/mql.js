@@ -1,6 +1,7 @@
 /**
- * Database-level admin operations: list collections, create/drop a
- * collection, drop the whole database.
+ * Database-level admin operations: list collections and databases, create/drop
+ * a collection, drop the whole database, and the counts `dbStats` and
+ * `collStats` report.
  *
  * Each function takes a plain `QueryExecutor` so it can be unit tested
  * without instantiating the full `Db` facade.
@@ -23,8 +24,21 @@ import type { CollectionInfo, Document } from "../types.ts";
  */
 const LIST_COLLECTIONS_FILTER_FIELDS = ["name", "type"] as const;
 
+/**
+ * Fields a `listDatabases` filter may constrain.
+ *
+ * The same in-memory reply filtering as `listCollections`, over the one field
+ * the reply carries: SurrealDB reports no per-database size, so there is no
+ * `sizeOnDisk` or `empty` to predicate on.
+ */
+const LIST_DATABASES_FILTER_FIELDS = ["name"] as const;
+
 /** Does `value` satisfy `condition`, for the subset of operators supported? */
-function matchesCollectionField(value: string, condition: unknown): boolean {
+function matchesReplyField(
+	value: string,
+	condition: unknown,
+	command: string,
+): boolean {
 	if (typeof condition === "string") return value === condition;
 
 	if (condition instanceof RegExp) return condition.test(value);
@@ -47,7 +61,7 @@ function matchesCollectionField(value: string, condition: unknown): boolean {
 						).test(value);
 					default:
 						throw new MongoInvalidArgumentError(
-							`Unsupported operator in a listCollections filter: ${operator}`,
+							`Unsupported operator in a ${command} filter: ${operator}`,
 						);
 				}
 			},
@@ -57,27 +71,35 @@ function matchesCollectionField(value: string, condition: unknown): boolean {
 	return false;
 }
 
+/** Reject a reply filter naming a field the reply does not carry. */
+function assertFilterFields(
+	filter: Document | undefined,
+	fields: readonly string[],
+	command: string,
+	subject: string,
+): void {
+	if (!filter) return;
+	for (const field of Object.keys(filter)) {
+		if (!fields.includes(field)) {
+			throw new MongoInvalidArgumentError(
+				`Unsupported field in a ${command} filter: ${field}. Only ${fields.join(" and ")} ${fields.length === 1 ? "is" : "are"} reported for ${subject}.`,
+			);
+		}
+	}
+}
+
 export async function listCollections(
 	exec: QueryExecutor,
 	filter?: Document,
 ): Promise<CollectionInfo[]> {
-	if (filter) {
-		for (const field of Object.keys(filter)) {
-			if (
-				!(LIST_COLLECTIONS_FILTER_FIELDS as readonly string[]).includes(field)
-			) {
-				throw new MongoInvalidArgumentError(
-					`Unsupported field in a listCollections filter: ${field}. Only ${LIST_COLLECTIONS_FILTER_FIELDS.join(" and ")} are reported for a collection.`,
-				);
-			}
-		}
-	}
+	assertFilterFields(
+		filter,
+		LIST_COLLECTIONS_FILTER_FIELDS,
+		"listCollections",
+		"a collection",
+	);
 
-	const info = await exec.query<Record<string, unknown>>("INFO FOR DB");
-	if (!info) return [];
-
-	const tables = (info.tables ?? info.tb ?? {}) as Record<string, unknown>;
-	const collections = Object.keys(tables).map((name) => ({
+	const collections = (await listTableNames(exec)).map((name) => ({
 		name,
 		type: "collection" as const,
 	}));
@@ -86,12 +108,87 @@ export async function listCollections(
 
 	return collections.filter((collection) =>
 		Object.entries(filter).every(([field, condition]) =>
-			matchesCollectionField(
+			matchesReplyField(
 				collection[field as (typeof LIST_COLLECTIONS_FILTER_FIELDS)[number]],
 				condition,
+				"listCollections",
 			),
 		),
 	);
+}
+
+/**
+ * Every table defined in the connected database.
+ *
+ * Shared by `listCollections` and the stats commands, all of which need the same
+ * `INFO FOR DB` reply. SurrealDB defines a table on first write, so this is also
+ * the answer to "does this collection exist" — which is what `Collection.options`
+ * and `Collection.isCapped` ask before reporting on one.
+ */
+export async function listTableNames(
+	exec: QueryExecutor,
+): Promise<readonly string[]> {
+	const info = await exec.query<Record<string, unknown>>("INFO FOR DB");
+	if (!info) return [];
+
+	const tables = (info.tables ?? info.tb ?? {}) as Record<string, unknown>;
+	return Object.keys(tables);
+}
+
+/**
+ * Every database in the connected namespace, as `listDatabases` reports them.
+ *
+ * A SurrealDB namespace is what a MongoDB deployment is here — the container a
+ * connection's databases live in — so `INFO FOR NS` is the counterpart of
+ * MongoDB's deployment-wide `listDatabases`.
+ */
+export async function listDatabaseNames(
+	exec: QueryExecutor,
+	filter?: Document,
+): Promise<readonly string[]> {
+	assertFilterFields(
+		filter,
+		LIST_DATABASES_FILTER_FIELDS,
+		"listDatabases",
+		"a database",
+	);
+
+	const info = await exec.query<Record<string, unknown>>("INFO FOR NS");
+	if (!info) return [];
+
+	const databases = (info.databases ?? info.db ?? {}) as Record<
+		string,
+		unknown
+	>;
+	const names = Object.keys(databases);
+
+	if (!filter) return names;
+
+	return names.filter((name) =>
+		Object.entries(filter).every(([, condition]) =>
+			matchesReplyField(name, condition, "listDatabases"),
+		),
+	);
+}
+
+/**
+ * Documents stored across the given tables, in one statement.
+ *
+ * SurrealQL takes several targets in one `FROM`, so the whole database is
+ * counted in a single round trip rather than one per table. An empty list has
+ * nothing to select from, so it answers without asking.
+ */
+export async function countDocumentsIn(
+	exec: QueryExecutor,
+	tables: readonly string[],
+): Promise<number> {
+	if (tables.length === 0) return 0;
+
+	const targets = tables.map(escapeIdentifier).join(", ");
+	const rows = await exec.query<{ count: number }[]>(
+		`SELECT count() AS count FROM ${targets} GROUP ALL`,
+	);
+	return rows?.[0]?.count ?? 0;
 }
 
 export async function createCollectionTable(

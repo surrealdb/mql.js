@@ -11,7 +11,9 @@
 import type { FindCursorState, FindRunner } from "../cursor/find-cursor.ts";
 import { FindCursor } from "../cursor/find-cursor.ts";
 import { ListIndexesCursor } from "../cursor/list-indexes-cursor.ts";
+import { listTableNames } from "../db/database-operations.ts";
 import type { Db } from "../db/db.ts";
+import { MongoAPIError } from "../errors.ts";
 import { sessionExecutor } from "../session/client-session.ts";
 import { escapeIdentifier } from "../surreal/sql/escape.ts";
 import {
@@ -19,13 +21,21 @@ import {
 	type SurrealDialect,
 } from "../translators/dialect/index.ts";
 import type {
+	AggregateOptions,
+	AggregationCursor,
+	AnyBulkWriteOperation,
 	BulkWriteOptions,
+	BulkWriteResult,
+	ChangeStream,
+	ChangeStreamDocument,
+	ChangeStreamOptions,
 	CountDocumentsOptions,
 	CreateIndexesOptions,
 	DeleteOptions,
 	DeleteResult,
 	DistinctOptions,
 	Document,
+	DropCollectionOptions,
 	DropIndexesOptions,
 	EstimatedDocumentCountOptions,
 	Filter,
@@ -42,17 +52,33 @@ import type {
 	InsertOneOptions,
 	InsertOneResult,
 	ListIndexesOptions,
+	ListSearchIndexesCursor,
+	ListSearchIndexesOptions,
 	ModifyResult,
+	OperationOptions,
 	OptionalId,
+	OrderedBulkOperation,
+	RenameOptions,
 	ReplaceOptions,
+	SearchIndexDescription,
+	UnorderedBulkOperation,
 	UpdateFilter,
 	UpdateOptions,
 	UpdateResult,
 	WithoutId,
 } from "../types.ts";
+import {
+	AGGREGATION,
+	BULK_WRITE,
+	CHANGE_STREAMS,
+	RENAME_COLLECTION,
+	SEARCH_INDEXES,
+	unsupported,
+} from "../unsupported.ts";
 import { IndexRegistry } from "./index-registry.ts";
 import type { OperationContext } from "./operation-context.ts";
 import type { AnyOperationOptions } from "./operation-options.ts";
+import { assertSupportedOptions } from "./operation-options.ts";
 import {
 	countDocuments as countDocumentsOp,
 	estimatedDocumentCount as estimatedDocumentCountOp,
@@ -464,6 +490,189 @@ export class Collection<TSchema extends Document = Document> {
 			replacement,
 			options,
 		);
+	}
+
+	// -----------------------------------------------------------------------
+	// COLLECTION LIFECYCLE AND INTROSPECTION
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Drop this collection.
+	 *
+	 * The same operation as `Db.dropCollection(collectionName)`, addressed from
+	 * the collection.
+	 */
+	async drop(options?: DropCollectionOptions): Promise<boolean> {
+		return this._db.dropCollection(this.collectionName, options);
+	}
+
+	/**
+	 * The options this collection was created with.
+	 *
+	 * Always `{}`, and that is the answer rather than a placeholder: MongoDB
+	 * reports `{}` for a collection created without any, and every option that
+	 * would appear here — `capped`, `size`, `max`, `validator`, `viewOn`,
+	 * `timeseries` — is refused by `createCollection`, so no collection this
+	 * driver creates can have one. A collection that does not exist raises, as it
+	 * does in MongoDB.
+	 */
+	async options(options?: OperationOptions): Promise<Document> {
+		await this.assertExists(options);
+		return {};
+	}
+
+	/**
+	 * Whether this is a capped collection.
+	 *
+	 * Always `false`. SurrealDB has no fixed-size tables and
+	 * `createCollection({capped: true})` is refused, so this is derived rather
+	 * than assumed.
+	 */
+	async isCapped(options?: OperationOptions): Promise<boolean> {
+		await this.assertExists(options);
+		return false;
+	}
+
+	/**
+	 * Raise MongoDB's own error when this collection does not exist.
+	 *
+	 * `options()` and `isCapped()` report *about* a collection rather than
+	 * operating on one, and MongoDB refuses both for a namespace it cannot find —
+	 * with a bare `MongoAPIError` carrying no code, measured against 8.2. That is
+	 * the one place this driver's "a missing collection reads as empty" behaviour
+	 * would give the wrong answer: `false` would claim the collection exists and
+	 * is not capped.
+	 */
+	private async assertExists(options?: OperationOptions): Promise<void> {
+		// The same gate every other method applies, so an option a caller believes
+		// will apply is refused here too rather than dropped.
+		assertSupportedOptions(options);
+		const executor = await this._db._commandExecutor(options);
+		const tables = await listTableNames(executor);
+		if (!tables.includes(this.collectionName)) {
+			throw new MongoAPIError(
+				`collection ${this._db.databaseName}.${this.collectionName} not found`,
+			);
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// NOT IMPLEMENTED
+	//
+	// Each of these is declared with the parameters and return type it will have
+	// when it becomes real, so filling one in is additive rather than breaking —
+	// which is why the signature is written as an overload and the body takes no
+	// arguments. The declared signature is the API; the empty implementation says
+	// that nothing about the call is even looked at before it is refused.
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Not implemented. MongoDB returns an `AggregationCursor` here without
+	 * contacting the server, so this throws where MongoDB would not have failed
+	 * until the cursor was iterated — see `src/unsupported.ts`.
+	 */
+	aggregate<T extends Document = Document>(
+		pipeline?: Document[],
+		options?: AggregateOptions,
+	): AggregationCursor<T>;
+	aggregate<T extends Document = Document>(): AggregationCursor<T> {
+		throw unsupported("Collection.aggregate()", AGGREGATION);
+	}
+
+	/** Not implemented — see `src/unsupported.ts`. */
+	bulkWrite(
+		operations: readonly AnyBulkWriteOperation<TSchema>[],
+		options?: BulkWriteOptions,
+	): Promise<BulkWriteResult>;
+	async bulkWrite(): Promise<BulkWriteResult> {
+		throw unsupported("Collection.bulkWrite()", BULK_WRITE);
+	}
+
+	/**
+	 * Not implemented. MongoDB returns a builder here without contacting the
+	 * server, so this throws where MongoDB would not have failed until
+	 * `execute()` — see `src/unsupported.ts`.
+	 */
+	initializeOrderedBulkOp(options?: BulkWriteOptions): OrderedBulkOperation;
+	initializeOrderedBulkOp(): OrderedBulkOperation {
+		throw unsupported("Collection.initializeOrderedBulkOp()", BULK_WRITE);
+	}
+
+	/**
+	 * Not implemented. MongoDB returns a builder here without contacting the
+	 * server, so this throws where MongoDB would not have failed until
+	 * `execute()` — see `src/unsupported.ts`.
+	 */
+	initializeUnorderedBulkOp(options?: BulkWriteOptions): UnorderedBulkOperation;
+	initializeUnorderedBulkOp(): UnorderedBulkOperation {
+		throw unsupported("Collection.initializeUnorderedBulkOp()", BULK_WRITE);
+	}
+
+	/**
+	 * Not implemented. MongoDB returns a `ChangeStream` here without contacting
+	 * the server, so this throws where MongoDB would have surfaced the failure on
+	 * the stream's `'error'` event — see `src/unsupported.ts`.
+	 */
+	watch<
+		TLocal extends Document = TSchema,
+		TChange extends Document = ChangeStreamDocument<TLocal>,
+	>(
+		pipeline?: Document[],
+		options?: ChangeStreamOptions,
+	): ChangeStream<TLocal, TChange>;
+	watch<
+		TLocal extends Document = TSchema,
+		TChange extends Document = ChangeStreamDocument<TLocal>,
+	>(): ChangeStream<TLocal, TChange> {
+		throw unsupported("Collection.watch()", CHANGE_STREAMS);
+	}
+
+	/** Not implemented — see `src/unsupported.ts`. */
+	rename(newName: string, options?: RenameOptions): Promise<Collection>;
+	async rename(): Promise<Collection> {
+		throw unsupported("Collection.rename()", RENAME_COLLECTION);
+	}
+
+	/**
+	 * Not implemented. MongoDB returns a cursor here without contacting the
+	 * server, so this throws where MongoDB would not have failed until the cursor
+	 * was iterated — see `src/unsupported.ts`.
+	 */
+	listSearchIndexes(
+		options?: ListSearchIndexesOptions,
+	): ListSearchIndexesCursor;
+	listSearchIndexes(
+		name: string,
+		options?: ListSearchIndexesOptions,
+	): ListSearchIndexesCursor;
+	listSearchIndexes(): ListSearchIndexesCursor {
+		throw unsupported("Collection.listSearchIndexes()", SEARCH_INDEXES);
+	}
+
+	/** Not implemented — see `src/unsupported.ts`. */
+	createSearchIndex(description: SearchIndexDescription): Promise<string>;
+	async createSearchIndex(): Promise<string> {
+		throw unsupported("Collection.createSearchIndex()", SEARCH_INDEXES);
+	}
+
+	/** Not implemented — see `src/unsupported.ts`. */
+	createSearchIndexes(
+		descriptions: SearchIndexDescription[],
+	): Promise<string[]>;
+	async createSearchIndexes(): Promise<string[]> {
+		throw unsupported("Collection.createSearchIndexes()", SEARCH_INDEXES);
+	}
+
+	/** Not implemented — see `src/unsupported.ts`. */
+	dropSearchIndex(name: string): Promise<void>;
+	async dropSearchIndex(): Promise<void> {
+		throw unsupported("Collection.dropSearchIndex()", SEARCH_INDEXES);
+	}
+
+	/** Not implemented — see `src/unsupported.ts`. */
+	updateSearchIndex(name: string, definition: Document): Promise<void>;
+	async updateSearchIndex(): Promise<void> {
+		throw unsupported("Collection.updateSearchIndex()", SEARCH_INDEXES);
 	}
 }
 

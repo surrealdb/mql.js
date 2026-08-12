@@ -23,20 +23,37 @@ import type { ClientSession } from "../session/client-session.ts";
 import { sessionExecutor } from "../session/client-session.ts";
 import type { QueryExecutor } from "../surreal/query-executor.ts";
 import type {
+	AggregateOptions,
+	AggregationCursor,
+	ChangeStream,
+	ChangeStreamDocument,
+	ChangeStreamOptions,
 	CollectionInfo,
 	CollectionOptions,
 	CreateCollectionOptions,
+	DbStatsOptions,
 	Document,
 	DropCollectionOptions,
 	DropDatabaseOptions,
 	ListCollectionsOptions,
+	RenameOptions,
+	RunCommandOptions,
 } from "../types.ts";
+import {
+	AGGREGATION,
+	CHANGE_STREAMS,
+	RENAME_COLLECTION,
+	unsupported,
+} from "../unsupported.ts";
+import { Admin } from "./admin.ts";
 import {
 	createCollectionTable,
 	dropCollectionTable,
 	dropDatabase,
 	listCollections,
 } from "./database-operations.ts";
+import type { CommandScope } from "./run-command.ts";
+import { runCommand } from "./run-command.ts";
 
 export class Db {
 	/** The database name. */
@@ -110,6 +127,137 @@ export class Db {
 	async dropDatabase(options?: DropDatabaseOptions): Promise<boolean> {
 		assertSupportedOptions(options);
 		return dropDatabase(await this.executor(options), this.databaseName);
+	}
+
+	/**
+	 * Every collection in this database, as `Collection` instances.
+	 *
+	 * The same list `listCollections()` reports, handed back as handles rather
+	 * than as `{name, type}` documents.
+	 */
+	async collections(options?: ListCollectionsOptions): Promise<Collection[]> {
+		const infos = await this.listCollections(undefined, options);
+		return infos.map((info) => createCollection<Document>(this, info.name));
+	}
+
+	// -----------------------------------------------------------------------
+	// COMMANDS
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Run a database command.
+	 *
+	 * A real router, not a refusal: `ping`, `buildInfo`, `dbStats`, `collStats`,
+	 * `create`, `drop`, `listCollections`, `createIndexes` and `dropIndexes` are
+	 * answered here, and `listDatabases` and `replSetGetStatus` through
+	 * `admin()`. Anything else raises the `59` / `CommandNotFound` a real mongod
+	 * raises for a name it does not have — see `src/db/run-command.ts` for why
+	 * that is the error even for commands MongoDB itself has.
+	 */
+	async command(
+		command: Document,
+		options?: RunCommandOptions,
+	): Promise<Document> {
+		return this._command(command, options, "database");
+	}
+
+	/** The administrative command surface for this connection. */
+	admin(): Admin {
+		return new Admin(this);
+	}
+
+	/**
+	 * Counts for this database, as the `dbStats` command reports them.
+	 *
+	 * Counts only: `collections`, `views`, `objects` and `indexes`. Every byte-size
+	 * field MongoDB reports is omitted rather than zeroed, because SurrealDB
+	 * exposes no storage-level size to read — see `src/db/run-command.ts`.
+	 */
+	async stats(options?: DbStatsOptions): Promise<Document> {
+		return this.command({ dbStats: 1 }, options);
+	}
+
+	// -----------------------------------------------------------------------
+	// NOT IMPLEMENTED
+	//
+	// Declared with the parameters and return type each will have when it becomes
+	// real, as an overload over an argument-less body — see the same section in
+	// `src/collection/collection.ts` for why.
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Not implemented. MongoDB returns an `AggregationCursor` here without
+	 * contacting the server, so this throws where MongoDB would not have failed
+	 * until the cursor was iterated — see `src/unsupported.ts`.
+	 */
+	aggregate<T extends Document = Document>(
+		pipeline?: Document[],
+		options?: AggregateOptions,
+	): AggregationCursor<T>;
+	aggregate<T extends Document = Document>(): AggregationCursor<T> {
+		throw unsupported("Db.aggregate()", AGGREGATION);
+	}
+
+	/**
+	 * Not implemented. MongoDB returns a `ChangeStream` here without contacting
+	 * the server, so this throws where MongoDB would have surfaced the failure on
+	 * the stream's `'error'` event — see `src/unsupported.ts`.
+	 */
+	watch<
+		TSchema extends Document = Document,
+		TChange extends Document = ChangeStreamDocument<TSchema>,
+	>(
+		pipeline?: Document[],
+		options?: ChangeStreamOptions,
+	): ChangeStream<TSchema, TChange>;
+	watch<
+		TSchema extends Document = Document,
+		TChange extends Document = ChangeStreamDocument<TSchema>,
+	>(): ChangeStream<TSchema, TChange> {
+		throw unsupported("Db.watch()", CHANGE_STREAMS);
+	}
+
+	/** Not implemented — see `src/unsupported.ts`. */
+	renameCollection<TSchema extends Document = Document>(
+		fromCollection: string,
+		toCollection: string,
+		options?: RenameOptions,
+	): Promise<Collection<TSchema>>;
+	async renameCollection<TSchema extends Document = Document>(): Promise<
+		Collection<TSchema>
+	> {
+		throw unsupported("Db.renameCollection()", RENAME_COLLECTION);
+	}
+
+	// -----------------------------------------------------------------------
+	// INTERNALS
+	// -----------------------------------------------------------------------
+
+	/**
+	 * @internal Route a command, knowing which surface it arrived on.
+	 *
+	 * Shared by `command()` and `Admin.command()` so the two cannot answer the
+	 * same command differently.
+	 */
+	async _command(
+		command: Document,
+		options: RunCommandOptions | undefined,
+		scope: CommandScope,
+	): Promise<Document> {
+		assertSupportedOptions(options);
+		return runCommand(this, command, options, scope);
+	}
+
+	/**
+	 * @internal The executor a command's statements run through.
+	 *
+	 * Exposed for the command router and `Admin`, which need the same
+	 * session-aware executor the `Db` methods use.
+	 */
+	_commandExecutor(
+		options: { readonly session?: ClientSession } | undefined,
+	): Promise<QueryExecutor> {
+		return this.executor(options);
 	}
 
 	/**

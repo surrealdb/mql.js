@@ -32,7 +32,9 @@ import type {
 	Db as MqlDb,
 } from "../../src/index.ts";
 import {
+	Admin as MqlAdmin,
 	Collection as MqlCollection,
+	Db as MqlDbClass,
 	FindCursor as MqlFindCursor,
 	MongoClient as MqlMongoClient,
 } from "../../src/index.ts";
@@ -233,6 +235,120 @@ async function _useMqlIndexes(
 	];
 }
 
+// ---------------------------------------------------------------------------
+// 2c. Boundary-surface probes.
+//
+//     The methods this driver declares and refuses have to carry the signature
+//     they will have once they are real, so filling one in is additive rather
+//     than breaking. Written as the same call shapes against both drivers: if a
+//     stub's parameters or return type drift from MongoDB's, the mql.js probe
+//     stops compiling while the mongodb one still does.
+//
+//     The calls are never made — the refusals are asserted in
+//     `tests/unit/unsupported.test.ts`. What is asserted here is that they
+//     *type-check*, which the function bodies below never reaching a runtime
+//     does not weaken.
+// ---------------------------------------------------------------------------
+
+function _useMongoBoundary(
+	client: NativeMongoClient,
+	db: MongoDb,
+	col: MongoCollection<MongoParityUser>,
+): readonly unknown[] {
+	return [
+		() =>
+			col.aggregate([{ $match: { name: "Alice" } }], { allowDiskUse: true }),
+		() => col.aggregate<MongoParityUser>(),
+		() => col.bulkWrite([{ insertOne: { document: { name: "A", age: 1 } } }]),
+		() => col.bulkWrite([{ deleteMany: { filter: { age: { $lt: 0 } } } }], {}),
+		() => col.initializeOrderedBulkOp(),
+		() => col.initializeUnorderedBulkOp({}),
+		() => col.watch([{ $match: {} }], { fullDocument: "updateLookup" }),
+		() => col.rename("renamed", { dropTarget: true }),
+		() => col.listSearchIndexes(),
+		() => col.listSearchIndexes("named"),
+		() => col.createSearchIndex({ name: "s", definition: {} }),
+		() => col.createSearchIndexes([{ definition: {} }]),
+		() => col.dropSearchIndex("s"),
+		() => col.updateSearchIndex("s", {}),
+		() => db.aggregate([{ $match: {} }]),
+		() => db.watch(),
+		() => db.renameCollection("from", "to"),
+		() => client.watch(),
+		// Implemented on both, and reached through the same call shapes.
+		() => db.command({ ping: 1 }),
+		() => db.command({ dbStats: 1 }, {}),
+		() => db.admin().ping(),
+		() => db.admin().buildInfo(),
+		() => db.admin().serverInfo(),
+		() => db.admin().listDatabases({ nameOnly: true }),
+		() => db.admin().command({ ping: 1 }),
+		() => db.stats(),
+		() => db.stats({ scale: 1024 }),
+		() => db.collections(),
+		() => col.drop(),
+		() => col.options(),
+		() => col.isCapped(),
+	];
+}
+
+function _useMqlBoundary(
+	client: MqlMongoClient,
+	db: MqlDb,
+	col: MqlCollection<MqlParityUser>,
+): readonly unknown[] {
+	return [
+		() =>
+			col.aggregate([{ $match: { name: "Alice" } }], { allowDiskUse: true }),
+		() => col.aggregate<MqlParityUser>(),
+		() => col.bulkWrite([{ insertOne: { document: { name: "A", age: 1 } } }]),
+		() => col.bulkWrite([{ deleteMany: { filter: { age: { $lt: 0 } } } }], {}),
+		() => col.initializeOrderedBulkOp(),
+		() => col.initializeUnorderedBulkOp({}),
+		() => col.watch([{ $match: {} }], { fullDocument: "updateLookup" }),
+		() => col.rename("renamed", { dropTarget: true }),
+		() => col.listSearchIndexes(),
+		() => col.listSearchIndexes("named"),
+		() => col.createSearchIndex({ name: "s", definition: {} }),
+		() => col.createSearchIndexes([{ definition: {} }]),
+		() => col.dropSearchIndex("s"),
+		() => col.updateSearchIndex("s", {}),
+		() => db.aggregate([{ $match: {} }]),
+		() => db.watch(),
+		() => db.renameCollection("from", "to"),
+		() => client.watch(),
+		() => db.command({ ping: 1 }),
+		() => db.command({ dbStats: 1 }, {}),
+		() => db.admin().ping(),
+		() => db.admin().buildInfo(),
+		() => db.admin().serverInfo(),
+		() => db.admin().listDatabases({ nameOnly: true }),
+		() => db.admin().command({ ping: 1 }),
+		() => db.stats(),
+		() => db.stats({ scale: 1024 }),
+		() => db.collections(),
+		() => col.drop(),
+		() => col.options(),
+		() => col.isCapped(),
+	];
+}
+
+/**
+ * The awaited results line up too, for the ones that resolve to a document.
+ *
+ * A caller reading `info.version` off either driver's `buildInfo()` has to
+ * compile against both, which is what makes the reply an actual `Document`
+ * rather than a narrower shape of this driver's choosing.
+ */
+async function _useCommandReplies(
+	db: MqlDb | MongoDb,
+): Promise<readonly unknown[]> {
+	const info = await db.admin().buildInfo();
+	const stats = await db.stats();
+	const databases = await db.admin().listDatabases();
+	return [info.version, stats.collections, databases.databases[0]?.name];
+}
+
 async function _useMongoCursor(
 	cursor: MongoFindCursor<MongoParityUser>,
 ): Promise<unknown> {
@@ -269,6 +385,9 @@ const _probesExist: readonly unknown[] = [
 	_useMqlCollection,
 	_useMongoIndexes,
 	_useMqlIndexes,
+	_useMongoBoundary,
+	_useMqlBoundary,
+	_useCommandReplies,
 	_useMongoCursor,
 	_useMqlCursor,
 	_useClient,
@@ -319,6 +438,50 @@ const COLLECTION_METHODS: readonly string[] = [
 	"deleteOne",
 	"deleteMany",
 	"countDocuments",
+	// The boundary is part of the surface: a method that only refuses still has to
+	// be there, or a caller gets `TypeError: … is not a function` instead of a
+	// reason. These are the ones both drivers must expose.
+	"aggregate",
+	"bulkWrite",
+	"initializeOrderedBulkOp",
+	"initializeUnorderedBulkOp",
+	"watch",
+	"rename",
+	"drop",
+	"options",
+	"isCapped",
+	"listSearchIndexes",
+	"createSearchIndex",
+	"createSearchIndexes",
+	"dropSearchIndex",
+	"updateSearchIndex",
+];
+
+const DB_METHODS: readonly string[] = [
+	"collection",
+	"createCollection",
+	"dropCollection",
+	"dropDatabase",
+	"listCollections",
+	"collections",
+	"command",
+	"admin",
+	"stats",
+	"aggregate",
+	"watch",
+	"renameCollection",
+];
+
+const ADMIN_METHODS: readonly string[] = [
+	"command",
+	"ping",
+	"buildInfo",
+	"serverInfo",
+	"serverStatus",
+	"listDatabases",
+	"replSetGetStatus",
+	"removeUser",
+	"validateCollection",
 ];
 
 const CURSOR_METHODS: readonly string[] = [
@@ -357,8 +520,24 @@ describe("public-API parity (mql.js vs. mongodb)", () => {
 		}
 	});
 
+	test("Db classes expose the same database-level methods", () => {
+		const mongoDbPrototype: object = Object.getPrototypeOf(tempDb);
+		for (const method of DB_METHODS) {
+			expect(hasMethod(mongoDbPrototype, method)).toBe(true);
+			expect(hasMethod(MqlDbClass.prototype, method)).toBe(true);
+		}
+	});
+
+	test("Admin classes expose the same administrative methods", () => {
+		const mongoAdminPrototype: object = Object.getPrototypeOf(tempDb.admin());
+		for (const method of ADMIN_METHODS) {
+			expect(hasMethod(mongoAdminPrototype, method)).toBe(true);
+			expect(hasMethod(MqlAdmin.prototype, method)).toBe(true);
+		}
+	});
+
 	test("call-site parity probes exist (and therefore compiled)", () => {
-		expect(_probesExist).toHaveLength(9);
+		expect(_probesExist).toHaveLength(12);
 		for (const probe of _probesExist) {
 			expect(typeof probe).toBe("function");
 		}
