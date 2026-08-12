@@ -44,8 +44,10 @@ A drop-in MongoDB driver replacement powered by SurrealDB. Use the MongoDB API y
 - **Sessions and transactions** - startSession, startTransaction, commit/abort and withTransaction, backed by real SurrealDB transactions
 - **Cursor chaining** - sort, limit, skip, project, plus `for await...of` async iteration
 - **BSON identities that round-trip** - ObjectIds and Dates come back as ObjectIds and Dates, nested and in arrays, and ids from `bson`/mongoose interoperate with this driver's own
+- **Admin commands** - db.command and db.admin() answer ping, buildInfo, listDatabases, dbStats, collStats and the create/drop/index commands, reporting only what SurrealDB can actually tell you
 - **TypeScript generics** - Typed collections with full type inference
 - **MongoDB connection strings** - Use `mongodb://` connection strings that map to SurrealDB
+- **A documented edge** - every MongoDB method this driver does not implement is still there, and says what it cannot do and where to go instead — see [What is not implemented](#what-is-not-implemented)
 
 ## Installation
 
@@ -1044,6 +1046,231 @@ counterpart for — `capped`, `size`, `max`, `validator`, `validationLevel`,
 `clusteredIndex`. Handing back an ordinary table for a request that asked for a
 capped one, a view, or a time-series collection would misrepresent the storage
 being written to, rather than merely omitting a refinement.
+
+`Db.collections()` returns the same list as `listCollections()`, as `Collection`
+handles rather than as `{name, type}` documents. `Collection.drop()` is
+`Db.dropCollection(collectionName)` addressed from the collection.
+
+> **A `Db` other than the connected one reads the connected one.** The connection
+> is bound to a single SurrealDB database, so `client.db("other")` produces a
+> handle whose reads — `listCollections`, `collections`, `stats`, and every
+> collection under it — still see the database named in the connection string.
+> Only the statements that name a database explicitly (`dropDatabase`) act on the
+> other one. Use one client per database.
+
+### Commands
+
+```typescript
+await db.command({ ping: 1 });                     // { ok: 1 }
+await db.command({ dbStats: 1 });                  // counts for this database
+await db.command({ collStats: "users" });          // counts for one collection
+await db.stats();                                  // the dbStats reply
+
+const admin = db.admin();
+await admin.ping();
+await admin.buildInfo();                           // version information
+await admin.serverInfo();                          // buildInfo, under its other name
+await admin.listDatabases();                       // { databases: [{ name }], ok: 1 }
+```
+
+`db.command()` is a real router rather than a refusal, because ORMs and tooling
+reach for it constantly. It answers `ping`, `buildInfo`, `dbStats`, `collStats`,
+`create`, `drop`, `listCollections`, `createIndexes` and `dropIndexes`;
+`listDatabases` and `replSetGetStatus` are restricted to `db.admin()`, exactly as
+a real mongod restricts them to the `admin` database — sent to `db.command()`
+they raise `13` (`Unauthorized`) with mongod's own message. The delegating
+commands go through the public methods, so a command inherits the option gate, the
+session routing and the divergences those methods already document instead of
+acquiring its own: `db.command({create}, {session})` is rolled back with the
+transaction that ran it, and `db.command({create: "logs", capped: true})` is
+refused exactly as `createCollection("logs", {capped: true})` is, rather than
+answering `ok: 1` and leaving behind a table that is not what was asked for.
+
+`ping` is a round trip, as mongod's is. A liveness probe that cannot fail is not
+one, so `db.command({ping: 1})` and `admin().ping()` reach the server and report
+an unreachable deployment as unreachable.
+
+**Every reply omits what cannot be derived, rather than filling it with zeros.**
+The shapes were measured against a real mongod (8.2); a caller reading
+`storageSize: 0` would conclude the collection is empty, while a caller finding no
+such field knows the number was unavailable. MongoDB itself omits the size fields
+from `listDatabases({nameOnly: true})`, so an absent field is a shape callers
+already handle.
+
+| Command | Reported | Omitted |
+| --- | --- | --- |
+| `ping` | `ok` | — |
+| `buildInfo` | `version`, `versionArray`, `surrealdbVersion`, `ok` | `gitVersion`, `buildEnvironment`, `storageEngines`, `maxBsonObjectSize`, `allocator`, `javascriptEngine`, `openssl` — all describe a mongod binary that is not running |
+| `listDatabases` | `databases: [{name}]`, `ok` | `sizeOnDisk`, `empty`, `totalSize`, `totalSizeMb` — SurrealDB reports no per-database size |
+| `dbStats` | `db`, `collections`, `views`, `objects`, `indexes`, `ok` | every byte-size field, and `scaleFactor` with them — with no sizes reported, `scale` has nothing to scale |
+| `collStats` | `ns`, `count`, `nindexes`, `capped`, `ok` | every byte-size field, and `indexDetails`/`indexSizes` |
+| `listCollections` | `cursor: {id: 0, ns, firstBatch: [{name, type}]}`, `ok` | per-collection `options`, `info`, `idIndex` |
+| `create` | `ok` | — |
+| `drop` | `ns`, `ok` | `nIndexesWas` — reading the index list to report it would cost a round trip on the way to removing the table it describes |
+| `createIndexes` | `numIndexesBefore`, `numIndexesAfter`, `ok` | `createdCollectionAutomatically` — SurrealDB defines a table on first use and does not report whether this call was the first |
+| `dropIndexes` | `nIndexesWas`, `msg` for `index: "*"`, `ok` | — |
+
+`dbStats.views` is `0` and `collStats.capped` is `false` by derivation, not
+assumption: SurrealDB has neither views nor fixed-size tables, and
+`createCollection({capped: true})` is refused. `nindexes` and `dbStats.indexes`
+count the implicit `_id_` entry, as mongod's do. `collStats` for a collection that
+does not exist reports zeros rather than failing, which is what mongod does — and
+is the one read path where this driver's usual `NamespaceNotFound` for a missing
+table would be the wrong answer.
+
+`db.admin()` is bound to the `Db` it came from. There is no separate `admin`
+database — SurrealDB has no such convention — so a database-scoped command sent
+through `admin().command()` reports on that `Db` rather than on a database called
+`admin`.
+
+#### What `buildInfo` reports as the version
+
+```typescript
+await db.admin().buildInfo();
+// { version: "8.0.0", versionArray: [8, 0, 0, 0], surrealdbVersion: "3.2.4", ok: 1 }
+```
+
+Two numbers, because one field has a fixed meaning and the other does not exist in
+MongoDB. `buildInfo.version` *is the MongoDB version*, and clients feature-gate on
+it with a semantic-version comparison. Putting SurrealDB's `3.2.4` there would not
+be a truthful answer to that question but an answer to a different one: read as
+MongoDB 3.2 it is below the minimum server of every currently supported MongoDB
+driver — the `mongodb` package this driver is validated against supports 4.2
+upwards — so a client would conclude it is talking to an ancient MongoDB and
+disable sessions, transactions and `$expr`, all of which work here. So `version`
+carries a MongoDB release and `surrealdbVersion` carries the real one, detected on
+connect. Nothing is hidden, and neither field has to lie.
+
+`8.0.0` is the compatibility target: a current MongoDB major inside the window the
+`mongodb` package supports. Over-claiming degrades safely here, because every
+feature this driver does not implement raises a named, documented error at the
+call that asked for it — see the boundary below — whereas under-claiming makes a
+client quietly stop using features that do work. The *pair of fields* is the
+frozen contract; the number is exported as `MONGODB_COMPATIBILITY_VERSION` and may
+be raised as the parity suite is validated against newer MongoDB releases.
+`surrealdbVersion` is absent, rather than `null`, when the server has not been
+reached — so "not reported" stays distinguishable from "reported as nothing".
+Unlike `ping`, `buildInfo` answers without a round trip: everything it reports
+except `surrealdbVersion` is a compatibility statement about this driver, so
+there is nothing to ask a server for, and its absence is what says no server
+answered.
+
+## What is not implemented
+
+A compatibility driver's most valuable documentation is the edge of it. Every
+method below **exists** and says what it cannot do and where to go instead: before
+they were declared, each was `TypeError: col.aggregate is not a function`, which
+tells a caller only that a property is missing — not whether the driver is broken,
+out of date, or deliberately narrow. An ORM probing for a capability could not
+tell those apart either, so it could not fall back.
+
+Two error classes, chosen by **what the caller addressed**:
+
+- a **method** on `Collection`, `Db` or `MongoClient` belongs to this driver, so
+  an unimplemented one raises `MongoCompatibilityError` — the same class the
+  option gate uses for a request that is valid MongoDB and that this driver
+  cannot honour. It sits under `MongoAPIError` and `MongoDriverError`, so
+  `catch (e) { if (e instanceof MongoDriverError) … }` narrows it, and it carries
+  no `code`, because no server rejected anything.
+- a **command name** passed to `db.command()` addresses a server command surface,
+  so an unrouted one raises the `MongoServerError` a real mongod raises: `59`
+  (`CommandNotFound`), `no such command: '<name>'`.
+
+Each refusal also fails in the shape the real method returns: a promise-returning
+method rejects, and a method that returns a value synchronously throws
+synchronously.
+
+| Method | Raises | Instead |
+| --- | --- | --- |
+| `Collection.aggregate()`, `Db.aggregate()` | `MongoCompatibilityError` | `find()` with a filter, sort, skip, limit and projection; `countDocuments()`; `distinct()`. For anything a pipeline is genuinely needed for, run SurrealQL through the SurrealDB client this driver wraps |
+| `Collection.bulkWrite()`, `initializeOrderedBulkOp()`, `initializeUnorderedBulkOp()` | `MongoCompatibilityError` | The single-purpose methods, or `session.withTransaction()` so they commit or roll back as a unit |
+| `Collection.watch()`, `Db.watch()`, `MongoClient.watch()` | `MongoCompatibilityError` | A SurrealDB live query through the SurrealDB client this driver wraps |
+| `Collection.rename()`, `Db.renameCollection()` | `MongoCompatibilityError` | Create the new collection, copy the documents across, `dropCollection()` the old one |
+| `Collection.createSearchIndex()`, `createSearchIndexes()`, `dropSearchIndex()`, `updateSearchIndex()`, `listSearchIndexes()` | `MongoCompatibilityError` | `createIndex()` with a text index, which becomes a SurrealDB full-text search index |
+| `Admin.serverStatus()`, `removeUser()`, `validateCollection()` | `MongoServerError` `59` | Each is a thin wrapper over the command of the same name, so it inherits the command surface's `CommandNotFound`. For users, `REMOVE USER` through the SurrealDB client |
+| `db.command({ <anything else> })` | `MongoServerError` `59` | See below |
+
+Why each is refused rather than approximated:
+
+- **Aggregation** — a partial translation is worse than none. A pipeline whose
+  later stages were silently dropped still returns documents, so the caller gets a
+  plausible wrong answer instead of an error.
+- **Bulk writes** — the gap is not the loop but the per-model result accounting and
+  the ordered/unordered failure semantics that `BulkWriteResult` reports.
+- **Change streams** — SurrealDB's live queries carry a different event shape and
+  no resume token, so a `ChangeStream` built on them could not be resumed after a
+  disconnect the way callers depend on. This driver also has no event emitter to
+  deliver one on.
+- **Atlas Search indexes** — an Atlas service, with no SurrealDB counterpart to
+  define one against.
+- **Renaming** — SurrealDB has no statement that renames a table, and copying
+  every record under a new name is not something a rename should do behind the
+  caller's back.
+
+### Deliberate divergences
+
+- **A cursor-returning method throws at the call.** MongoDB's `aggregate()`,
+  `watch()` and `initialize*BulkOp()` hand back a cursor or a builder *without
+  contacting the server*, so a caller who never iterates never sees a failure
+  there. Here the call itself throws. Deferring the failure into iteration would
+  move it away from the call that caused it — and for `watch()` it would have to
+  arrive on an `'error'` event this driver has no emitter for.
+- **A real MongoDB command this driver does not route still reports
+  `no such command`.** `aggregate`, `collMod`, `count`, `distinct`,
+  `findAndModify`, `getMore`, `killCursors` and `serverStatus` are all commands a
+  real mongod has, so the message is not literally true of MongoDB. The
+  alternative was a curated list of every genuine mongod command, answered with a
+  driver-level refusal instead — a list that would be long, would go stale with
+  each MongoDB release, and would introduce a second boundary for callers to
+  learn. One rule that every command caller's error handling already covers is
+  worth more than a more precise message behind a list that rots.
+- **`serverInfo` is a method, not a command.** A real mongod answers
+  `{serverInfo: 1}` with `no such command: 'serverInfo'`, and the official
+  driver's `Admin.serverInfo()` sends `buildInfo`. Both halves are kept, so
+  `admin().serverInfo()` works while `db.command({serverInfo: 1})` is refused —
+  in both drivers alike.
+- **An unrecognised field in a command document is ignored**, where mongod
+  raises `40415` (`IDLUnknownField`) for it. This driver tolerates unknown
+  *options* deliberately — wrapper layers attach bookkeeping of their own — and a
+  command document is the same kind of object. The fields a routed command does
+  understand are not ignored: they go to the method it delegates to, and its gate
+  refuses the ones that cannot be honoured.
+- **`dropIndexes` takes an index name or `"*"`, not a key pattern.** mongod
+  accepts either; resolving a pattern to a name is a lookup `dropIndex(name)` does
+  not offer, so the form is refused rather than guessed at.
+- **`Collection.drop()` returns `false` for a collection that was not there**,
+  where mongod returns `true`. It inherits `Db.dropCollection`, whose `false`
+  means "no table was removed". `db.command({drop})` reports `ok: 1` either way,
+  matching mongod.
+- **A command naming a collection that does not exist answers rather than
+  failing.** `dropIndexes` reports `nIndexesWas: 1` and `ok: 1` where mongod
+  raises `26` (`NamespaceNotFound`), because it goes through `dropIndexes()`,
+  which follows this driver's rule that a missing table reads as an empty one.
+  `drop` echoes the `ns` it was given either way, where mongod omits `ns` for a
+  namespace it did not find, and `collStats` reports `capped: false` alongside
+  the zeros mongod answers with.
+
+### `BulkWriteResult`
+
+`BulkWriteResult` is exported and nothing produces one yet, because `bulkWrite` is
+out of scope for 1.0.0. It is **kept** rather than removed: removing an export is
+a breaking change, and it would have to be undone the day `bulkWrite` lands. What
+was settled instead is its *shape*, against MongoDB's own class — the counts and
+id maps it exposes, and no `acknowledged`, which a real `BulkWriteResult` has never
+carried. Getting that wrong would mean changing the type on the day it becomes
+producible, which is the breaking change worth avoiding. It is now the declared
+return type of `Collection.bulkWrite()`, so it is reachable from a signature
+rather than floating unreferenced.
+
+The types that appear only in the signatures of unimplemented methods —
+`AggregationCursor`, `ChangeStream`, `OrderedBulkOperation`,
+`AnyBulkWriteOperation` and the rest — are deliberately **not** exported. A public
+export is a name frozen at 1.0.0 that has to be kept afterwards, and a caller can
+do nothing with an `AggregationCursor` this driver never returns. Each stub's
+signature is nonetheless the final one — the same parameters and return type the
+method will have once it is real, checked against `mongodb`'s own by the parity
+probes in `tests/unit/types-parity.test.ts` — so filling one in is additive rather
+than breaking.
 
 ## Sessions and transactions
 
