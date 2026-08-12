@@ -50,6 +50,33 @@ function translateElemMatch(
 	const elementOps: Document = {};
 	const parts: string[] = [];
 
+	// Every condition below describes one *element*, so a `$near` inside it would
+	// have no whole-document distance to order by — see `withoutNearOrder`.
+	ctx.withoutNearOrder(() => {
+		collectConditions(conditions, elementOps, parts, ctx);
+	});
+
+	if (Object.keys(elementOps).length > 0) {
+		parts.unshift(
+			ctx.withoutNearOrder(() => ctx.translateOperators("$this", elementOps)),
+		);
+	}
+
+	// `$elemMatch: {}` constrains nothing beyond the field being a non-empty
+	// array. `array::len()` is typed on arrays and errors on a NONE, which the
+	// guard's short-circuit prevents.
+	if (parts.length === 0) return `(${guard} AND array::len(${field}) > 0)`;
+
+	return `(${guard} AND array::len(${field}[WHERE ${parts.join(" AND ")}]) > 0)`;
+}
+
+/** Split an `$elemMatch` operand into per-element predicates and element ops. */
+function collectConditions(
+	conditions: Document,
+	elementOps: Document,
+	parts: string[],
+	ctx: TranslateContext,
+): void {
 	for (const [key, value] of Object.entries(conditions)) {
 		if (key.startsWith("$")) {
 			elementOps[key] = value;
@@ -67,17 +94,6 @@ function translateElemMatch(
 			parts.push(equalityPredicate(path, value, ctx));
 		}
 	}
-
-	if (Object.keys(elementOps).length > 0) {
-		parts.unshift(ctx.translateOperators("$this", elementOps));
-	}
-
-	// `$elemMatch: {}` constrains nothing beyond the field being a non-empty
-	// array. `array::len()` is typed on arrays and errors on a NONE, which the
-	// guard's short-circuit prevents.
-	if (parts.length === 0) return `(${guard} AND array::len(${field}) > 0)`;
-
-	return `(${guard} AND array::len(${field}[WHERE ${parts.join(" AND ")}]) > 0)`;
 }
 
 export const arrayOperators: FilterOperator[] = [

@@ -17,6 +17,17 @@ export interface DatabaseProvider {
 	readonly name: string;
 
 	/**
+	 * Whether `$near` needs a geospatial index on this engine before it will run.
+	 *
+	 * MongoDB refuses the query outright without a `2dsphere` index; SurrealDB has
+	 * no such index type, so the same query is a full scan there and
+	 * `createIndex({field: '2dsphere'})` is refused. The asymmetry is a documented
+	 * divergence rather than a shortcoming of a scenario, so the scenarios ask the
+	 * provider instead of guessing.
+	 */
+	readonly requiresGeospatialIndex: boolean;
+
+	/**
 	 * Bring the backing store up (e.g. start a Docker container) and
 	 * return a connected client. Implementations are responsible for
 	 * waiting until the store is actually ready to accept queries.

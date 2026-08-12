@@ -35,6 +35,7 @@ const MONGODB_INTERNAL_PORT = 27017;
 
 export class MongoDbDockerProvider implements DatabaseProvider {
 	readonly name = "mongodb (docker)";
+	readonly requiresGeospatialIndex = true;
 
 	private readonly _image: string;
 	private readonly _hostPort: number;

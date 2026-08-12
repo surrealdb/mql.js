@@ -39,6 +39,17 @@
  * happens in this driver's own read path — see `recordToDocument` — which walks
  * every returned document anyway to map `id` back to `_id`.
  *
+ * A geometry cannot ride the decode visitor either, though for the opposite
+ * reason: it *is* wire-tagged, so the visitor does see it — but it sees a
+ * composite geometry's **parts** as well, one tag at a time, and hands each of
+ * them back to the constructor of the geometry that encloses it. Rewriting a
+ * `GeometryLine` to GeoJSON therefore leaves `new GeometryPolygon(…)` holding
+ * plain objects where it expects lines, and the decode never finishes: measured
+ * against a live server, a `Point` round-tripped and every `Polygon` hung the
+ * connection with no error at all. So geometry joins the walk too, and
+ * `geometry-codec.ts` explains why it has to be stored as SurrealDB's own type in
+ * the first place.
+ *
  * Dates need neither: `useNativeDates` makes the SDK decode a SurrealDB datetime
  * to a real `Date` instead of its own `DateTime` wrapper, so a `Date` written by
  * a caller comes back as a `Date`, with its milliseconds intact.
@@ -48,9 +59,10 @@
  * on the way out, for the reason `encodeBsonValue` explains.
  */
 
-import type { CodecOptions } from "surrealdb";
+import { type CodecOptions, Geometry } from "surrealdb";
 import { MongoCompatibilityError } from "../errors.ts";
 import { isObjectId, ObjectId } from "../object-id.ts";
+import { encodeGeoJson, toGeoJson } from "./geometry-codec.ts";
 
 /** The field name an ObjectId is stored under: Extended JSON's spelling. */
 export const OBJECT_ID_TAG = "$oid";
@@ -134,6 +146,13 @@ export function objectIdFromPrintedForm(text: string): ObjectId | undefined {
 export function encodeBsonValue(value: unknown): unknown {
 	if (isObjectId(value)) return toTaggedObjectId(value);
 
+	// GeoJSON is checked before the class-instance rules below because it is the
+	// one *plain object* this driver rewrites: `geometry-codec.ts` states the
+	// recognition rule, which is narrow enough that a caller's own document is
+	// left as data.
+	const geometry = encodeGeoJson(value);
+	if (geometry) return geometry;
+
 	// Only a BSON *value* is refused, which is why this asks for a class instance
 	// rather than for the marker alone: every BSON implementation carries
 	// `_bsontype` on its prototype, while a plain object carrying a field of that
@@ -172,17 +191,22 @@ function isClassInstance(value: unknown): boolean {
  * Rebuild the BSON values inside a decoded value.
  *
  * Walks arrays and plain objects to any depth, replacing every stored ObjectId
- * with an `ObjectId`. Nothing else is touched, and a value containing no stored
- * ObjectId is returned as-is rather than copied — a read of documents with no
- * ids in them costs one walk and no allocation.
+ * with an `ObjectId` and every geometry with the GeoJSON it was written as.
+ * Nothing else is touched, and a value containing neither is returned as-is
+ * rather than copied — a read of documents with no ids in them costs one walk and
+ * no allocation.
  *
- * Class instances (`Date`, `RecordId`, `Uuid`, …) are left alone: they are
+ * Other class instances (`Date`, `RecordId`, `Uuid`, …) are left alone: they are
  * already the values they should be, and descending into one would only produce
- * a lookalike that had lost its prototype.
+ * a lookalike that had lost its prototype. A geometry is the exception because
+ * MongoDB's own answer to "what is a geometry" is GeoJSON, and a `Geometry`
+ * arrives fully built rather than needing to be walked.
  */
 export function reviveBsonValues<T>(value: T): T {
 	const objectId = fromTaggedObjectId(value);
 	if (objectId) return objectId as unknown as T;
+
+	if (value instanceof Geometry) return toGeoJson(value) as unknown as T;
 
 	if (Array.isArray(value)) {
 		let changed = false;

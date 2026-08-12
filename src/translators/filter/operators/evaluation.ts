@@ -109,6 +109,15 @@ export const evaluationOperators: FilterOperator[] = [
 				throw new MongoInvalidArgumentError(
 					`Unsupported $type value: ${value}`,
 				);
+
+			// A GeoJSON geometry is stored as SurrealDB's own geometry type, which
+			// is not an object to `type::is_object` — but it is a BSON object to
+			// MongoDB, and a JSON object to the caller who wrote it and reads it
+			// back. Asking for one has to find the other.
+			if (value === "object" || value === 3) {
+				return `(${fn}(${field}) OR ${ctx.dialect.geometryCheck(field)})`;
+			}
+
 			return `${fn}(${field})`;
 		},
 	},

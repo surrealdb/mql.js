@@ -29,8 +29,26 @@ export interface TranslateContext {
 	/** Bind `value` to a fresh parameter and return the parameter name. */
 	bind(value: unknown): string;
 
-	/** Set the implicit ORDER-BY produced by `$near`/`$nearSphere`. */
-	setNearSort(orderBy: string): void;
+	/**
+	 * Record the distance expression a `$near`/`$nearSphere` orders by.
+	 *
+	 * An expression rather than an `ORDER BY`, because SurrealDB's `ORDER BY`
+	 * takes a field path: the expression has to be projected under an alias in a
+	 * subquery, which only the operation assembling the statement can arrange.
+	 */
+	setNearOrder(distanceExpression: string): void;
+
+	/**
+	 * Translate a sub-expression that cannot carry a `$near`.
+	 *
+	 * A `$near` names an ordering over the whole result set as well as a
+	 * predicate, so it has to hold for every row the query returns. Inside a
+	 * disjunction it does not: a row matched by the *other* branch of an `$or` need
+	 * not have a point in that field at all, and the distance the ordering projects
+	 * for it is undefined. MongoDB refuses the same thing with `geo $near must be
+	 * top-level expr`, and `setNearOrder` refuses it here.
+	 */
+	withoutNearOrder<T>(translate: () => T): T;
 
 	/** Translate a field with multiple operators (used by `$not`). */
 	translateOperators(field: string, ops: Document): string;

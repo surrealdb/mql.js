@@ -28,6 +28,27 @@ describe("deleteOne", () => {
 		expect(result.deletedCount).toBe(1);
 	});
 
+	test("$near picks the nearest document to delete", async () => {
+		const { ctx, executor } = makeContext();
+		executor.enqueue([{ id: new RecordId("users", "alice") }]);
+
+		await deleteOne(ctx, {
+			location: {
+				$near: { $geometry: { type: "Point", coordinates: [0, 0] } },
+			},
+		});
+
+		// The distance has to be projected under an alias for the same reason a
+		// read's does: `ORDER BY geo::distance(...)` is a parse error, so the
+		// `LIMIT 1` that names the one record could not otherwise mean "nearest".
+		expect(executor.queries[0].sql).toBe(
+			"DELETE (SELECT VALUE id FROM (" +
+				"SELECT id, geo::distance(location, $p0) AS __mql_distance FROM users " +
+				"WHERE type::is_point(location) ORDER BY __mql_distance ASC LIMIT 1" +
+				")) RETURN BEFORE",
+		);
+	});
+
 	test("returns deletedCount=0 when no document matches", async () => {
 		const { ctx, executor } = makeContext();
 		executor.enqueue([]); // the statement deleted nothing

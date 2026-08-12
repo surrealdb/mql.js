@@ -7,12 +7,14 @@ export type {
 export type {
 	ArrayOperators,
 	ComparisonOperators,
+	DistanceBounds,
 	ElementOperators,
 	EvaluationOperators,
 	FieldOperators,
 	Filter,
 	GeoJsonGeometry,
 	GeospatialOperators,
+	Position,
 } from "./filter.ts";
 export type {
 	AbstractCursorOptions,

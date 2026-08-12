@@ -75,6 +75,7 @@ export interface MongoLikeCollection<
 	deleteOne(filter: MongoLikeFilter): Promise<MongoLikeDeleteResult>;
 	deleteMany(filter?: MongoLikeFilter): Promise<MongoLikeDeleteResult>;
 	countDocuments(filter?: MongoLikeFilter): Promise<number>;
+	createIndex(spec: Record<string, unknown>): Promise<string>;
 }
 
 export interface MongoLikeDb {

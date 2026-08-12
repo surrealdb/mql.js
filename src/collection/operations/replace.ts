@@ -44,7 +44,11 @@ export async function replaceOne<TSchema extends Document>(
 		plan.ignoreUndefined,
 	);
 
-	const { clause: whereClause, bindings: filterBindings } = translateFilter(
+	const {
+		clause: whereClause,
+		bindings: filterBindings,
+		nearDistance,
+	} = translateFilter(
 		criteria,
 		await filterOptionsFor(ctx, filter as Document),
 	);
@@ -61,7 +65,7 @@ export async function replaceOne<TSchema extends Document>(
 	const rows = await writeOneRecord(
 		ctx,
 		statement(
-			`UPDATE ${oneRecordTarget(ctx, whereClause, plan, options?.sort)} ${contentClause}`,
+			`UPDATE ${oneRecordTarget(ctx, whereClause, plan, options?.sort, nearDistance)} ${contentClause}`,
 			plan.timeout,
 		),
 		{ ...filterBindings, ...contentBindings },
