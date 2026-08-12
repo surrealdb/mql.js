@@ -24,7 +24,7 @@
  * statement they always did.
  */
 
-import type { QueryExecutor } from "./query-executor.ts";
+import type { QueryExecutor, StatementOutcome } from "./query-executor.ts";
 import { escapeIdentifier } from "./sql/escape.ts";
 
 /** A statement as it goes out, and the index of the frame holding its result. */
@@ -62,6 +62,12 @@ type Dispatch = (
 	bindings?: Record<string, unknown>,
 ) => Promise<readonly unknown[]>;
 
+/** Send a statement and return what each of its statements did. */
+type DispatchEach = (
+	sql: string,
+	bindings?: Record<string, unknown>,
+) => Promise<readonly StatementOutcome[]>;
+
 /**
  * A `QueryExecutor` that knows which database its statements address.
  *
@@ -87,6 +93,15 @@ export abstract class ScopedExecutor implements QueryExecutor {
 		bindings?: Record<string, unknown>,
 	): Promise<readonly unknown[]>;
 
+	/**
+	 * Send `sql` as given, returning what each statement in it did — including the
+	 * ones that failed, which `dispatch` throws on.
+	 */
+	protected abstract dispatchEach(
+		sql: string,
+		bindings?: Record<string, unknown>,
+	): Promise<readonly StatementOutcome[]>;
+
 	async query<T = unknown>(
 		sql: string,
 		bindings?: Record<string, unknown>,
@@ -94,6 +109,17 @@ export abstract class ScopedExecutor implements QueryExecutor {
 		const scoped = scopeStatement(sql, this.database);
 		const frames = await this.dispatch(scoped.sql, bindings);
 		return frames[scoped.frame] as T;
+	}
+
+	async queryEach(
+		sql: string,
+		bindings?: Record<string, unknown>,
+	): Promise<readonly StatementOutcome[]> {
+		const scoped = scopeStatement(sql, this.database);
+		const outcomes = await this.dispatchEach(scoped.sql, bindings);
+		// The prefix's own outcome belongs to this class, not to the caller — the
+		// same reason `query` reads one frame rather than the first.
+		return outcomes.slice(scoped.frame);
 	}
 
 	/**
@@ -109,6 +135,7 @@ export abstract class ScopedExecutor implements QueryExecutor {
 		return new ScopedView(
 			this,
 			(sql, bindings) => this.dispatch(sql, bindings),
+			(sql, bindings) => this.dispatchEach(sql, bindings),
 			database,
 		);
 	}
@@ -126,15 +153,18 @@ export abstract class ScopedExecutor implements QueryExecutor {
 class ScopedView extends ScopedExecutor {
 	private readonly root: QueryExecutor;
 	private readonly send: Dispatch;
+	private readonly sendEach: DispatchEach;
 
 	constructor(
 		root: QueryExecutor,
 		send: Dispatch,
+		sendEach: DispatchEach,
 		database: string | undefined,
 	) {
 		super(database);
 		this.root = root;
 		this.send = send;
+		this.sendEach = sendEach;
 	}
 
 	get serverVersion(): string | undefined {
@@ -148,6 +178,13 @@ class ScopedView extends ScopedExecutor {
 		bindings?: Record<string, unknown>,
 	): Promise<readonly unknown[]> {
 		return this.send(sql, bindings);
+	}
+
+	protected dispatchEach(
+		sql: string,
+		bindings?: Record<string, unknown>,
+	): Promise<readonly StatementOutcome[]> {
+		return this.sendEach(sql, bindings);
 	}
 
 	async close(): Promise<void> {

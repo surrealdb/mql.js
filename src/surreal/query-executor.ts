@@ -12,6 +12,16 @@ import type { RecordId } from "surrealdb";
  */
 export type RecordIdLike = RecordId | string;
 
+/** What one statement of a multi-statement dispatch did. */
+export interface StatementOutcome {
+	/** Whether the statement applied. */
+	readonly ok: boolean;
+	/** The statement's result, when it applied. */
+	readonly value: unknown;
+	/** Why it did not, already translated to this driver's error taxonomy. */
+	readonly error: unknown;
+}
+
 /**
  * Subset of the SurrealDB driver API used by the rest of the codebase.
  *
@@ -38,6 +48,25 @@ export interface QueryExecutor {
 		sql: string,
 		bindings?: Record<string, unknown>,
 	): Promise<T>;
+
+	/**
+	 * Run every statement in `sql` and report each outcome, rather than throwing on
+	 * the first failure.
+	 *
+	 * `query` is right for a statement whose failure is the whole operation's
+	 * failure, which is nearly all of them. This exists for the one place where the
+	 * failures *are* the answer: MongoDB's `insertMany` has to say which documents
+	 * of a batch were refused and which were written, so the outcome of every
+	 * statement is needed and not just the first one that went wrong.
+	 *
+	 * Statements sent this way are separate SurrealDB statements, so each runs in
+	 * its own implicit transaction and one failing does not roll back the others —
+	 * measured, and the whole reason this can express a partial batch at all.
+	 */
+	queryEach(
+		sql: string,
+		bindings?: Record<string, unknown>,
+	): Promise<readonly StatementOutcome[]>;
 
 	/**
 	 * The version reported by the connected SurrealDB server, if known.

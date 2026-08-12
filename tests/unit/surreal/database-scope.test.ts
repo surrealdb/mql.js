@@ -14,13 +14,18 @@ import {
 	ScopedExecutor,
 	scopeStatement,
 } from "../../../src/surreal/database-scope.ts";
-import type { QueryExecutor } from "../../../src/surreal/query-executor.ts";
+import type {
+	QueryExecutor,
+	StatementOutcome,
+} from "../../../src/surreal/query-executor.ts";
 
 /** An executor whose dispatch records what it was sent and replies per frame. */
 class RecordingExecutor extends ScopedExecutor {
 	readonly sent: string[] = [];
 	/** One reply per statement in the last dispatch, keyed by frame index. */
 	frames: readonly unknown[] = [];
+	/** One outcome per statement, for the `queryEach` side of the same seam. */
+	outcomes: readonly StatementOutcome[] = [];
 	version: string | undefined = "3.2.4";
 	closed = 0;
 
@@ -31,6 +36,13 @@ class RecordingExecutor extends ScopedExecutor {
 	protected async dispatch(sql: string): Promise<readonly unknown[]> {
 		this.sent.push(sql);
 		return this.frames;
+	}
+
+	protected async dispatchEach(
+		sql: string,
+	): Promise<readonly StatementOutcome[]> {
+		this.sent.push(sql);
+		return this.outcomes;
 	}
 
 	async close(): Promise<void> {

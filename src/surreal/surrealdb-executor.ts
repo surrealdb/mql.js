@@ -8,8 +8,24 @@ import { Features, type Surreal } from "surrealdb";
 import { MongoCompatibilityError } from "../errors.ts";
 import { ScopedExecutor } from "./database-scope.ts";
 import { mapQueryError } from "./error-mapper.ts";
+import type { StatementOutcome } from "./query-executor.ts";
 import type { TransactionScope } from "./transaction-executor.ts";
 import { TransactionExecutor } from "./transaction-executor.ts";
+
+/** Read the SDK's per-statement responses into this driver's own shape. */
+export function responseOutcomes(
+	responses: readonly {
+		success: boolean;
+		result?: unknown;
+		error?: unknown;
+	}[],
+): readonly StatementOutcome[] {
+	return responses.map((response) => ({
+		ok: response.success,
+		value: response.result,
+		error: response.success ? undefined : mapQueryError(response.error),
+	}));
+}
 
 export class SurrealdbExecutor extends ScopedExecutor {
 	private readonly surreal: Surreal;
@@ -37,6 +53,22 @@ export class SurrealdbExecutor extends ScopedExecutor {
 		try {
 			return await this.surreal.query(sql, bindings);
 		} catch (err) {
+			throw mapQueryError(err);
+		}
+	}
+
+	protected async dispatchEach(
+		sql: string,
+		bindings?: Record<string, unknown>,
+	): Promise<readonly StatementOutcome[]> {
+		try {
+			return responseOutcomes(
+				await this.surreal.query(sql, bindings).responses(),
+			);
+		} catch (err) {
+			// A failure here is the dispatch itself failing — a dropped connection, a
+			// parse error in the whole query — rather than one statement of it, and
+			// the caller cannot attribute that to a document.
 			throw mapQueryError(err);
 		}
 	}

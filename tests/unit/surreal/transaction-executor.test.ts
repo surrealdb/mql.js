@@ -11,6 +11,23 @@ import { MongoTransactionError } from "../../../src/errors.ts";
 import type { TransactionHandle } from "../../../src/surreal/transaction-executor.ts";
 import { TransactionExecutor } from "../../../src/surreal/transaction-executor.ts";
 
+/**
+ * The SDK's query object: awaitable for the results, or read per statement with
+ * `responses()`. Both fakes below hand back one of these, because the executor
+ * reaches for either depending on what the operation needs to know.
+ */
+type HandleReply<R> = PromiseLike<R> & {
+	responses(): Promise<
+		readonly { success: boolean; result?: unknown; error?: unknown }[]
+	>;
+};
+
+function reply<R>(promise: Promise<R>, sql: string): HandleReply<R> {
+	return Object.assign(promise, {
+		responses: async () => [{ success: true, result: sql }],
+	});
+}
+
 /** A handle that logs every dispatch and reply, so overlap is visible. */
 function recordingHandle(): {
 	handle: TransactionHandle;
@@ -21,15 +38,17 @@ function recordingHandle(): {
 	const resolvers: Array<() => void> = [];
 
 	const handle: TransactionHandle = {
-		query: <R extends unknown[] = unknown[]>(sql: string): PromiseLike<R> => {
-			events.push(`start:${sql}`);
-			return new Promise<R>((resolve) => {
-				resolvers.push(() => {
-					events.push(`end:${sql}`);
-					resolve([sql] as unknown as R);
-				});
-			});
-		},
+		query: <R extends unknown[] = unknown[]>(sql: string): HandleReply<R> =>
+			reply(
+				new Promise<R>((resolve) => {
+					events.push(`start:${sql}`);
+					resolvers.push(() => {
+						events.push(`end:${sql}`);
+						resolve([sql] as unknown as R);
+					});
+				}),
+				sql,
+			),
 		commit: async () => {
 			events.push("commit");
 		},
@@ -47,11 +66,9 @@ function immediateHandle(): { handle: TransactionHandle; events: string[] } {
 	return {
 		events,
 		handle: {
-			query: async <R extends unknown[] = unknown[]>(
-				sql: string,
-			): Promise<R> => {
+			query: <R extends unknown[] = unknown[]>(sql: string): HandleReply<R> => {
 				events.push(sql);
-				return [sql] as unknown as R;
+				return reply(Promise.resolve([sql] as unknown as R), sql);
 			},
 			commit: async () => {
 				events.push("commit");
@@ -106,12 +123,13 @@ describe("statement ordering", () => {
 	test("a failed statement does not stall the queue", async () => {
 		const events: string[] = [];
 		const handle: TransactionHandle = {
-			query: async <R extends unknown[] = unknown[]>(
-				sql: string,
-			): Promise<R> => {
+			query: <R extends unknown[] = unknown[]>(sql: string): HandleReply<R> => {
 				events.push(sql);
-				if (sql === "bad") throw new Error("rejected");
-				return [sql] as unknown as R;
+				const pending =
+					sql === "bad"
+						? Promise.reject<R>(new Error("rejected"))
+						: Promise.resolve([sql] as unknown as R);
+				return reply(pending, sql);
 			},
 			commit: async () => {
 				events.push("commit");
@@ -161,8 +179,8 @@ describe("single use", () => {
 
 	test("a commit that fails still consumes the transaction", async () => {
 		const handle: TransactionHandle = {
-			query: async <R extends unknown[] = unknown[]>(): Promise<R> =>
-				[] as unknown as R,
+			query: <R extends unknown[] = unknown[]>(): HandleReply<R> =>
+				reply(Promise.resolve([] as unknown as R), ""),
 			commit: async () => {
 				throw new Error("conflict");
 			},
@@ -246,8 +264,11 @@ describe("statements for another database", () => {
 
 	test("read their own result, not the prefix's", async () => {
 		const handle: TransactionHandle = {
-			query: async <R extends unknown[] = unknown[]>(): Promise<R> =>
-				[{ database: "other" }, ["row"]] as unknown as R,
+			query: <R extends unknown[] = unknown[]>(): HandleReply<R> =>
+				reply(
+					Promise.resolve([{ database: "other" }, ["row"]] as unknown as R),
+					"",
+				),
 			commit: async () => {},
 			cancel: async () => {},
 		};
