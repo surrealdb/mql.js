@@ -5,9 +5,12 @@
  * so the matching record is named in a subquery and given new `CONTENT` — one
  * statement, so nothing can change the document between the match and the
  * replacement (see `modify-one.ts`).
+ *
+ * An empty filter is a legitimate one, matching every document: MongoDB replaces
+ * the first of them, and `oneRecordTarget` names exactly one record whether or not
+ * there is a `WHERE` clause to narrow it by.
  */
 
-import { MongoInvalidArgumentError } from "../../errors.ts";
 import { statement } from "../../surreal/sql/statement.ts";
 import { translateFilter } from "../../translators/filter.ts";
 import { translateReplacement } from "../../translators/update.ts";
@@ -52,12 +55,6 @@ export async function replaceOne<TSchema extends Document>(
 		criteria,
 		await filterOptionsFor(ctx, filter as Document),
 	);
-
-	if (!whereClause) {
-		throw new MongoInvalidArgumentError(
-			"replaceOne requires a non-empty filter",
-		);
-	}
 
 	const { clause: contentClause, bindings: contentBindings } =
 		translateReplacement(document, Object.keys(filterBindings).length);

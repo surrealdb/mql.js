@@ -5,7 +5,6 @@ import {
 	findOneAndReplace,
 	findOneAndUpdate,
 } from "../../../../src/collection/operations/find-and-modify.ts";
-import { MongoInvalidArgumentError } from "../../../../src/errors.ts";
 import type { Document, ModifyResult } from "../../../../src/types.ts";
 import { makeContext } from "../../../helpers/operation-context.ts";
 
@@ -270,11 +269,24 @@ describe("findOneAndDelete", () => {
 });
 
 describe("findOneAndReplace", () => {
-	test("requires a non-empty filter (caller error, not a server error)", async () => {
-		const { ctx } = makeContext();
-		await expect(
-			findOneAndReplace<User>(ctx, {}, { name: "x", age: 0 } as User),
-		).rejects.toBeInstanceOf(MongoInvalidArgumentError);
+	// An empty filter matches every document, and MongoDB replaces the first of
+	// them. The target subquery names one record with or without a `WHERE`, so no
+	// clause has to be conditional on the filter having narrowed anything.
+	test("an empty filter targets the first document", async () => {
+		const { ctx, executor } = makeContext();
+		executor.enqueue([
+			{ id: new RecordId("users", "a"), name: "Old", age: 10 },
+		]);
+
+		const out = (await findOneAndReplace<User>(ctx, {}, {
+			name: "New",
+			age: 1,
+		} as User)) as User;
+
+		expect(executor.queries[0].sql).toBe(
+			"UPDATE (SELECT VALUE id FROM (SELECT id FROM users LIMIT 1)) CONTENT $p0 RETURN BEFORE",
+		);
+		expect(out).toEqual({ _id: "a", name: "Old", age: 10 } as unknown as User);
 	});
 
 	test("returns null when no match", async () => {
