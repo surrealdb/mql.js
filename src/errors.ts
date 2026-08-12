@@ -64,6 +64,10 @@ export const MongoErrorCode = {
 	MaxTimeMSExpired: 50,
 	/** The command is not recognised by the server. */
 	CommandNotFound: 59,
+	/** The namespace argument was empty, or of the wrong type. */
+	InvalidNamespace: 73,
+	/** The deployment is not running as a replica-set member. */
+	NoReplicationEnabled: 76,
 	/** A concurrent transaction wrote the same data first. */
 	WriteConflict: 112,
 	/** The deployment is not a replica set, so the requested guarantee is unavailable. */
@@ -74,6 +78,8 @@ export const MongoErrorCode = {
 	DocumentValidationFailure: 121,
 	/** The referenced transaction is not active. */
 	NoSuchTransaction: 251,
+	/** A command was missing a field its definition requires. */
+	IDLFailedToParse: 40414,
 } as const;
 
 export type MongoErrorCodeValue =
@@ -121,6 +127,8 @@ const CODE_NAMES: Record<number, string> = {
 	50: "MaxTimeMSExpired",
 	59: "CommandNotFound",
 	72: "InvalidOptions",
+	73: "InvalidNamespace",
+	76: "NoReplicationEnabled",
 	85: "IndexOptionsConflict",
 	86: "IndexKeySpecsConflict",
 	112: "WriteConflict",
@@ -128,6 +136,7 @@ const CODE_NAMES: Record<number, string> = {
 	121: "DocumentValidationFailure",
 	123: "NotAReplicaSet",
 	251: "NoSuchTransaction",
+	40414: "IDLFailedToParse",
 };
 
 /** The `codeName` MongoDB pairs with a numeric error code, if known. */

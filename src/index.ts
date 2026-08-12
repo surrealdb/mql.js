@@ -6,11 +6,13 @@
 
 export { MongoClient } from "./client/mongo-client.ts";
 export { Collection } from "./collection/collection.ts";
+export { MONGODB_COMPATIBILITY_VERSION } from "./constants.ts";
 export { FindCursor } from "./cursor/find-cursor.ts";
 export {
 	ListIndexesCursor,
 	type ListIndexesRunner,
 } from "./cursor/list-indexes-cursor.ts";
+export { Admin } from "./db/admin.ts";
 export { Db } from "./db/db.ts";
 export type {
 	MongoErrorCodeValue,
@@ -69,6 +71,7 @@ export type {
 	CountDocumentsOptions,
 	CreateIndexesOptions,
 	CreateIndexOptions,
+	DbStatsOptions,
 	DeleteOptions,
 	DeleteResult,
 	DistanceBounds,
@@ -97,6 +100,8 @@ export type {
 	InsertManyResult,
 	InsertOneOptions,
 	InsertOneResult,
+	ListDatabasesOptions,
+	ListDatabasesResult,
 	ListIndexesOptions,
 	ModifyResult,
 	MongoClientOptions,
@@ -111,6 +116,7 @@ export type {
 	ReadPreferenceMode,
 	ReconnectSettings,
 	ReplaceOptions,
+	RunCommandOptions,
 	ServerApi,
 	ServerApiVersion,
 	ServerMonitoringMode,

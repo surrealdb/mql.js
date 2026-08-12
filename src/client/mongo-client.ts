@@ -30,7 +30,14 @@ import {
 	isUnsupportedVersion,
 	MINIMUM_SURREALDB_VERSION,
 } from "../translators/dialect/index.ts";
-import type { MongoClientOptions } from "../types.ts";
+import type {
+	ChangeStream,
+	ChangeStreamDocument,
+	ChangeStreamOptions,
+	Document,
+	MongoClientOptions,
+} from "../types.ts";
+import { CHANGE_STREAMS, unsupported } from "../unsupported.ts";
 import { resolveAuthentication } from "./authentication.ts";
 import { ClientExecutor } from "./client-executor.ts";
 import type { ClientSettings } from "./client-options.ts";
@@ -203,6 +210,25 @@ export class MongoClient {
 		} finally {
 			await session.endSession();
 		}
+	}
+
+	/**
+	 * Not implemented. MongoDB returns a `ChangeStream` here without contacting
+	 * the server, so this throws where MongoDB would have surfaced the failure on
+	 * the stream's `'error'` event — see `src/unsupported.ts`.
+	 */
+	watch<
+		TSchema extends Document = Document,
+		TChange extends Document = ChangeStreamDocument<TSchema>,
+	>(
+		pipeline?: Document[],
+		options?: ChangeStreamOptions,
+	): ChangeStream<TSchema, TChange>;
+	watch<
+		TSchema extends Document = Document,
+		TChange extends Document = ChangeStreamDocument<TSchema>,
+	>(): ChangeStream<TSchema, TChange> {
+		throw unsupported("MongoClient.watch()", CHANGE_STREAMS);
 	}
 
 	/** Close the connection and release resources. */

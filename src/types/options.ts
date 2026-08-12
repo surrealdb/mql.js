@@ -534,6 +534,48 @@ export interface DropCollectionOptions extends CommandOperationOptions {}
 export interface DropDatabaseOptions extends CommandOperationOptions {}
 
 /**
+ * Options for `Db.command` and `Admin.command`. Mirrors MongoDB's
+ * `RunCommandOptions` (mongodb.d.ts:7900).
+ *
+ * Narrower than `CommandOperationOptions` because MongoDB's own `command()`
+ * inherits nothing from the client: only a session, a read preference and a
+ * timeout are read.
+ */
+export interface RunCommandOptions extends BSONSerializeOptions {
+	/** Session the command runs in. Honoured for the commands that write. */
+	session?: ClientSession;
+	/** Which replica-set member to read from. Accepted, no effect — one node. */
+	readPreference?: ReadPreferenceLike;
+	/** Time budget in milliseconds. Honoured by the commands that query. */
+	timeoutMS?: number;
+}
+
+/**
+ * Options for `Db.stats` and the `dbStats` command. Mirrors MongoDB's
+ * `DbStatsOptions` (mongodb.d.ts:4153).
+ */
+export interface DbStatsOptions extends CommandOperationOptions {
+	/**
+	 * Divisor for the reported sizes. Accepted, no effect: this driver reports no
+	 * size fields, so there is nothing for it to scale.
+	 */
+	scale?: number;
+}
+
+/**
+ * Options for `Admin.listDatabases`. Mirrors MongoDB's `ListDatabasesOptions`
+ * (mongodb.d.ts:5375).
+ */
+export interface ListDatabasesOptions extends CommandOperationOptions {
+	/** Predicate applied to the reply's `{name}` documents. Honoured. */
+	filter?: Document;
+	/** Return names only. Accepted, no effect — only names are reported anyway. */
+	nameOnly?: boolean;
+	/** Limit to databases the user may see. Accepted, no effect. */
+	authorizedDatabases?: boolean;
+}
+
+/**
  * Options for the `MongoClient` constructor.
  *
  * The whole of MongoDB's `MongoClientOptions` surface (mongodb.d.ts:6023) is
