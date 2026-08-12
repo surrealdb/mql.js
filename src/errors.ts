@@ -25,6 +25,7 @@
  *             │     ├── MongoParseError
  *             │     └── MongoOperationTimeoutError
  *             ├── MongoServerError          — the server rejected it
+ *             │     ├── MongoBulkWriteError
  *             │     └── MongoWriteConcernError
  *             ├── MongoNetworkError
  *             │     └── MongoNetworkTimeoutError
@@ -42,6 +43,8 @@
 export const MongoErrorCode = {
 	/** A value was the right type but out of range or otherwise invalid. */
 	BadValue: 2,
+	/** A failure with no more specific code — MongoDB's own catch-all. */
+	UnknownError: 8,
 	/** The command or query could not be parsed. */
 	FailedToParse: 9,
 	/** The connection is not authorised to perform the operation. */
@@ -118,6 +121,7 @@ export type MongoErrorLabel =
 /** Human-readable `codeName` for each numeric code, as MongoDB reports it. */
 const CODE_NAMES: Record<number, string> = {
 	2: "BadValue",
+	8: "UnknownError",
 	9: "FailedToParse",
 	13: "Unauthorized",
 	18: "AuthenticationFailed",
@@ -379,6 +383,53 @@ export class MongoServerError extends MongoError {
 		if (opts.keyValue) this.keyValue = opts.keyValue;
 		if (opts.writeErrors) this.writeErrors = opts.writeErrors;
 		if (opts.errInfo) this.errInfo = opts.errInfo;
+	}
+}
+
+/** What a partially applied batch managed to do, as MongoDB reports it. */
+export interface BulkWriteOutcome {
+	/** Documents that were written. */
+	insertedCount: number;
+	/** The `_id` of each written document, keyed by its index in the batch. */
+	insertedIds: Record<number, unknown>;
+}
+
+/**
+ * A batch write that partly succeeded.
+ *
+ * MongoDB reports a failed `insertMany` this way rather than as a plain error,
+ * because "it failed" is not the whole answer: some documents are in the
+ * collection and the caller has to know which. `writeErrors` names the ones that
+ * were refused by their index in the batch, and `result` accounts for the rest.
+ */
+export class MongoBulkWriteError extends MongoServerError {
+	/** What the batch did manage to write. */
+	result: BulkWriteOutcome;
+
+	/** One entry per refused document, in batch order. */
+	declare writeErrors: WriteError[];
+
+	constructor(
+		message: string,
+		options: MongoServerErrorOptions & {
+			writeErrors: WriteError[];
+			result: BulkWriteOutcome;
+		},
+	) {
+		super(message, options);
+		this.name = "MongoBulkWriteError";
+		this.result = options.result;
+		this.writeErrors = options.writeErrors;
+	}
+
+	/** Documents written before the batch stopped. */
+	get insertedCount(): number {
+		return this.result.insertedCount;
+	}
+
+	/** The `_id` of each written document, keyed by its index in the batch. */
+	get insertedIds(): Record<number, unknown> {
+		return this.result.insertedIds;
 	}
 }
 

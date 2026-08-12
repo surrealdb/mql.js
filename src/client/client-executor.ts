@@ -10,7 +10,10 @@
  */
 
 import { MongoNotConnectedError } from "../errors.ts";
-import type { QueryExecutor } from "../surreal/query-executor.ts";
+import type {
+	QueryExecutor,
+	StatementOutcome,
+} from "../surreal/query-executor.ts";
 
 /** What the executor needs from the client that owns it. */
 export interface ConnectionGate {
@@ -34,13 +37,26 @@ export class ClientExecutor implements QueryExecutor {
 		sql: string,
 		bindings?: Record<string, unknown>,
 	): Promise<T> {
+		await this.assertUsable();
+		return this.inner.query<T>(sql, bindings);
+	}
+
+	async queryEach(
+		sql: string,
+		bindings?: Record<string, unknown>,
+	): Promise<readonly StatementOutcome[]> {
+		await this.assertUsable();
+		return this.inner.queryEach(sql, bindings);
+	}
+
+	/** The precondition both ways in are subject to. */
+	private async assertUsable(): Promise<void> {
 		if (this.gate.isClosed()) {
 			throw new MongoNotConnectedError(
 				"Client must be connected before running operations",
 			);
 		}
 		await this.gate.ensureConnected();
-		return this.inner.query<T>(sql, bindings);
 	}
 
 	async close(): Promise<void> {

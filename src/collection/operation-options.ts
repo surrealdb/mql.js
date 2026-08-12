@@ -118,7 +118,7 @@ export const NO_PLAN: OperationPlan = {
  *   - `oplogReplay`: MongoDB 4.4 and later ignore it too.
  *   - `ordered` on a delete: each call emits a single statement, so there is no
  *     batch whose ordering could matter. (`insertMany` does have a batch, and
- *     rejects `ordered: false` below.)
+ *     honours both orderings — see `insertMany`.)
  *   - `willRetryWrite`: driver-internal retryable-write bookkeeping.
  *   - `authdb`: names the database to authenticate against, which is settled
  *     before any operation runs.
@@ -225,17 +225,6 @@ const REJECTED_OPTIONS: readonly RejectionRule[] = [
 		reject: unsupported(
 			"explain",
 			"SurrealDB's `EXPLAIN` describes a different planner, so its output would not be a plan MongoDB tooling can read",
-		),
-	},
-	{
-		// Only `insertMany` sends a batch, and only there can ordering be a
-		// request. MongoDB's default is `true`, expressed by omitting the option,
-		// so `false` is the only value that asks for something.
-		option: "ordered",
-		applies: (value) => value === false,
-		reject: unsupported(
-			"ordered",
-			"SurrealDB inserts a batch atomically, so one failure rolls the whole batch back and the documents `ordered: false` promises to keep would never be written",
 		),
 	},
 	{

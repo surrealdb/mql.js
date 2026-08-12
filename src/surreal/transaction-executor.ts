@@ -23,7 +23,8 @@
 import { MongoTransactionError } from "../errors.ts";
 import { ScopedExecutor } from "./database-scope.ts";
 import { mapQueryError } from "./error-mapper.ts";
-import type { QueryExecutor } from "./query-executor.ts";
+import type { QueryExecutor, StatementOutcome } from "./query-executor.ts";
+import { responseOutcomes } from "./surrealdb-executor.ts";
 
 /**
  * The part of the SDK's `SurrealTransaction` this driver uses.
@@ -35,7 +36,17 @@ export interface TransactionHandle {
 	query<R extends unknown[] = unknown[]>(
 		sql: string,
 		bindings?: Record<string, unknown>,
-	): PromiseLike<R>;
+	): PromiseLike<R> & {
+		/**
+		 * Per-statement outcomes instead of a rejection on the first failure.
+		 *
+		 * The SDK's query object is chainable, so this is the same call read a
+		 * different way rather than a second round trip.
+		 */
+		responses(): Promise<
+			readonly { success: boolean; result?: unknown; error?: unknown }[]
+		>;
+	};
 	commit(): Promise<void>;
 	cancel(): Promise<void>;
 }
@@ -91,6 +102,22 @@ export class TransactionExecutor
 			this.assertLive("run a statement in");
 			try {
 				return await this.handle.query(sql, bindings);
+			} catch (err) {
+				throw mapQueryError(err);
+			}
+		});
+	}
+
+	protected async dispatchEach(
+		sql: string,
+		bindings?: Record<string, unknown>,
+	): Promise<readonly StatementOutcome[]> {
+		return this.enqueue(async () => {
+			this.assertLive("run a statement in");
+			try {
+				return responseOutcomes(
+					await this.handle.query(sql, bindings).responses(),
+				);
 			} catch (err) {
 				throw mapQueryError(err);
 			}
