@@ -95,6 +95,8 @@ export function translateReplacement(
 	replacement: Document,
 	startIndex = 0,
 ): TranslatedUpdate {
+	rejectGeometryDocument(replacement);
+
 	const p = `p${startIndex}`;
 	return {
 		clause: `CONTENT $${p}`,
@@ -109,6 +111,7 @@ export {
 } from "./operator-registry.ts";
 
 import { MongoInvalidArgumentError } from "../../errors.ts";
+import { rejectGeometryDocument } from "../../surreal/geometry-codec.ts";
 import { MONGO_ID_FIELD } from "../filter/id-field.ts";
 
 export type { UpdateContext } from "./update-context.ts";

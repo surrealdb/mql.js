@@ -23,11 +23,16 @@ export interface TranslatedFilter {
 	/** Parameterised bindings for the clause. */
 	bindings: Record<string, unknown>;
 	/**
-	 * Optional ORDER BY clause implied by $near / $nearSphere.
-	 * When set, results should be sorted by distance ascending
-	 * (unless an explicit sort is provided).
+	 * The SurrealQL distance expression a `$near`/`$nearSphere` in the filter
+	 * orders by, ascending — `geo::distance(field, $p0)`.
+	 *
+	 * Present only when the filter uses one of those operators. It is an
+	 * expression and not an `ORDER BY` because SurrealDB's `ORDER BY` takes a
+	 * field path: see `near-query.ts`, which turns it into the projected alias a
+	 * statement can order by. An explicit `sort` takes precedence over it, as it
+	 * does in MongoDB.
 	 */
-	nearSort?: string;
+	nearDistance?: string;
 }
 
 /** Options for `translateFilter`. */
@@ -104,7 +109,8 @@ export function translateFilter(
 
 	const bindings: Record<string, unknown> = {};
 	let counter = 0;
-	let nearSort: string | undefined;
+	let nearDistance: string | undefined;
+	let nearDepthForbidden = 0;
 
 	const ctx: TranslateContext = {
 		dialect,
@@ -117,8 +123,29 @@ export function translateFilter(
 			bindings[name] = value;
 			return name;
 		},
-		setNearSort(orderBy) {
-			nearSort = orderBy;
+		withoutNearOrder(translate) {
+			nearDepthForbidden += 1;
+			try {
+				return translate();
+			} finally {
+				nearDepthForbidden -= 1;
+			}
+		},
+		setNearOrder(distanceExpression) {
+			if (nearDepthForbidden > 0) {
+				throw new MongoInvalidArgumentError(
+					"geo $near must be a top-level expression: it cannot appear inside $or, $nor, $not or $elemMatch.",
+				);
+			}
+			// MongoDB allows one distance ordering per query and refuses a second
+			// with "Too many geoNear expressions": two orderings cannot both hold,
+			// and picking one silently would answer a different query.
+			if (nearDistance !== undefined && nearDistance !== distanceExpression) {
+				throw new MongoInvalidArgumentError(
+					"Too many geoNear expressions: a query can order by distance from one point only.",
+				);
+			}
+			nearDistance = distanceExpression;
 		},
 		translateOperators(field, ops) {
 			return translateOperators(field, ops, ctx, registry);
@@ -131,7 +158,7 @@ export function translateFilter(
 	const clause = translateDocument(filter, ctx, registry);
 
 	const result: TranslatedFilter = { clause, bindings };
-	if (nearSort) result.nearSort = nearSort;
+	if (nearDistance) result.nearDistance = nearDistance;
 	return result;
 }
 
@@ -160,11 +187,10 @@ function translateDocument(
 				translateLogicalArray(value as Document[], "OR", ctx, registry),
 			);
 		} else if (key === "$nor") {
-			const inner = translateLogicalArray(
-				value as Document[],
-				"OR",
-				ctx,
-				registry,
+			// Negated, so no branch of it holds for the rows returned — a `$near`
+			// inside one could order by nothing.
+			const inner = ctx.withoutNearOrder(() =>
+				translateLogicalArray(value as Document[], "OR", ctx, registry),
 			);
 			parts.push(`NOT (${inner})`);
 		} else if (key === "$text") {
@@ -186,13 +212,29 @@ function translateDocument(
 	return parts.join(" AND ");
 }
 
+/**
+ * Translate `$and`/`$or`'s array of sub-filters.
+ *
+ * An `$or` of two or more branches is the one shape a `$near` cannot survive, so
+ * its branches are translated with the ordering forbidden. A single branch is not
+ * a disjunction at all — it flattens to the branch itself, which is why MongoDB
+ * accepts `$or: [{loc: {$near: …}}]` and rejects `$or` with a second branch. An
+ * `$and` holds for every row returned, so it needs no such restriction.
+ */
 function translateLogicalArray(
 	arr: Document[],
 	operator: "AND" | "OR",
 	ctx: TranslateContext,
 	registry: FilterOperatorRegistry,
 ): string {
-	const parts = arr.map((sub) => translateDocument(sub, ctx, registry));
+	const disjunction = operator === "OR" && arr.length > 1;
+	const translateBranches = () =>
+		arr.map((sub) => translateDocument(sub, ctx, registry));
+
+	const parts = disjunction
+		? ctx.withoutNearOrder(translateBranches)
+		: translateBranches();
+
 	if (parts.length === 1) return parts[0];
 	return `(${parts.join(` ${operator} `)})`;
 }
@@ -242,6 +284,22 @@ function isOperatorObject(value: unknown): boolean {
 	return keys.length > 0 && keys.every((k) => k.startsWith("$"));
 }
 
+/**
+ * Operators whose value modifies a *sibling* rather than being a predicate of
+ * its own, and the operators each one belongs to.
+ *
+ * MongoDB writes each of these beside the operator it qualifies instead of inside
+ * it — `{$regex: "x", $options: "i"}`, `{$nearSphere: [x, y], $maxDistance: r}` —
+ * where the qualified operator's own strategy cannot see it. Naming them here is
+ * what lets the dispatcher hand both halves over together, and refuse a modifier
+ * with nothing to modify, which MongoDB refuses in the same words.
+ */
+const COMPANION_OPERATORS: Readonly<Record<string, readonly string[]>> = {
+	$options: ["$regex"],
+	$minDistance: ["$near", "$nearSphere"],
+	$maxDistance: ["$near", "$nearSphere"],
+};
+
 /** Translate an operator object (`{ $gt: 5, $lt: 10 }`) for one field. */
 function translateOperators(
 	field: string,
@@ -250,31 +308,47 @@ function translateOperators(
 	registry: FilterOperatorRegistry,
 ): string {
 	const parts: string[] = [];
+
 	for (const [op, val] of Object.entries(operators)) {
-		// `$options` is not a predicate: it carries the flags of a sibling
-		// `$regex`, which an operator strategy cannot see on its own. Pair the two
-		// here so `{$regex: "x", $options: "i"}` honours the `i`. MongoDB rejects
-		// `$options` without a `$regex` with exactly this message.
-		if (op === "$options") {
-			if (!("$regex" in operators)) {
-				throw new MongoInvalidArgumentError("$options needs a $regex");
+		const qualifies = COMPANION_OPERATORS[op];
+		if (qualifies) {
+			if (!qualifies.some((owner) => owner in operators)) {
+				throw new MongoInvalidArgumentError(
+					`${op} needs a ${qualifies.join(" or ")}`,
+				);
 			}
 			continue;
 		}
-		if (op === "$regex") {
-			const operand: RegexOperand = {
-				pattern: val as string | RegExp,
-				options:
-					typeof operators.$options === "string"
-						? operators.$options
-						: undefined,
-			};
-			parts.push(registry.get(op).translate(field, operand, ctx));
-			continue;
-		}
-		parts.push(registry.get(op).translate(field, val, ctx));
+
+		parts.push(
+			registry.get(op).translate(field, operandFor(op, val, operators), ctx),
+		);
 	}
+
 	return parts.join(" AND ");
+}
+
+/** The operand an operator is translated with, its companions folded in. */
+function operandFor(op: string, value: unknown, operators: Document): unknown {
+	if (op === "$regex") {
+		const operand: RegexOperand = {
+			pattern: value as string | RegExp,
+			options:
+				typeof operators.$options === "string" ? operators.$options : undefined,
+		};
+		return operand;
+	}
+
+	if (op === "$near" || op === "$nearSphere") {
+		const operand: NearOperand = {
+			spec: value,
+			siblingMinDistance: operators.$minDistance,
+			siblingMaxDistance: operators.$maxDistance,
+		};
+		return operand;
+	}
+
+	return value;
 }
 
 /**
@@ -316,5 +390,6 @@ import { escapeFieldPath } from "../../surreal/sql/escape.ts";
 import { coerceIdCondition, isIdField, SURREAL_ID_FIELD } from "./id-field.ts";
 import { equalityPredicate } from "./operators/comparison.ts";
 import type { RegexOperand } from "./operators/evaluation.ts";
+import type { NearOperand } from "./operators/geospatial.ts";
 
 export type { TranslateContext } from "./translate-context.ts";

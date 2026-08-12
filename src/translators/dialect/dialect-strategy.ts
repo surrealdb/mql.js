@@ -27,6 +27,25 @@ export interface SurrealDialect {
 	 */
 	typeCheckFn(bson: string | number): string | undefined;
 
+	/**
+	 * SurrealQL fragment that tests whether `field` holds a point geometry.
+	 *
+	 * Not a BSON type, so it has no place in `typeCheckFn`: the geospatial
+	 * operators need it because `geo::distance` refuses anything else, and its
+	 * spelling moves with the SurrealQL major exactly as `type::is_*` does.
+	 */
+	pointCheck(field: string): string;
+
+	/**
+	 * SurrealQL fragment that tests whether `field` holds any geometry.
+	 *
+	 * `$type: "object"` needs it: a GeoJSON geometry is stored as SurrealDB's
+	 * geometry type, which `type::is_object` answers `false` for, while the value
+	 * the caller wrote and reads back is a JSON object — and is one to MongoDB,
+	 * which matches it.
+	 */
+	geometryCheck(field: string): string;
+
 	/** Keyword to use for full-text search index definitions. */
 	readonly fullTextKeyword: "FULLTEXT";
 

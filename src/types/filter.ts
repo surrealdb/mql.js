@@ -31,34 +31,55 @@ export interface ArrayOperators {
 	$size?: number;
 }
 
-/** GeoJSON geometry object. */
-export interface GeoJsonGeometry {
-	type: string;
-	coordinates: unknown;
+/** A `[longitude, latitude]` position, the order GeoJSON writes it in. */
+export type Position = [number, number];
+
+/**
+ * A GeoJSON geometry, as this driver stores it and hands it back.
+ *
+ * The seven types SurrealDB models, which are GeoJSON's own. Written as a union
+ * rather than as `{type: string; coordinates: unknown}` because the driver's
+ * recognition rule is exactly this shape — a plain object with a known `type` and
+ * matching coordinates, and no other field — so a type that admitted more would
+ * describe values that are stored as ordinary data instead. See "Geospatial" in
+ * the README.
+ */
+export type GeoJsonGeometry =
+	| { type: "Point"; coordinates: Position }
+	| { type: "LineString"; coordinates: Position[] }
+	| { type: "Polygon"; coordinates: Position[][] }
+	| { type: "MultiPoint"; coordinates: Position[] }
+	| { type: "MultiLineString"; coordinates: Position[][] }
+	| { type: "MultiPolygon"; coordinates: Position[][][] }
+	| { type: "GeometryCollection"; geometries: GeoJsonGeometry[] };
+
+/** The distance band a `$near`/`$nearSphere` may carry. */
+export interface DistanceBounds {
+	/** Lower bound: metres for a `$geometry` point, radians for a legacy pair. */
+	$minDistance?: number;
+	/** Upper bound: metres for a `$geometry` point, radians for a legacy pair. */
+	$maxDistance?: number;
 }
 
 /** Geospatial operators. */
-export interface GeospatialOperators {
+export interface GeospatialOperators extends DistanceBounds {
 	$geoWithin?: {
 		$geometry?: GeoJsonGeometry;
-		$box?: [[number, number], [number, number]];
-		$center?: [[number, number], number];
-		$centerSphere?: [[number, number], number];
-		$polygon?: [number, number][];
+		$box?: [Position, Position];
+		$center?: [Position, number];
+		$centerSphere?: [Position, number];
+		$polygon?: Position[];
 	};
 	$geoIntersects?: {
 		$geometry: GeoJsonGeometry;
 	};
-	$near?: {
-		$geometry: GeoJsonGeometry;
-		$maxDistance?: number;
-		$minDistance?: number;
-	};
-	$nearSphere?: {
-		$geometry: GeoJsonGeometry;
-		$maxDistance?: number;
-		$minDistance?: number;
-	};
+	$near?: { $geometry: GeoJsonGeometry } & DistanceBounds;
+	/**
+	 * A GeoJSON point, or the legacy `[longitude, latitude]` pair — whose
+	 * `$minDistance`/`$maxDistance` sit beside the operator and are read as
+	 * radians, as MongoDB reads them.
+	 */
+	$nearSphere?: ({ $geometry: GeoJsonGeometry } & DistanceBounds) | Position;
 }
 
 /** Operators that can be applied to a single field value. */
