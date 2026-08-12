@@ -141,3 +141,155 @@ describe("a hostile filter key cannot escape its identifier position", () => {
 		expect(await col.countDocuments({})).toBe(1);
 	});
 });
+
+/**
+ * Names a hand-kept reserved-word list missed.
+ *
+ * These are ordinary MongoDB names — `function` and `table` in particular are
+ * unremarkable collection names — and each was measured to fail bare in at
+ * least one position this driver emits an identifier in, while the list that
+ * decided when to quote did not contain them. So a collection called `function`
+ * was not merely awkward: every operation on it raised a raw SurrealQL parse
+ * error.
+ *
+ * The last two are the reason this is tested against a live server rather than
+ * asserted as a string. Bare, `none` and `true` do not fail — `SELECT * FROM
+ * none` answers `[]` and `SELECT * FROM true` answers `[true]` — so a caller
+ * with a collection so named was answered wrongly instead of refused, which no
+ * amount of reading the generated SQL would reveal.
+ */
+describe("keyword-named collections", () => {
+	const names = [
+		"function",
+		"table",
+		"tb",
+		"alter",
+		"rebuild",
+		"sleep",
+		"only",
+		"overwrite",
+		"and",
+		"none",
+		"true",
+		"select",
+	];
+
+	for (const name of names) {
+		test(`a collection named \`${name}\` round-trips`, async () => {
+			const keyword = db.collection<Doc>(name);
+
+			const inserted = await keyword.insertOne({ normal: 1 } as Doc);
+			expect(inserted.insertedId).toBeDefined();
+
+			expect(await keyword.countDocuments({})).toBe(1);
+			expect(await keyword.countDocuments({ normal: 1 } as never)).toBe(1);
+
+			const found = await keyword.findOne({ _id: inserted.insertedId });
+			expect(found?.normal).toBe(1);
+
+			const updated = await keyword.updateOne(
+				{ normal: 1 } as never,
+				{
+					$set: { normal: 2 },
+				} as never,
+			);
+			expect(updated.modifiedCount).toBe(1);
+			expect(await keyword.countDocuments({ normal: 2 } as never)).toBe(1);
+
+			expect((await keyword.deleteMany({})).deletedCount).toBe(1);
+		});
+	}
+
+	test("createIndex, listIndexes, dropIndex and drop all name it too", async () => {
+		const keyword = db.collection<Doc>("function");
+		await keyword.insertOne({ normal: 1 } as Doc);
+
+		expect(await keyword.createIndex({ normal: 1 })).toBe("normal_1");
+		const names = (await keyword.listIndexes().toArray()).map((i) => i.name);
+		expect(names).toContain("normal_1");
+
+		expect(await keyword.dropIndex("normal_1")).toMatchObject({ ok: 1 });
+		expect(await keyword.drop()).toBe(true);
+	});
+
+	test("listCollections and createCollection name it as the caller wrote it", async () => {
+		await db.createCollection("upsert");
+		const listed = (await db.listCollections()).map((c) => c.name);
+		expect(listed).toContain("upsert");
+		expect(await db.dropCollection("upsert")).toBe(true);
+	});
+});
+
+describe("keyword-named fields and indexes", () => {
+	test("fields named `rand` and `and` are queryable, sortable and indexable", async () => {
+		const keyword = db.collection<Doc>("keyword_fields");
+		await keyword.insertOne({ rand: 1, and: 2 } as never);
+
+		expect(await keyword.countDocuments({ rand: 1 } as never)).toBe(1);
+		expect(await keyword.countDocuments({ and: 2 } as never)).toBe(1);
+		expect(await keyword.countDocuments({ rand: 1, and: 2 } as never)).toBe(1);
+
+		const sorted = await keyword.find({}).sort({ rand: 1 }).toArray();
+		expect(sorted.length).toBe(1);
+
+		expect(await keyword.distinct("and")).toEqual([2]);
+		expect(await keyword.createIndex({ rand: 1 })).toBe("rand_1");
+
+		await keyword.drop();
+	});
+
+	test("an index named after a keyword can be created, hinted and dropped", async () => {
+		const keyword = db.collection<Doc>("keyword_indexes");
+		await keyword.insertOne({ normal: 1 } as Doc);
+
+		expect(await keyword.createIndex({ normal: 1 }, { name: "only" })).toBe(
+			"only",
+		);
+		// A hint puts the name in `WITH INDEX`, a third distinct position.
+		expect(
+			await keyword.countDocuments({ normal: 1 } as never, { hint: "only" }),
+		).toBe(1);
+		expect(await keyword.dropIndex("only")).toMatchObject({ ok: 1 });
+
+		expect(
+			await keyword.createIndex({ normal: 1 }, { name: "overwrite" }),
+		).toBe("overwrite");
+		expect(await keyword.dropIndex("overwrite")).toMatchObject({ ok: 1 });
+
+		await keyword.drop();
+	});
+});
+
+describe("keyword-named databases", () => {
+	/**
+	 * `USE DB` is the strictest position of the lot: it reads its argument as an
+	 * expression, so bare `USE DB function` is a parse error and bare
+	 * `USE DB INFO FOR DB` panics the server outright
+	 * (surrealdb/surrealdb-private#903). Quoting is what confines a
+	 * caller-supplied name to being a name.
+	 */
+	for (const name of ["function", "alter", "sleep", "and"]) {
+		test(`client.db("${name}") reads and writes that database`, async () => {
+			const other = client.db(name);
+			const keyword = other.collection<Doc>("docs");
+
+			await keyword.insertOne({ normal: 42 } as Doc);
+			expect(await keyword.countDocuments({ normal: 42 } as never)).toBe(1);
+
+			// And it is a different database: the connected one is untouched.
+			expect(await col.countDocuments({ normal: 42 } as never)).toBe(0);
+
+			expect(await other.dropDatabase()).toBe(true);
+		});
+	}
+
+	test("a name that would be a whole statement is still only a name", async () => {
+		const other = client.db("INFO FOR DB");
+		await other.collection<Doc>("docs").insertOne({ normal: 1 } as Doc);
+		expect(await other.collection<Doc>("docs").countDocuments({})).toBe(1);
+		expect(await other.dropDatabase()).toBe(true);
+
+		// The server is still there — the point of the previous assertion.
+		expect(await col.countDocuments({})).toBe(1);
+	});
+});

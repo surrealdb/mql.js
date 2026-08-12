@@ -18,7 +18,7 @@ describe("translateProjection", () => {
 
 	test("inclusion projection returns field list", () => {
 		const r = translateProjection({ name: 1, age: 1 });
-		expect(r.fields).toBe("id, name, age");
+		expect(r.fields).toBe("id, `name`, `age`");
 		expect(r.isExclusion).toBe(false);
 		expect(r.includeId).toBe(true);
 	});
@@ -27,17 +27,17 @@ describe("translateProjection", () => {
 	// for it, and `_id` is SurrealDB's `id` column rather than a document field —
 	// so a field list that does not name `id` yields documents with no identity.
 	test("an inclusion projection selects the identity column", () => {
-		expect(translateProjection({ name: 1 }).fields).toBe("id, name");
-		expect(translateProjection({ _id: 1, name: 1 }).fields).toBe("id, name");
+		expect(translateProjection({ name: 1 }).fields).toBe("id, `name`");
+		expect(translateProjection({ _id: 1, name: 1 }).fields).toBe("id, `name`");
 	});
 
 	test("a suppressed _id keeps the identity column out of the field list", () => {
-		expect(translateProjection({ name: 1, _id: 0 }).fields).toBe("name");
+		expect(translateProjection({ name: 1, _id: 0 }).fields).toBe("`name`");
 	});
 
 	test("inclusion with _id: 0 excludes id", () => {
 		const r = translateProjection({ _id: 0, name: 1 });
-		expect(r.fields).toBe("name");
+		expect(r.fields).toBe("`name`");
 		expect(r.includeId).toBe(false);
 	});
 
@@ -100,8 +100,8 @@ describe("translateProjection", () => {
 	});
 
 	test("a pure projection gives the same result in either key order", () => {
-		expect(translateProjection({ a: 1, b: 1 }).fields).toBe("id, a, b");
-		expect(translateProjection({ b: 1, a: 1 }).fields).toBe("id, b, a");
+		expect(translateProjection({ a: 1, b: 1 }).fields).toBe("id, `a`, `b`");
+		expect(translateProjection({ b: 1, a: 1 }).fields).toBe("id, `b`, `a`");
 		expect(translateProjection({ a: 0, b: 0 }).excludeFields).toEqual([
 			"a",
 			"b",
@@ -115,7 +115,7 @@ describe("translateProjection", () => {
 	test("_id is exempt from the mixing rule in both directions", () => {
 		// `{ a: 1, _id: 0 }` — the documented exception.
 		const inclusion = translateProjection({ a: 1, _id: 0 });
-		expect(inclusion.fields).toBe("a");
+		expect(inclusion.fields).toBe("`a`");
 		expect(inclusion.isExclusion).toBe(false);
 		expect(inclusion.includeId).toBe(false);
 
@@ -139,6 +139,6 @@ describe("translateProjection", () => {
 			string,
 			0 | 1 | boolean
 		>);
-		expect(r.fields).toBe("id, name, age");
+		expect(r.fields).toBe("id, `name`, `age`");
 	});
 });

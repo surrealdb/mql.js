@@ -103,14 +103,14 @@ describe("translateFilter with _id", () => {
 			options,
 		);
 		expect(clause).toBe(
-			"(id = $p0 OR (name = $p1 OR (type::is_array(name) AND name CONTAINS $p1)))",
+			"(id = $p0 OR (`name` = $p1 OR (type::is_array(`name`) AND `name` CONTAINS $p1)))",
 		);
 	});
 
 	test("other fields are unaffected", () => {
 		const { clause } = translateFilter({ _id: "a", name: "x" }, options);
 		expect(clause).toBe(
-			"id = $p0 AND (name = $p1 OR (type::is_array(name) AND name CONTAINS $p1))",
+			"id = $p0 AND (`name` = $p1 OR (type::is_array(`name`) AND `name` CONTAINS $p1))",
 		);
 	});
 
@@ -118,7 +118,7 @@ describe("translateFilter with _id", () => {
 		// No table means no RecordId can be built. Every in-driver call site
 		// supplies one; this only guards direct use of the translator.
 		const { clause } = translateFilter({ _id: "a" });
-		expect(clause).toBe("_id = $p0");
+		expect(clause).toBe("`_id` = $p0");
 	});
 });
 
@@ -135,7 +135,7 @@ describe("translateSort with _id", () => {
 
 	test("mixed keys keep their own names", () => {
 		expect(translateSort({ _id: 1, name: -1 })).toBe(
-			"ORDER BY id ASC, name DESC",
+			"ORDER BY id ASC, `name` DESC",
 		);
 	});
 });

@@ -28,7 +28,7 @@ function serverIndexes(
 }
 
 /** The `INFO FOR TABLE` read every index operation starts with. */
-const INFO_SQL = "INFO FOR TABLE users STRUCTURE";
+const INFO_SQL = "INFO FOR TABLE `users` STRUCTURE";
 
 /** Metadata comment for an index this driver would have written. */
 function meta(
@@ -47,7 +47,7 @@ describe("createIndex – SQL emitted", () => {
 		expect(name).toBe("age_1");
 		expect(executor.queries.map((q) => q.sql)).toEqual([
 			INFO_SQL,
-			"DEFINE INDEX age_1 ON users FIELDS age COMMENT $mqlIndexMeta",
+			"DEFINE INDEX `age_1` ON `users` FIELDS `age` COMMENT $mqlIndexMeta",
 		]);
 		expect(executor.queries[1].bindings).toEqual({
 			mqlIndexMeta: meta("age_1", { age: 1 }),
@@ -60,7 +60,7 @@ describe("createIndex – SQL emitted", () => {
 
 		expect(name).toBe("age_-1");
 		expect(executor.queries[1].sql).toBe(
-			"DEFINE INDEX `age_-1` ON users FIELDS age COMMENT $mqlIndexMeta",
+			"DEFINE INDEX `age_-1` ON `users` FIELDS `age` COMMENT $mqlIndexMeta",
 		);
 		// `-1` has nowhere to go in the DDL, so the metadata is what keeps it.
 		expect(executor.queries[1].bindings).toEqual({
@@ -74,7 +74,7 @@ describe("createIndex – SQL emitted", () => {
 
 		expect(name).toBe("a_1_b_-1");
 		expect(executor.queries[1].sql).toBe(
-			"DEFINE INDEX `a_1_b_-1` ON users FIELDS a, b COMMENT $mqlIndexMeta",
+			"DEFINE INDEX `a_1_b_-1` ON `users` FIELDS `a`, `b` COMMENT $mqlIndexMeta",
 		);
 	});
 
@@ -83,7 +83,7 @@ describe("createIndex – SQL emitted", () => {
 		await createIndex(ctx, { email: 1 }, { unique: true });
 
 		expect(executor.queries[1].sql).toBe(
-			"DEFINE INDEX email_1 ON users FIELDS email UNIQUE COMMENT $mqlIndexMeta",
+			"DEFINE INDEX `email_1` ON `users` FIELDS `email` UNIQUE COMMENT $mqlIndexMeta",
 		);
 		expect(executor.queries[1].bindings).toEqual({
 			mqlIndexMeta: meta("email_1", { email: 1 }, { unique: true }),
@@ -96,21 +96,21 @@ describe("createIndex – SQL emitted", () => {
 
 		expect(name).toBe("by age");
 		expect(executor.queries[1].sql).toBe(
-			"DEFINE INDEX `by age` ON users FIELDS age COMMENT $mqlIndexMeta",
+			"DEFINE INDEX `by age` ON `users` FIELDS `age` COMMENT $mqlIndexMeta",
 		);
 	});
 
 	test("nested field paths are escaped segment by segment", async () => {
 		const { ctx, executor } = makeContext();
 		await createIndex(ctx, { "profile.email": 1 });
-		expect(executor.queries[1].sql).toContain("FIELDS profile.email");
+		expect(executor.queries[1].sql).toContain("FIELDS `profile`.`email`");
 	});
 
 	test("_id is indexed as SurrealDB's `id` column", async () => {
 		const { ctx, executor } = makeContext();
 		await createIndex(ctx, { _id: 1, tenant: 1 });
 		expect(executor.queries[1].sql).toBe(
-			"DEFINE INDEX _id_1_tenant_1 ON users FIELDS id, tenant COMMENT $mqlIndexMeta",
+			"DEFINE INDEX `_id_1_tenant_1` ON `users` FIELDS `id`, `tenant` COMMENT $mqlIndexMeta",
 		);
 	});
 
@@ -139,7 +139,7 @@ describe("createIndex – specification forms", () => {
 	test("a list of field names becomes a compound ascending index", async () => {
 		const { ctx, executor } = makeContext();
 		expect(await createIndex(ctx, ["f", "g"])).toBe("f_1_g_1");
-		expect(executor.queries[1].sql).toContain("FIELDS f, g");
+		expect(executor.queries[1].sql).toContain("FIELDS `f`, `g`");
 	});
 
 	test("a single [field, direction] tuple is one key, not two", async () => {
@@ -184,7 +184,7 @@ describe("createIndex – text indexes", () => {
 		expect(executor.queries.map((q) => q.sql)).toEqual([
 			INFO_SQL,
 			"DEFINE ANALYZER IF NOT EXISTS blank TOKENIZERS blank FILTERS lowercase",
-			"DEFINE INDEX title_text ON users FIELDS title FULLTEXT ANALYZER blank BM25 HIGHLIGHTS COMMENT $mqlIndexMeta",
+			"DEFINE INDEX `title_text` ON `users` FIELDS `title` FULLTEXT ANALYZER blank BM25 HIGHLIGHTS COMMENT $mqlIndexMeta",
 		]);
 		expect(ctx.indexes.textFields).toEqual(["title"]);
 	});
@@ -210,7 +210,7 @@ describe("createIndex – text indexes", () => {
 		]);
 		expect(executor.queries.map((q) => q.sql)).toEqual([
 			INFO_SQL,
-			"DEFINE INDEX title_text ON users FIELDS title FULLTEXT ANALYZER blank BM25 HIGHLIGHTS COMMENT $mqlIndexMeta",
+			"DEFINE INDEX `title_text` ON `users` FIELDS `title` FULLTEXT ANALYZER blank BM25 HIGHLIGHTS COMMENT $mqlIndexMeta",
 		]);
 	});
 
@@ -226,8 +226,8 @@ describe("createIndex – text indexes", () => {
 			.map((q) => q.sql)
 			.filter((sql) => sql.startsWith("DEFINE INDEX"));
 		expect(defines).toEqual([
-			"DEFINE INDEX title_text_body_text_title ON users FIELDS title FULLTEXT ANALYZER blank BM25 HIGHLIGHTS COMMENT $mqlIndexMeta",
-			"DEFINE INDEX title_text_body_text_body ON users FIELDS body FULLTEXT ANALYZER blank BM25 HIGHLIGHTS COMMENT $mqlIndexMeta",
+			"DEFINE INDEX `title_text_body_text_title` ON `users` FIELDS `title` FULLTEXT ANALYZER blank BM25 HIGHLIGHTS COMMENT $mqlIndexMeta",
+			"DEFINE INDEX `title_text_body_text_body` ON `users` FIELDS `body` FULLTEXT ANALYZER blank BM25 HIGHLIGHTS COMMENT $mqlIndexMeta",
 		]);
 		expect(ctx.indexes.textFields).toEqual(["title", "body"]);
 	});
@@ -315,7 +315,7 @@ describe("createIndex – accepted-but-ignored options", () => {
 			const { ctx, executor } = makeContext();
 			expect(await createIndex(ctx, { a: 1 }, options)).toBe("a_1");
 			expect(executor.queries[1].sql).toBe(
-				"DEFINE INDEX a_1 ON users FIELDS a COMMENT $mqlIndexMeta",
+				"DEFINE INDEX `a_1` ON `users` FIELDS `a` COMMENT $mqlIndexMeta",
 			);
 		});
 	}
@@ -556,7 +556,7 @@ describe("dropIndex", () => {
 
 		// `_id_` is always reported, so a table with one real index had two.
 		expect(await dropIndex(ctx, "age_1")).toEqual({ nIndexesWas: 2, ok: 1 });
-		expect(executor.queries[1].sql).toBe("REMOVE INDEX age_1 ON users");
+		expect(executor.queries[1].sql).toBe("REMOVE INDEX `age_1` ON `users`");
 	});
 
 	test("the index name is escaped rather than interpolated raw", async () => {
@@ -564,7 +564,7 @@ describe("dropIndex", () => {
 		serverIndexes(executor, [{ name: "age_-1", cols: ["age"], index: "" }]);
 
 		await dropIndex(ctx, "age_-1");
-		expect(executor.queries[1].sql).toBe("REMOVE INDEX `age_-1` ON users");
+		expect(executor.queries[1].sql).toBe("REMOVE INDEX `age_-1` ON `users`");
 	});
 
 	test("a hostile index name cannot inject SurrealQL", async () => {
@@ -574,7 +574,7 @@ describe("dropIndex", () => {
 
 		await dropIndex(ctx, hostile);
 		expect(executor.queries[1].sql).toBe(
-			"REMOVE INDEX `x\\` ON users; REMOVE TABLE users; --` ON users",
+			"REMOVE INDEX `x\\` ON users; REMOVE TABLE users; --` ON `users`",
 		);
 	});
 
@@ -614,8 +614,8 @@ describe("dropIndex", () => {
 
 		await dropIndex(ctx, "ft");
 		expect(executor.queries.slice(1).map((q) => q.sql)).toEqual([
-			"REMOVE INDEX ft_title ON users",
-			"REMOVE INDEX ft_body ON users",
+			"REMOVE INDEX `ft_title` ON `users`",
+			"REMOVE INDEX `ft_body` ON `users`",
 		]);
 	});
 
@@ -647,8 +647,8 @@ describe("dropIndexes", () => {
 
 		expect(await dropIndexes(ctx)).toBe(true);
 		expect(executor.queries.slice(1).map((q) => q.sql)).toEqual([
-			"REMOVE INDEX a_1 ON users",
-			"REMOVE INDEX b_1 ON users",
+			"REMOVE INDEX `a_1` ON `users`",
+			"REMOVE INDEX `b_1` ON `users`",
 		]);
 	});
 

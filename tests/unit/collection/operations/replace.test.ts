@@ -13,8 +13,8 @@ describe("replaceOne", () => {
 		} as never);
 
 		expect(executor.queries[0].sql).toBe(
-			"UPDATE (SELECT VALUE id FROM (SELECT id FROM users " +
-				"WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0)) " +
+			"UPDATE (SELECT VALUE id FROM (SELECT id FROM `users` " +
+				"WHERE (`name` = $p0 OR (type::is_array(`name`) AND `name` CONTAINS $p0)) " +
 				"LIMIT 1)) CONTENT $p1",
 		);
 		expect(result.matchedCount).toBe(1);
@@ -31,7 +31,7 @@ describe("replaceOne", () => {
 		const result = await replaceOne(ctx, {}, { name: "New" } as never);
 
 		expect(executor.queries[0].sql).toBe(
-			"UPDATE (SELECT VALUE id FROM (SELECT id FROM users LIMIT 1)) CONTENT $p0",
+			"UPDATE (SELECT VALUE id FROM (SELECT id FROM `users` LIMIT 1)) CONTENT $p0",
 		);
 		expect(result.matchedCount).toBe(1);
 	});
@@ -75,8 +75,8 @@ describe("replaceOne", () => {
 		// `ORDER BY` naming an idiom the selection does not; `SELECT VALUE id` then
 		// discards it.
 		expect(executor.queries[0].sql).toBe(
-			"UPDATE (SELECT VALUE id FROM (SELECT id, v FROM users " +
-				"ORDER BY v DESC LIMIT 1)) CONTENT $p0",
+			"UPDATE (SELECT VALUE id FROM (SELECT id, `v` FROM `users` " +
+				"ORDER BY `v` DESC LIMIT 1)) CONTENT $p0",
 		);
 	});
 });

@@ -277,10 +277,10 @@ describe("MongoClient: lifecycle", () => {
 		await client.connect();
 
 		expect(stub.recording.queries[0]).toContain(
-			"DEFINE NAMESPACE IF NOT EXISTS ns",
+			"DEFINE NAMESPACE IF NOT EXISTS `ns`",
 		);
 		expect(stub.recording.queries[0]).toContain(
-			"DEFINE DATABASE IF NOT EXISTS mydb",
+			"DEFINE DATABASE IF NOT EXISTS `mydb`",
 		);
 	});
 });

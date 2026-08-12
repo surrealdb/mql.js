@@ -2,15 +2,15 @@
  * SurrealQL identifier escaping, and the inverse.
  *
  * Every identifier this driver splices into SQL — table names, database names,
- * index names and document field paths — goes through here. Values never do;
- * they are always sent as bound parameters.
+ * namespace names, index names, aliases and document field paths — goes through
+ * here. Values never do; they are always sent as bound parameters.
  *
  * The reverse direction lives here too (`unescapeSurrealString`), because it is
  * the same knowledge read backwards: SurrealDB names values in its error
  * messages as SurrealQL literals, so recovering the text one stands for means
  * undoing exactly the escaping described below.
  *
- * Escaping field paths is not cosmetic. Without it:
+ * Escaping is not cosmetic. Without it:
  *   - a legal MongoDB field name containing a space (`{'first name': 'x'}`)
  *     produces a SurrealQL parse error;
  *   - a name containing a hyphen (`{'a-b': 1}`) is silently reinterpreted as
@@ -20,73 +20,43 @@
  *     come from request input, which makes that an injection vector.
  */
 
-/** Identifiers matching this need no quoting (unless reserved — see below). */
-const SAFE_IDENTIFIER = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
-
 /** A path segment that is purely digits, i.e. a MongoDB array index. */
 const ARRAY_INDEX = /^\d+$/;
 
 /**
- * SurrealQL keywords that are rejected in an identifier position unless quoted.
+ * Escape a table, database, namespace, index or alias name for inclusion in a
+ * SurrealQL statement.
  *
- * Determined empirically against SurrealDB 3.x rather than guessed: each
- * candidate keyword was used as a field name in every position this driver
- * emits one (WHERE, ORDER BY, SELECT list, SET target, DEFINE INDEX FIELDS and
- * as a function argument) and this is the union of those that failed to parse.
- * Quoting was then confirmed to fix all of them in all positions.
+ * Every name is quoted, including one that would have been legal bare. Deciding
+ * per name means keeping a list of the words SurrealQL rejects in an identifier
+ * position, and that list cannot be kept correct:
  *
- * Deliberately minimal — words that parse fine unquoted (`field`, `type`,
- * `group`, `order`, `limit`, `table`, `start`, `content`, `where`, `from`, …)
- * are left alone so generated SurrealQL stays readable.
- */
-const RESERVED_WORDS = new Set([
-	"break",
-	"continue",
-	"create",
-	"define",
-	"delete",
-	"explain",
-	"false",
-	"for",
-	"if",
-	"info",
-	"insert",
-	"let",
-	"none",
-	"null",
-	"relate",
-	"remove",
-	"return",
-	"select",
-	"throw",
-	"true",
-	"update",
-	"upsert",
-	"value",
-]);
-
-/**
- * Wrap `name` in backticks unconditionally, escaping any embedded backtick.
+ *   - It is not derivable from the keyword set. Sweeping all 353 words in
+ *     SurrealDB 3.2's lexer through all 37 positions this driver emits an
+ *     identifier in, 33 fail bare — but *which* 33 depends on the position, and
+ *     they are not the words a reader would predict. `where`, `table` and `all`
+ *     parse fine as field names; `and`, `only`, `rand` and `overwrite` do not.
+ *   - SurrealDB maintains its own `RESERVED_KEYWORD` set for the same purpose in
+ *     its formatter, and copying it is still not enough: `EXPLAIN`, `ONLY`,
+ *     `OVERWRITE` and `AND` fail in this driver's positions and are absent from
+ *     it.
+ *   - Any such list is pinned to one server version. A keyword added in a later
+ *     3.x would silently turn a working collection name into a parse error, or
+ *     worse: bare `none`, `null`, `true` and `false` do not fail as table names,
+ *     they read as empty or as a literal, so the caller is answered wrongly
+ *     rather than refused.
  *
- * The backslash escape is what stops a hostile identifier terminating the
- * quoted region and injecting SurrealQL; it round-trips correctly on 3.x.
- */
-export function quoteIdentifier(name: string): string {
-	return `\`${name.replace(/\\/g, "\\\\").replace(/`/g, "\\`")}\``;
-}
-
-/** True when `name` can be emitted bare. */
-function isBareIdentifier(name: string): boolean {
-	return SAFE_IDENTIFIER.test(name) && !RESERVED_WORDS.has(name.toLowerCase());
-}
-
-/**
- * Escape a table, database or index name for inclusion in a SurrealQL
- * statement. Plain identifiers pass through; anything else — including a name
- * that collides with a SurrealQL keyword — is quoted.
+ * Quoting needs no list, and it was measured rather than assumed: all 353
+ * keywords and 28 deliberately hostile names, quoted, in all 37 positions —
+ * 14,097 statements — parse, address the right object, and come back under the
+ * unquoted name. The cost is backticks in generated SurrealQL, which is not a
+ * surface this driver exposes.
+ *
+ * The backslash escape is what stops a hostile identifier terminating the quoted
+ * region and injecting SurrealQL; it round-trips correctly on 3.x.
  */
 export function escapeIdentifier(name: string): string {
-	return isBareIdentifier(name) ? name : quoteIdentifier(name);
+	return `\`${name.replace(/\\/g, "\\\\").replace(/`/g, "\\`")}\``;
 }
 
 /**
@@ -96,9 +66,9 @@ export function escapeIdentifier(name: string): string {
  * access rather than becoming one field literally named `profile.email`.
  *
  * A purely numeric segment is a MongoDB array index and becomes SurrealQL
- * bracket syntax: `items.0.sku` → `items[0].sku`. (`items.0.sku` is a parse
- * error in SurrealQL, so passing it through unchanged never worked.) A leading
- * numeric segment is treated as a field name instead, since there is no
+ * bracket syntax: `items.0.sku` → `` `items`[0].`sku` ``. (`items.0.sku` is a
+ * parse error in SurrealQL, so passing it through unchanged never worked.) A
+ * leading numeric segment is treated as a field name instead, since there is no
  * preceding array to index into.
  */
 export function escapeFieldPath(field: string): string {

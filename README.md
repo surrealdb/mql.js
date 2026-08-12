@@ -912,6 +912,26 @@ await collection.createIndex({ title: "text", description: "text" });
 { "scores.0": { $gt: 90 } }           // array index
 ```
 
+### Names
+
+Any name MongoDB accepts works: collections, fields, indexes and databases may
+contain spaces, hyphens, dots, unicode, or collide with a SurrealQL keyword.
+
+```typescript
+db.collection("function");                     // a SurrealQL keyword
+collection.find({ "first name": "Ada" });      // a space
+collection.find({ "a-b": 7 });                 // a hyphen
+collection.createIndex({ x: 1 }, { name: "only" });
+client.db("alter");
+```
+
+Every name this driver puts into a statement is quoted, and every value is sent
+as a bound parameter. So a name is only ever a name — which matters because a
+filter key is usually built from request input, and because SurrealQL would
+otherwise read some of these as something else entirely. Bare, `{'a-b': 1}` is
+subtraction, `{'x` = 1 OR true OR `': 1}` is a predicate that matches every row,
+and a collection called `none` reads as permanently empty rather than failing.
+
 ## Update operators
 
 ### Field operators

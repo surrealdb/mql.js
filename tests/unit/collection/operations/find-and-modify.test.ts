@@ -32,7 +32,7 @@ describe("findOneAndUpdate", () => {
 		// pair costs when it is split over two round trips.
 		expect(executor.queries.length).toBe(1);
 		expect(executor.queries[0].sql).toBe(
-			"UPDATE (SELECT VALUE id FROM (SELECT id FROM users WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0)) LIMIT 1)) SET age += $p1 RETURN BEFORE",
+			"UPDATE (SELECT VALUE id FROM (SELECT id FROM `users` WHERE (`name` = $p0 OR (type::is_array(`name`) AND `name` CONTAINS $p0)) LIMIT 1)) SET `age` += $p1 RETURN BEFORE",
 		);
 		// `RETURN BEFORE` on the same statement is also what makes the pre-image
 		// available at all: fetching it separately afterwards would read the
@@ -102,7 +102,7 @@ describe("findOneAndUpdate", () => {
 			{ $set: { "grades.$[g].adjusted": true } },
 			{ arrayFilters: [{ "g.score": { $gte: 90 } }] },
 		);
-		expect(executor.queries[0].sql).toContain("grades[WHERE score >= $p1]");
+		expect(executor.queries[0].sql).toContain("`grades`[WHERE `score` >= $p1]");
 	});
 
 	test("sort decides which document is modified, by ordering the subquery that names it", async () => {
@@ -126,7 +126,7 @@ describe("findOneAndUpdate", () => {
 		// `SELECT VALUE id` drops it again.
 		expect(executor.queries.length).toBe(1);
 		expect(executor.queries[0].sql).toBe(
-			"UPDATE (SELECT VALUE id FROM (SELECT id, age FROM users ORDER BY age DESC LIMIT 1)) SET age = $p0 RETURN BEFORE",
+			"UPDATE (SELECT VALUE id FROM (SELECT id, `age` FROM `users` ORDER BY `age` DESC LIMIT 1)) SET `age` = $p0 RETURN BEFORE",
 		);
 	});
 
@@ -162,7 +162,7 @@ describe("findOneAndUpdate", () => {
 		)) as ModifyResult<User>;
 
 		expect(executor.queries[1].sql).toBe(
-			"UPSERT $__rid SET email = $p0, hits += $p1 RETURN AFTER",
+			"UPSERT $__rid SET `email` = $p0, `hits` += $p1 RETURN AFTER",
 		);
 		expect(executor.queries[1].bindings?.p0).toBe("a@b.c");
 		expect(r.value).toMatchObject({ email: "a@b.c", hits: 1 });
@@ -203,7 +203,7 @@ describe("findOneAndUpdate", () => {
 		expect(rid.id).toBe("fixed");
 		// `_id` addresses the record; it must not also be written as a field.
 		expect(executor.queries[1].sql).toBe(
-			"UPSERT $__rid SET age = $p0 RETURN AFTER",
+			"UPSERT $__rid SET `age` = $p0 RETURN AFTER",
 		);
 	});
 });
@@ -220,7 +220,7 @@ describe("findOneAndDelete", () => {
 		// had already removed — and report it as this call's deletion.
 		expect(executor.queries.length).toBe(1);
 		expect(executor.queries[0].sql).toBe(
-			"DELETE (SELECT VALUE id FROM (SELECT id FROM users WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0)) LIMIT 1)) RETURN BEFORE",
+			"DELETE (SELECT VALUE id FROM (SELECT id FROM `users` WHERE (`name` = $p0 OR (type::is_array(`name`) AND `name` CONTAINS $p0)) LIMIT 1)) RETURN BEFORE",
 		);
 		expect(out).toMatchObject({ name: "Alice" });
 	});
@@ -262,7 +262,7 @@ describe("findOneAndDelete", () => {
 		// statement returned, since `RETURN BEFORE` hands back the whole record.
 		expect(executor.queries.length).toBe(1);
 		expect(executor.queries[0].sql).toBe(
-			"DELETE (SELECT VALUE id FROM (SELECT id, age FROM users ORDER BY age ASC LIMIT 1)) RETURN BEFORE",
+			"DELETE (SELECT VALUE id FROM (SELECT id, `age` FROM `users` ORDER BY `age` ASC LIMIT 1)) RETURN BEFORE",
 		);
 		expect(out).toEqual({ _id: "a", name: "Alice" } as unknown as User);
 	});
@@ -284,7 +284,7 @@ describe("findOneAndReplace", () => {
 		} as User)) as User;
 
 		expect(executor.queries[0].sql).toBe(
-			"UPDATE (SELECT VALUE id FROM (SELECT id FROM users LIMIT 1)) CONTENT $p0 RETURN BEFORE",
+			"UPDATE (SELECT VALUE id FROM (SELECT id FROM `users` LIMIT 1)) CONTENT $p0 RETURN BEFORE",
 		);
 		expect(out).toEqual({ _id: "a", name: "Old", age: 10 } as unknown as User);
 	});
@@ -341,7 +341,7 @@ describe("findOneAndReplace", () => {
 		// same statement, so the document replaced is the document that matched.
 		expect(executor.queries.length).toBe(1);
 		expect(executor.queries[0].sql).toBe(
-			"UPDATE (SELECT VALUE id FROM (SELECT id FROM users WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0)) LIMIT 1)) CONTENT $p1 RETURN BEFORE",
+			"UPDATE (SELECT VALUE id FROM (SELECT id FROM `users` WHERE (`name` = $p0 OR (type::is_array(`name`) AND `name` CONTAINS $p0)) LIMIT 1)) CONTENT $p1 RETURN BEFORE",
 		);
 		// The replacement travels as a bound value, so a field named like SurrealQL
 		// syntax cannot become syntax.

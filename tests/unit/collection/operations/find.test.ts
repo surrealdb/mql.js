@@ -13,7 +13,7 @@ describe("findOne", () => {
 
 		const doc = await findOne(ctx);
 
-		expect(executor.queries[0].sql).toBe("SELECT * FROM users LIMIT 1");
+		expect(executor.queries[0].sql).toBe("SELECT * FROM `users` LIMIT 1");
 		expect(executor.queries[0].bindings).toEqual({});
 		expect(doc).toEqual({ _id: "a", name: "Alice" });
 	});
@@ -25,7 +25,7 @@ describe("findOne", () => {
 		await findOne(ctx, { name: "Alice" }, { projection: { name: 1 } });
 
 		expect(executor.queries[0].sql).toBe(
-			"SELECT id, name FROM users WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0)) LIMIT 1",
+			"SELECT id, `name` FROM `users` WHERE (`name` = $p0 OR (type::is_array(`name`) AND `name` CONTAINS $p0)) LIMIT 1",
 		);
 		expect(executor.queries[0].bindings).toEqual({ p0: "Alice" });
 	});
@@ -54,7 +54,7 @@ describe("findOne", () => {
 		executor.enqueue([]);
 		await findOne(ctx, undefined, { sort: { age: -1 } });
 		expect(executor.queries[0].sql).toBe(
-			"SELECT * FROM users ORDER BY age DESC LIMIT 1",
+			"SELECT * FROM `users` ORDER BY `age` DESC LIMIT 1",
 		);
 	});
 
@@ -76,10 +76,10 @@ describe("findOne", () => {
 		// ordered by that alias *inside* the subquery, and omitted on the way out.
 		// Simplifying any of those three back is what breaks the query.
 		expect(executor.queries[0].sql).toBe(
-			"SELECT * OMIT __mql_distance FROM (" +
-				"SELECT *, geo::distance(location, $p0) AS __mql_distance FROM users " +
-				"WHERE type::is_point(location) AND geo::distance(location, $p0) <= $p1 " +
-				"ORDER BY __mql_distance ASC LIMIT 1" +
+			"SELECT * OMIT `__mql_distance` FROM (" +
+				"SELECT *, geo::distance(`location`, $p0) AS `__mql_distance` FROM `users` " +
+				"WHERE type::is_point(`location`) AND geo::distance(`location`, $p0) <= $p1 " +
+				"ORDER BY `__mql_distance` ASC LIMIT 1" +
 				")",
 		);
 	});
@@ -101,7 +101,7 @@ describe("findOne", () => {
 		// No subquery is needed at all once nothing orders by distance, so the
 		// distance band stays an ordinary WHERE condition.
 		expect(executor.queries[0].sql).toBe(
-			"SELECT * FROM users WHERE type::is_point(location) ORDER BY name ASC LIMIT 1",
+			"SELECT * FROM `users` WHERE type::is_point(`location`) ORDER BY `name` ASC LIMIT 1",
 		);
 	});
 
@@ -123,9 +123,9 @@ describe("findOne", () => {
 		// nothing to OMIT — and the ordering still has to live inside, because an
 		// outer `ORDER BY __mql_distance` fails to parse against this field list.
 		expect(executor.queries[0].sql).toBe(
-			"SELECT id, name FROM (" +
-				"SELECT *, geo::distance(location, $p0) AS __mql_distance FROM users " +
-				"WHERE type::is_point(location) ORDER BY __mql_distance ASC LIMIT 1" +
+			"SELECT id, `name` FROM (" +
+				"SELECT *, geo::distance(`location`, $p0) AS `__mql_distance` FROM `users` " +
+				"WHERE type::is_point(`location`) ORDER BY `__mql_distance` ASC LIMIT 1" +
 				")",
 		);
 	});
@@ -143,7 +143,7 @@ describe("executeFind", () => {
 		);
 
 		expect(executor.queries[0].sql).toBe(
-			"SELECT * FROM users WHERE (active = $p0 OR (type::is_array(active) AND active CONTAINS $p0)) ORDER BY age ASC LIMIT 5 START 10",
+			"SELECT * FROM `users` WHERE (`active` = $p0 OR (type::is_array(`active`) AND `active` CONTAINS $p0)) ORDER BY `age` ASC LIMIT 5 START 10",
 		);
 		expect(executor.queries[0].bindings).toEqual({ p0: true });
 		expect(docs).toEqual([{ _id: "a", name: "Alice" }]);
@@ -155,7 +155,7 @@ describe("executeFind", () => {
 		await executeFind(ctx, undefined, {
 			projectionFields: "name, age",
 		});
-		expect(executor.queries[0].sql).toBe("SELECT name, age FROM users");
+		expect(executor.queries[0].sql).toBe("SELECT name, age FROM `users`");
 	});
 
 	test("exclusion projection is applied in JS post-processing", async () => {
@@ -213,11 +213,11 @@ describe("executeFind", () => {
 		// ordering everything the filter matched. `TIMEOUT` cannot join them:
 		// SurrealQL takes one, last, so it bounds the whole statement.
 		expect(executor.queries[0].sql).toBe(
-			"SELECT * OMIT __mql_distance FROM (" +
-				"SELECT *, geo::distance(location, $p1) AS __mql_distance FROM users " +
-				"WHERE (status = $p0 OR (type::is_array(status) AND status CONTAINS $p0)) " +
-				"AND type::is_point(location) " +
-				"ORDER BY __mql_distance ASC LIMIT 5 START 10" +
+			"SELECT * OMIT `__mql_distance` FROM (" +
+				"SELECT *, geo::distance(`location`, $p1) AS `__mql_distance` FROM `users` " +
+				"WHERE (`status` = $p0 OR (type::is_array(`status`) AND `status` CONTAINS $p0)) " +
+				"AND type::is_point(`location`) " +
+				"ORDER BY `__mql_distance` ASC LIMIT 5 START 10" +
 				") TIMEOUT 250ms",
 		);
 	});
@@ -230,7 +230,7 @@ describe("executeFind", () => {
 
 		expect(executor.queries[0].sql).not.toContain("__mql_distance");
 		expect(executor.queries[0].sql).toBe(
-			"SELECT * FROM users WHERE (status = $p0 OR (type::is_array(status) AND status CONTAINS $p0)) LIMIT 5",
+			"SELECT * FROM `users` WHERE (`status` = $p0 OR (type::is_array(`status`) AND `status` CONTAINS $p0)) LIMIT 5",
 		);
 	});
 });

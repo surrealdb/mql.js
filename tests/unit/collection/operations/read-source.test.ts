@@ -27,13 +27,16 @@ describe("a sort the field list does not name", () => {
 
 		const failure = executeFind(ctx, undefined, {
 			sort: { k: 1 },
-			projectionFields: "id, tag",
+			projectionFields: "id, `tag`",
 		});
 
 		await expect(failure).rejects.toBeInstanceOf(MongoCompatibilityError);
 		// The message has to say which column is at fault: the caller chose the
 		// projection and the sort independently, and only one of them has to change.
-		await expect(failure).rejects.toThrow(/Sorting by k\b/);
+		// It names the field as the *caller* spelled it, not as the statement would
+		// have — reporting this driver's escaping back would name a field they never
+		// wrote.
+		await expect(failure).rejects.toThrow(/Sorting by k while/);
 	});
 
 	test("names every column the field list is missing, and no other", async () => {
@@ -41,7 +44,7 @@ describe("a sort the field list does not name", () => {
 
 		const failure = executeFind(ctx, undefined, {
 			sort: { extra: 1, k: -1, tag: 1 },
-			projectionFields: "id, tag",
+			projectionFields: "id, `tag`",
 		});
 
 		// `tag` is projected, so it is not part of the complaint.
@@ -53,7 +56,7 @@ describe("a sort the field list does not name", () => {
 
 		const failure = executeFind(ctx, undefined, {
 			sort: { k: 1 },
-			projectionFields: "id, tag",
+			projectionFields: "id, `tag`",
 		});
 
 		// Every one of the three ways out is a change the caller makes, so the error
@@ -75,7 +78,7 @@ describe("a sort the field list does not name", () => {
 		await expect(
 			executeFind(ctx, undefined, {
 				sort: { k: 1 },
-				projectionFields: "id, tag",
+				projectionFields: "id, `tag`",
 			}),
 		).rejects.toBeInstanceOf(MongoCompatibilityError);
 
@@ -91,7 +94,7 @@ describe("a sort the field list does not name", () => {
 		await expect(
 			executeFind(ctx, undefined, {
 				sort: { "a.b": 1 },
-				projectionFields: "id, a.c",
+				projectionFields: "id, `a`.`c`",
 			}),
 		).rejects.toThrow(/Sorting by a\.b while/);
 	});
@@ -104,10 +107,10 @@ describe("a sort the field list does not name", () => {
 		await expect(
 			executeFind(ctx, undefined, {
 				sort: { _id: -1 },
-				projectionFields: "tag",
+				projectionFields: "`tag`",
 				projectionIncludeId: false,
 			}),
-		).rejects.toThrow(/Sorting by id while/);
+		).rejects.toThrow(/Sorting by _id while/);
 	});
 
 	test("is refused from findOne on the same terms", async () => {
@@ -127,11 +130,11 @@ describe("a sort the field list carries", () => {
 
 		await executeFind(ctx, undefined, {
 			sort: { k: 1 },
-			projectionFields: "id, tag, k",
+			projectionFields: "id, `tag`, `k`",
 		});
 
 		expect(executor.queries[0].sql).toBe(
-			"SELECT id, tag, k FROM users ORDER BY k ASC",
+			"SELECT id, `tag`, `k` FROM `users` ORDER BY `k` ASC",
 		);
 	});
 
@@ -147,7 +150,9 @@ describe("a sort the field list carries", () => {
 			projectionExcludeFields: ["k"],
 		});
 
-		expect(executor.queries[0].sql).toBe("SELECT * FROM users ORDER BY k ASC");
+		expect(executor.queries[0].sql).toBe(
+			"SELECT * FROM `users` ORDER BY `k` ASC",
+		);
 	});
 
 	test("orders by the identity column an inclusion projection prepends", async () => {
@@ -158,11 +163,11 @@ describe("a sort the field list carries", () => {
 		// returns it — which means a sort on `_id` is always carried by one.
 		await executeFind(ctx, undefined, {
 			sort: { _id: -1 },
-			projectionFields: "id, tag",
+			projectionFields: "id, `tag`",
 		});
 
 		expect(executor.queries[0].sql).toBe(
-			"SELECT id, tag FROM users ORDER BY id DESC",
+			"SELECT id, `tag` FROM `users` ORDER BY id DESC",
 		);
 	});
 
@@ -172,11 +177,11 @@ describe("a sort the field list carries", () => {
 
 		await executeFind(ctx, undefined, {
 			sort: { extra: 1, k: -1 },
-			projectionFields: "id, extra, k",
+			projectionFields: "id, `extra`, `k`",
 		});
 
 		expect(executor.queries[0].sql).toBe(
-			"SELECT id, extra, k FROM users ORDER BY extra ASC, k DESC",
+			"SELECT id, `extra`, `k` FROM `users` ORDER BY `extra` ASC, `k` DESC",
 		);
 	});
 
@@ -186,11 +191,11 @@ describe("a sort the field list carries", () => {
 
 		await executeFind(ctx, undefined, {
 			sort: { "a.b": 1 },
-			projectionFields: "id, a.b",
+			projectionFields: "id, `a`.`b`",
 		});
 
 		expect(executor.queries[0].sql).toBe(
-			"SELECT id, a.b FROM users ORDER BY a.b ASC",
+			"SELECT id, `a`.`b` FROM `users` ORDER BY `a`.`b` ASC",
 		);
 	});
 
@@ -206,14 +211,14 @@ describe("a sort the field list carries", () => {
 		await executeFind(
 			ctx,
 			{ active: true },
-			{ sort: { k: -1 }, projectionFields: "id, k" },
+			{ sort: { k: -1 }, projectionFields: "id, `k`" },
 			{ hint: "active_1" },
 		);
 
 		expect(executor.queries[1].sql).toBe(
-			"SELECT id, k FROM users WITH INDEX active_1 " +
-				"WHERE (active = $p0 OR (type::is_array(active) AND active CONTAINS $p0)) " +
-				"ORDER BY k DESC",
+			"SELECT id, `k` FROM `users` WITH INDEX `active_1` " +
+				"WHERE (`active` = $p0 OR (type::is_array(`active`) AND `active` CONTAINS $p0)) " +
+				"ORDER BY `k` DESC",
 		);
 	});
 
@@ -224,7 +229,7 @@ describe("a sort the field list carries", () => {
 		await executeFind(
 			ctx,
 			undefined,
-			{ sort: { k: 1 }, limit: 5, skip: 10, projectionFields: "id, k" },
+			{ sort: { k: 1 }, limit: 5, skip: 10, projectionFields: "id, `k`" },
 			{ maxTimeMS: 1000 },
 		);
 
@@ -235,7 +240,7 @@ describe("a sort the field list carries", () => {
 		// instead of ordering everything the filter matched. `TIMEOUT` comes last, as
 		// SurrealQL requires.
 		expect(executor.queries[0].sql).toBe(
-			"SELECT id, k FROM users ORDER BY k ASC LIMIT 5 START 10 TIMEOUT 1000ms",
+			"SELECT id, `k` FROM `users` ORDER BY `k` ASC LIMIT 5 START 10 TIMEOUT 1000ms",
 		);
 	});
 
@@ -246,11 +251,11 @@ describe("a sort the field list carries", () => {
 		await executeFind(ctx, undefined, {
 			sort: { k: 1 },
 			skip: 2,
-			projectionFields: "id, k",
+			projectionFields: "id, `k`",
 		});
 
 		expect(executor.queries[0].sql).toBe(
-			"SELECT id, k FROM users ORDER BY k ASC START 2",
+			"SELECT id, `k` FROM `users` ORDER BY `k` ASC START 2",
 		);
 	});
 
@@ -261,7 +266,7 @@ describe("a sort the field list carries", () => {
 		await executeFind(ctx, undefined, { sort: { k: 1 }, limit: 5, skip: 10 });
 
 		expect(executor.queries[0].sql).toBe(
-			"SELECT * FROM users ORDER BY k ASC LIMIT 5 START 10",
+			"SELECT * FROM `users` ORDER BY `k` ASC LIMIT 5 START 10",
 		);
 	});
 
@@ -272,7 +277,7 @@ describe("a sort the field list carries", () => {
 		await findOne(ctx, {}, { projection: { tag: 1 }, sort: { _id: 1 } });
 
 		expect(executor.queries[0].sql).toBe(
-			"SELECT id, tag FROM users ORDER BY id ASC LIMIT 1",
+			"SELECT id, `tag` FROM `users` ORDER BY id ASC LIMIT 1",
 		);
 	});
 
@@ -285,7 +290,7 @@ describe("a sort the field list carries", () => {
 
 		const docs = await executeFind(ctx, undefined, {
 			sort: { k: 1 },
-			projectionFields: "id, tag, k",
+			projectionFields: "id, `tag`, `k`",
 		});
 
 		expect(docs).toEqual([
@@ -302,15 +307,15 @@ describe("a sort composed with $near", () => {
 
 		await executeFind(ctx, NEAR_POINT, {
 			sort: { k: 1 },
-			projectionFields: "id, name, k",
+			projectionFields: "id, `name`, `k`",
 		});
 
 		// MongoDB lets an explicit sort win over the ordering `$near` implies, so the
 		// distance is never projected and nothing needs a source of its own.
 		const { sql } = executor.queries[0];
 		expect(sql).toBe(
-			"SELECT id, name, k FROM users " +
-				"WHERE type::is_point(location) ORDER BY k ASC",
+			"SELECT id, `name`, `k` FROM `users` " +
+				"WHERE type::is_point(`location`) ORDER BY `k` ASC",
 		);
 		expect(sql).not.toContain("__mql_distance");
 	});
@@ -323,12 +328,12 @@ describe("a sort composed with $near", () => {
 		// list can carry this ordering however the caller projects. The alias in the
 		// subquery's `*` is the only thing that can.
 		expect(
-			await executeFind(ctx, NEAR_POINT, { projectionFields: "id, name" }),
+			await executeFind(ctx, NEAR_POINT, { projectionFields: "id, `name`" }),
 		).toEqual([]);
 
 		expect(executor.queries[0].sql).toBe(
-			"SELECT id, name FROM (SELECT *, geo::distance(location, $p0) AS __mql_distance " +
-				"FROM users WHERE type::is_point(location) ORDER BY __mql_distance ASC)",
+			"SELECT id, `name` FROM (SELECT *, geo::distance(`location`, $p0) AS `__mql_distance` " +
+				"FROM `users` WHERE type::is_point(`location`) ORDER BY `__mql_distance` ASC)",
 		);
 	});
 
@@ -339,7 +344,7 @@ describe("a sort composed with $near", () => {
 		await executeFind(
 			ctx,
 			NEAR_POINT,
-			{ limit: 5, skip: 10, projectionFields: "id, name" },
+			{ limit: 5, skip: 10, projectionFields: "id, `name`" },
 			{ maxTimeMS: 250 },
 		);
 
@@ -348,9 +353,9 @@ describe("a sort composed with $near", () => {
 		// everything the filter matched. `TIMEOUT` cannot join them: SurrealQL takes
 		// one, and it has to come last.
 		expect(executor.queries[0].sql).toBe(
-			"SELECT id, name FROM (SELECT *, geo::distance(location, $p0) AS __mql_distance " +
-				"FROM users WHERE type::is_point(location) " +
-				"ORDER BY __mql_distance ASC LIMIT 5 START 10) TIMEOUT 250ms",
+			"SELECT id, `name` FROM (SELECT *, geo::distance(`location`, $p0) AS `__mql_distance` " +
+				"FROM `users` WHERE type::is_point(`location`) " +
+				"ORDER BY `__mql_distance` ASC LIMIT 5 START 10) TIMEOUT 250ms",
 		);
 	});
 
@@ -362,7 +367,7 @@ describe("a sort composed with $near", () => {
 
 		// Only a `*` can carry the alias, so only a `*` needs to omit it.
 		expect(executor.queries[0].sql).toStartWith(
-			"SELECT * OMIT __mql_distance FROM (",
+			"SELECT * OMIT `__mql_distance` FROM (",
 		);
 	});
 });

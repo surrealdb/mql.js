@@ -30,6 +30,14 @@ export function translateSort(sort?: Sort | null): string {
 	return parts.length > 0 ? `ORDER BY ${parts.join(", ")}` : "";
 }
 
+/** One column a sort orders by, in both spellings. */
+export interface SortColumn {
+	/** The field as the caller named it — for anything reported back to them. */
+	readonly key: string;
+	/** The column as `ORDER BY` and the field list spell it. */
+	readonly column: string;
+}
+
 /**
  * The columns a sort orders by, escaped, without duplicates.
  *
@@ -38,11 +46,19 @@ export function translateSort(sort?: Sort | null): string {
  * `SELECT id FROM t ORDER BY k` is a parse error, not a slower query. Returned
  * apart from the clause because only the caller knows what its field list
  * already contains.
+ *
+ * Both spellings come back together because a column that cannot be ordered by
+ * has to be *reported*, and a caller who asked to sort by `a.b` should be told
+ * about `a.b` rather than about `` `a`.`b` ``. Pairing them here is what stops
+ * the two from being assembled separately and drifting.
  */
-export function sortColumns(sort?: Sort | null): string[] {
-	return [
-		...new Set(sortEntries(sort).map(([field]) => escapeSortField(field))),
-	];
+export function sortColumns(sort?: Sort | null): SortColumn[] {
+	const seen = new Map<string, SortColumn>();
+	for (const [key] of sortEntries(sort)) {
+		const column = escapeSortField(key);
+		if (!seen.has(column)) seen.set(column, { key, column });
+	}
+	return [...seen.values()];
 }
 
 /**

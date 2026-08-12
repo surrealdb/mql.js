@@ -3,16 +3,15 @@ import {
 	escapeFieldList,
 	escapeFieldPath,
 	escapeIdentifier,
-	quoteIdentifier,
 	unescapeSurrealString,
 } from "../../../../src/surreal/sql/escape.ts";
 
 describe("escapeIdentifier", () => {
-	test("plain alphanumeric identifiers pass through unquoted", () => {
-		expect(escapeIdentifier("users")).toBe("users");
-		expect(escapeIdentifier("snake_case")).toBe("snake_case");
-		expect(escapeIdentifier("camelCase123")).toBe("camelCase123");
-		expect(escapeIdentifier("_underscore")).toBe("_underscore");
+	test("plain alphanumeric identifiers are quoted too", () => {
+		expect(escapeIdentifier("users")).toBe("`users`");
+		expect(escapeIdentifier("snake_case")).toBe("`snake_case`");
+		expect(escapeIdentifier("camelCase123")).toBe("`camelCase123`");
+		expect(escapeIdentifier("_underscore")).toBe("`_underscore`");
 	});
 
 	test("identifiers starting with a digit are wrapped in backticks", () => {
@@ -40,68 +39,111 @@ describe("escapeIdentifier", () => {
 		expect(escapeIdentifier("café")).toBe("`café`");
 	});
 
-	test("SurrealQL keywords are quoted even though they look safe", () => {
-		// Verified against 3.x: these fail to parse in an identifier position.
-		for (const word of ["select", "if", "let", "return", "delete", "value"]) {
-			expect(escapeIdentifier(word)).toBe(`\`${word}\``);
-		}
-	});
-
-	test("keyword matching is case-insensitive", () => {
-		expect(escapeIdentifier("SELECT")).toBe("`SELECT`");
-		expect(escapeIdentifier("Select")).toBe("`Select`");
-	});
-
-	test("words that parse fine unquoted are left alone", () => {
-		// Deliberately not over-quoting keeps generated SurrealQL readable.
-		for (const word of ["field", "type", "group", "order", "limit", "table"]) {
-			expect(escapeIdentifier(word)).toBe(word);
-		}
-	});
-});
-
-describe("quoteIdentifier", () => {
-	test("always quotes, even a safe identifier", () => {
-		expect(quoteIdentifier("users")).toBe("`users`");
-	});
-
 	test("escapes backslashes before backticks so the escape cannot be escaped", () => {
 		// A trailing backslash would otherwise escape the closing backtick and
 		// let the rest of the name out of the quoted region.
-		expect(quoteIdentifier("a\\")).toBe("`a\\\\`");
+		expect(escapeIdentifier("a\\")).toBe("`a\\\\`");
+	});
+
+	/**
+	 * Every name is quoted, including the ones that would have been legal bare.
+	 * The list below is not decoration: each word was measured to fail *bare* in
+	 * at least one position this driver emits an identifier in, on SurrealDB
+	 * 3.2.3. Ten of them — `alter`, `function`, `rebuild`, `sleep`, `only`,
+	 * `overwrite`, `and`, `rand`, `table`, `tb` — were missed by the hand-kept
+	 * reserved-word list this replaced, so a collection or field with any of
+	 * those names was simply broken.
+	 */
+	const MEASURED_BARE_FAILURES = [
+		"alter",
+		"and",
+		"break",
+		"continue",
+		"create",
+		"define",
+		"delete",
+		"explain",
+		"false",
+		"for",
+		"function",
+		"if",
+		"info",
+		"insert",
+		"let",
+		"none",
+		"null",
+		"only",
+		"overwrite",
+		"rand",
+		"rebuild",
+		"relate",
+		"remove",
+		"return",
+		"select",
+		"sleep",
+		"table",
+		"tb",
+		"throw",
+		"true",
+		"update",
+		"upsert",
+		"value",
+	];
+
+	test("every word measured to fail bare is quoted", () => {
+		for (const word of MEASURED_BARE_FAILURES) {
+			expect(escapeIdentifier(word)).toBe(`\`${word}\``);
+			expect(escapeIdentifier(word.toUpperCase())).toBe(
+				`\`${word.toUpperCase()}\``,
+			);
+		}
+	});
+
+	/**
+	 * The four most dangerous of those, because bare they do not fail loudly:
+	 * `SELECT * FROM none` answers `[]`, `FROM true` answers `[true]`, and a
+	 * field named `null` projects as `{"null": null}`. A caller with a
+	 * collection so named would be answered wrongly rather than refused.
+	 */
+	test("words that read as a literal rather than failing are quoted", () => {
+		for (const word of ["none", "null", "true", "false"]) {
+			expect(escapeIdentifier(word)).toBe(`\`${word}\``);
+		}
 	});
 });
 
 describe("escapeFieldPath", () => {
-	test("a simple field is unchanged", () => {
-		expect(escapeFieldPath("plain")).toBe("plain");
+	test("a simple field is quoted", () => {
+		expect(escapeFieldPath("plain")).toBe("`plain`");
 	});
 
 	test("dot-notation stays a nested access, escaped per segment", () => {
-		expect(escapeFieldPath("address.city")).toBe("address.city");
-		expect(escapeFieldPath("a.b.c.d")).toBe("a.b.c.d");
+		expect(escapeFieldPath("address.city")).toBe("`address`.`city`");
+		expect(escapeFieldPath("a.b.c.d")).toBe("`a`.`b`.`c`.`d`");
 	});
 
-	test("only the offending segment is quoted", () => {
-		expect(escapeFieldPath("profile.first name")).toBe("profile.`first name`");
-		expect(escapeFieldPath("a-b.c")).toBe("`a-b`.c");
+	test("a segment needing escaping is no different from one that does not", () => {
+		expect(escapeFieldPath("profile.first name")).toBe(
+			"`profile`.`first name`",
+		);
+		expect(escapeFieldPath("a-b.c")).toBe("`a-b`.`c`");
 	});
 
 	test("a numeric segment becomes a SurrealQL array index", () => {
 		// `items.0.sku` is a parse error in SurrealQL, so this was never valid.
-		expect(escapeFieldPath("items.0.sku")).toBe("items[0].sku");
-		expect(escapeFieldPath("a.10")).toBe("a[10]");
+		expect(escapeFieldPath("items.0.sku")).toBe("`items`[0].`sku`");
+		expect(escapeFieldPath("a.10")).toBe("`a`[10]");
 	});
 
 	test("a leading numeric segment is a field name, not an index", () => {
 		// There is no preceding array to index into.
 		expect(escapeFieldPath("0")).toBe("`0`");
-		expect(escapeFieldPath("0.sku")).toBe("`0`.sku");
+		expect(escapeFieldPath("0.sku")).toBe("`0`.`sku`");
 	});
 
 	test("keyword segments are quoted mid-path", () => {
-		expect(escapeFieldPath("doc.select")).toBe("doc.`select`");
-		expect(escapeFieldPath("scores.value")).toBe("scores.`value`");
+		expect(escapeFieldPath("doc.select")).toBe("`doc`.`select`");
+		expect(escapeFieldPath("scores.value")).toBe("`scores`.`value`");
 	});
 });
 
@@ -135,15 +177,15 @@ describe("injection resistance", () => {
 
 	test("a hostile segment inside a path is contained too", () => {
 		const escaped = escapeFieldPath("profile.x` = 1 OR true OR `");
-		expect(escaped).toBe("profile.`x\\` = 1 OR true OR \\``");
+		expect(escaped).toBe("`profile`.`x\\` = 1 OR true OR \\``");
 	});
 });
 
 describe("escapeFieldList", () => {
 	test("escapes each path and joins with a comma", () => {
-		expect(escapeFieldList(["a", "b"])).toBe("a, b");
+		expect(escapeFieldList(["a", "b"])).toBe("`a`, `b`");
 		expect(escapeFieldList(["first name", "profile.email"])).toBe(
-			"`first name`, profile.email",
+			"`first name`, `profile`.`email`",
 		);
 	});
 
@@ -186,9 +228,9 @@ describe("unescapeSurrealString", () => {
 		expect(unescapeSurrealString(plain)).toBe(plain);
 	});
 
-	test("undoes exactly what quoteIdentifier does", () => {
+	test("undoes exactly what escapeIdentifier does", () => {
 		for (const name of ["a`b", "a\\b", "back\\`tick", "plain"]) {
-			const quoted = quoteIdentifier(name);
+			const quoted = escapeIdentifier(name);
 			expect(unescapeSurrealString(quoted.slice(1, -1))).toBe(name);
 		}
 	});

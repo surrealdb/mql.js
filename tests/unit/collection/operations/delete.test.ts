@@ -20,7 +20,7 @@ describe("deleteOne", () => {
 		// way, against 28 of 1000 as one statement (see `modify-one.ts`).
 		expect(executor.queries.length).toBe(1);
 		expect(executor.queries[0].sql).toBe(
-			"DELETE (SELECT VALUE id FROM (SELECT id FROM users WHERE (name = $p0 OR (type::is_array(name) AND name CONTAINS $p0)) LIMIT 1)) RETURN BEFORE",
+			"DELETE (SELECT VALUE id FROM (SELECT id FROM `users` WHERE (`name` = $p0 OR (type::is_array(`name`) AND `name` CONTAINS $p0)) LIMIT 1)) RETURN BEFORE",
 		);
 		expect(executor.queries[0].bindings).toEqual({ p0: "Alice" });
 		// `RETURN BEFORE` is what makes the reply countable: one pre-image per
@@ -43,8 +43,8 @@ describe("deleteOne", () => {
 		// `LIMIT 1` that names the one record could not otherwise mean "nearest".
 		expect(executor.queries[0].sql).toBe(
 			"DELETE (SELECT VALUE id FROM (" +
-				"SELECT id, geo::distance(location, $p0) AS __mql_distance FROM users " +
-				"WHERE type::is_point(location) ORDER BY __mql_distance ASC LIMIT 1" +
+				"SELECT id, geo::distance(`location`, $p0) AS `__mql_distance` FROM `users` " +
+				"WHERE type::is_point(`location`) ORDER BY `__mql_distance` ASC LIMIT 1" +
 				")) RETURN BEFORE",
 		);
 	});
@@ -72,7 +72,7 @@ describe("deleteMany", () => {
 
 		expect(executor.queries.length).toBe(1);
 		expect(executor.queries[0].sql).toBe(
-			"DELETE FROM users WHERE (status = $p0 OR (type::is_array(status) AND status CONTAINS $p0)) RETURN BEFORE",
+			"DELETE FROM `users` WHERE (`status` = $p0 OR (type::is_array(`status`) AND `status` CONTAINS $p0)) RETURN BEFORE",
 		);
 		expect(result.deletedCount).toBe(2);
 	});
@@ -81,7 +81,7 @@ describe("deleteMany", () => {
 		const { ctx, executor } = makeContext();
 		executor.enqueue([]);
 		await deleteMany(ctx);
-		expect(executor.queries[0].sql).toBe("DELETE FROM users RETURN BEFORE");
+		expect(executor.queries[0].sql).toBe("DELETE FROM `users` RETURN BEFORE");
 	});
 
 	test("returns deletedCount=0 when no rows", async () => {

@@ -40,7 +40,9 @@
 
 import { MongoErrorCode, MongoServerError } from "../../errors.ts";
 import { isMissingTableError } from "../../surreal/error-mapper.ts";
+import { escapeIdentifier } from "../../surreal/sql/escape.ts";
 import { statement } from "../../surreal/sql/statement.ts";
+import { SURREAL_ID_FIELD } from "../../translators/filter/id-field.ts";
 import { sortColumns, translateSort } from "../../translators/sort.ts";
 import type { Sort } from "../../types.ts";
 import type { OperationContext } from "../operation-context.ts";
@@ -86,14 +88,20 @@ export function oneRecordTarget(
 	// same reason as in `near-query.ts`. An explicit sort wins over it, as it does
 	// in MongoDB, in which case the distance is not projected at all.
 	const distance = sortClause ? undefined : nearDistance;
-	const columns = ["id", ...sortColumns(sort).filter((c) => c !== "id")];
-	if (distance) columns.push(`${distance} AS ${DISTANCE_ALIAS}`);
+	const alias = escapeIdentifier(DISTANCE_ALIAS);
+	const columns = [
+		SURREAL_ID_FIELD,
+		...sortColumns(sort)
+			.map((column) => column.column)
+			.filter((column) => column !== SURREAL_ID_FIELD),
+	];
+	if (distance) columns.push(`${distance} AS ${alias}`);
 
 	const match = statement(
 		`SELECT ${columns.join(", ")} FROM ${ctx.escapedTable}`,
 		plan.indexHint,
 		whereClause && `WHERE ${whereClause}`,
-		sortClause || (distance && `ORDER BY ${DISTANCE_ALIAS} ASC`),
+		sortClause || (distance && `ORDER BY ${alias} ASC`),
 		"LIMIT 1",
 	);
 

@@ -79,7 +79,7 @@ describe("insertMany", () => {
 		]);
 
 		expect(executor.queries.length).toBe(1);
-		expect(executor.queries[0].sql).toBe("INSERT INTO users $__docs");
+		expect(executor.queries[0].sql).toBe("INSERT INTO `users` $__docs");
 
 		const docs = executor.queries[0].bindings?.__docs as Record<
 			string,
@@ -117,7 +117,7 @@ describe("insertMany", () => {
 		const { ctx, executor } = makeContext({ collectionName: "events" });
 		await insertMany(ctx, [{ kind: "ping" }], { maxTimeMS: 1000 });
 		expect(executor.queries[0].sql).toBe(
-			"INSERT INTO events $__docs TIMEOUT 1000ms",
+			"INSERT INTO `events` $__docs TIMEOUT 1000ms",
 		);
 	});
 });
