@@ -77,6 +77,8 @@
 	"files": [
 		"dist",
 		"README.md",
-		"LICENSE"
+		"LICENSE",
+		"CHANGELOG.md",
+		"COMPATIBILITY.md"
 	]
 }
