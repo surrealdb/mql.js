@@ -13,8 +13,7 @@ import type { DatabaseProvider } from "./database-provider.ts";
 import {
 	pullImage,
 	type RunningContainer,
-	randomHighPort,
-	startContainer,
+	startContainerOnFreePort,
 	waitUntilReady,
 } from "./docker-container.ts";
 
@@ -38,16 +37,18 @@ export class MongoDbDockerProvider implements DatabaseProvider {
 	readonly requiresGeospatialIndex = true;
 
 	private readonly _image: string;
-	private readonly _hostPort: number;
+	private readonly _requestedPort: number | undefined;
 	private readonly _databaseName: string;
 	private readonly _readinessTimeoutMs: number;
 
+	/** Settled in `start()`, once a port is known to be free. */
+	private _hostPort = 0;
 	private _container: RunningContainer | undefined;
 	private _client: NativeMongoClient | undefined;
 
 	constructor(options: MongoDbDockerProviderOptions = {}) {
 		this._image = options.image ?? DEFAULT_IMAGE;
-		this._hostPort = options.hostPort ?? randomHighPort();
+		this._requestedPort = options.hostPort;
 		this._databaseName = options.databaseName ?? DEFAULT_DATABASE;
 		this._readinessTimeoutMs = options.readinessTimeoutMs ?? 60_000;
 	}
@@ -55,11 +56,16 @@ export class MongoDbDockerProvider implements DatabaseProvider {
 	async start(): Promise<MongoLikeClient> {
 		await pullImage(this._image);
 
-		this._container = await startContainer({
-			image: this._image,
-			containerName: `mql-e2e-mongo-${this._hostPort}`,
-			publishPorts: [`${this._hostPort}:${MONGODB_INTERNAL_PORT}`],
-		});
+		const started = await startContainerOnFreePort(
+			(hostPort) => ({
+				image: this._image,
+				containerName: `mql-e2e-mongo-${hostPort}`,
+				publishPorts: [`${hostPort}:${MONGODB_INTERNAL_PORT}`],
+			}),
+			this._requestedPort,
+		);
+		this._container = started.container;
+		this._hostPort = started.hostPort;
 
 		const url = `mongodb://127.0.0.1:${this._hostPort}/${this._databaseName}?directConnection=true`;
 		this._client = new NativeMongoClient(url, {
