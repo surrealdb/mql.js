@@ -360,6 +360,24 @@ await users.updateOne(
 );
 ```
 
+#### Two clients writing to one document
+
+`updateOne`, `replaceOne`, `deleteOne` and the three `findOneAnd*` each modify
+one document, and each does so in a single SurrealQL statement — the record is
+chosen in a subquery of the write rather than in an earlier round trip, so
+choosing it and writing to it are one atomic act. Two clients racing to claim the
+same document therefore behave as they do in MongoDB: one wins, and the other is
+told `matchedCount: 0` rather than overwriting the winner.
+
+There is a caveat below **SurrealDB 3.3.0**, and only on the **in-memory**
+storage engine (`surreal start memory`), where two such writes could both commit
+and one be dropped with both callers told they succeeded. Measured on 3.2.3 with
+nothing changed but the engine: 1600 contests on `rocksdb` produced a single
+winner every time, while the in-memory engine produced 10 double claims in 3000.
+It is a storage-engine bug, fixed in 3.3.0, and no query shape or transaction
+avoids it — so on 3.0.x–3.2.x, prefer a persistent engine for concurrent writes
+to a hot document.
+
 ### Delete
 
 ```typescript
