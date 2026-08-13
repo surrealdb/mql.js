@@ -16,7 +16,11 @@ import type { Subprocess } from "bun";
 import { MongoClient as MqlMongoClient } from "../../../src/index.ts";
 import type { MongoLikeClient } from "../contracts/mongo-like.ts";
 import type { DatabaseProvider } from "./database-provider.ts";
-import { randomHighPort, waitUntilReady } from "./docker-container.ts";
+import {
+	NotComingUpError,
+	reserveHighPort,
+	waitUntilReady,
+} from "./docker-container.ts";
 
 export interface SurrealDbBinaryProviderOptions {
 	/** Host port to bind on; random by default. */
@@ -42,18 +46,20 @@ export class SurrealDbBinaryProvider implements DatabaseProvider {
 	readonly name = "mql.js + surrealdb (in-memory)";
 	readonly requiresGeospatialIndex = false;
 
-	private readonly _hostPort: number;
+	private readonly _requestedPort: number | undefined;
 	private readonly _databaseName: string;
 	private readonly _namespace: string;
 	private readonly _username: string;
 	private readonly _password: string;
 	private readonly _readinessTimeoutMs: number;
 
+	/** Settled in `start()`, once a port is known to be free. */
+	private _hostPort = 0;
 	private _process: Subprocess | undefined;
 	private _client: MqlMongoClient | undefined;
 
 	constructor(options: SurrealDbBinaryProviderOptions = {}) {
-		this._hostPort = options.hostPort ?? randomHighPort();
+		this._requestedPort = options.hostPort;
 		this._databaseName = options.databaseName ?? DEFAULT_DATABASE;
 		this._namespace = options.namespace ?? DEFAULT_NAMESPACE;
 		this._username = options.username ?? DEFAULT_USERNAME;
@@ -63,6 +69,8 @@ export class SurrealDbBinaryProvider implements DatabaseProvider {
 	}
 
 	async start(): Promise<MongoLikeClient> {
+		this._hostPort = this._requestedPort ?? (await reserveHighPort());
+
 		this._process = Bun.spawn(
 			[
 				"surreal",
@@ -79,6 +87,14 @@ export class SurrealDbBinaryProvider implements DatabaseProvider {
 		);
 
 		await waitUntilReady(async () => {
+			// Our own process, not merely the port: if the bind lost a race, `surreal`
+			// exits and something else answers the health check, and the failure then
+			// lands far from its cause.
+			if (this._process?.exitCode != null) {
+				throw new NotComingUpError(
+					`surreal exited with code ${this._process.exitCode} before serving ${this._hostPort}`,
+				);
+			}
 			try {
 				const resp = await fetch(`http://127.0.0.1:${this._hostPort}/health`);
 				return resp.ok;

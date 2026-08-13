@@ -1278,13 +1278,13 @@ Other differences worth knowing:
 ```typescript
 const db = client.db("mydb");
 
-// List all collections
-const collections = await db.listCollections();
+// List all collections — a cursor, as in MongoDB, so it is not awaited itself
+const collections = await db.listCollections().toArray();
 // [{ name: "users", type: "collection" }, ...]
 
 // Filter by the fields a collection reply carries
-await db.listCollections({ name: "users" });
-await db.listCollections({ name: { $in: ["users", "logs"] } });
+await db.listCollections({ name: "users" }).toArray();
+await db.listCollections({ name: { $in: ["users", "logs"] } }).toArray();
 
 // Create a collection explicitly
 const logs = await db.createCollection("logs");
@@ -1302,11 +1302,9 @@ layer above the code that would have applied it. `session` matters most: pass on
 and the statement runs in that transaction, so a `createCollection` or a
 `dropCollection` is rolled back with the rest of it.
 
-`listCollections` filters the *reply*, so its predicate applies to the
-`{name, type}` documents rather than to stored rows. `name` and `type` are
-matched with `$eq`, `$ne`, `$in`, `$nin` and `$regex`; a filter naming any other
-field is rejected, because a predicate over data the reply does not carry would
-otherwise silently match everything.
+`listCollections` returns a cursor rather than a promise, as MongoDB's does, with `toArray`, `next`, `hasNext`, `forEach` and `[Symbol.asyncIterator]` — the same shape as `listIndexes`. Nothing is sent until you consume it. It matters beyond tidiness: a wrapper that reads `.toArray` off the result — mongoose does exactly this — gets `undefined` from a promise.
+
+It filters the *reply*, so its predicate applies to the `{name, type}` documents rather than to stored rows. `name` and `type` are matched with `$eq`, `$ne`, `$in`, `$nin` and `$regex`; a filter naming any other field is rejected, because a predicate over data the reply does not carry would otherwise silently match everything.
 
 `createCollection` rejects the collection-shaping options `DEFINE TABLE` has no
 counterpart for — `capped`, `size`, `max`, `validator`, `validationLevel`,

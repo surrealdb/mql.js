@@ -34,7 +34,7 @@ async function server(): Promise<void> {
 		],
 		{ stdout: "ignore", stderr: "ignore" },
 	);
-	await waitForSurreal(PORT);
+	await waitForSurreal(PORT, 10000, proc);
 }
 
 function client(

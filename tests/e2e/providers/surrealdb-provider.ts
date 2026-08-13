@@ -13,8 +13,7 @@ import type { DatabaseProvider } from "./database-provider.ts";
 import {
 	pullImage,
 	type RunningContainer,
-	randomHighPort,
-	startContainer,
+	startContainerOnFreePort,
 	waitUntilReady,
 } from "./docker-container.ts";
 
@@ -44,16 +43,18 @@ export class SurrealDbDockerProvider implements DatabaseProvider {
 	readonly requiresGeospatialIndex = false;
 
 	private readonly _image: string;
-	private readonly _hostPort: number;
+	private readonly _requestedPort: number | undefined;
 	private readonly _databaseName: string;
 	private readonly _readinessTimeoutMs: number;
 
+	/** Settled in `start()`, once a port is known to be free. */
+	private _hostPort = 0;
 	private _container: RunningContainer | undefined;
 	private _client: MqlMongoClient | undefined;
 
 	constructor(options: SurrealDbDockerProviderOptions = {}) {
 		this._image = options.image ?? DEFAULT_IMAGE;
-		this._hostPort = options.hostPort ?? randomHighPort();
+		this._requestedPort = options.hostPort;
 		this._databaseName = options.databaseName ?? DEFAULT_DATABASE;
 		this._readinessTimeoutMs = options.readinessTimeoutMs ?? 60_000;
 	}
@@ -61,21 +62,26 @@ export class SurrealDbDockerProvider implements DatabaseProvider {
 	async start(): Promise<MongoLikeClient> {
 		await pullImage(this._image);
 
-		this._container = await startContainer({
-			image: this._image,
-			containerName: `mql-e2e-surreal-${this._hostPort}`,
-			publishPorts: [`${this._hostPort}:${SURREALDB_INTERNAL_PORT}`],
-			args: [
-				"start",
-				"--bind",
-				`0.0.0.0:${SURREALDB_INTERNAL_PORT}`,
-				"--user",
-				"root",
-				"--pass",
-				"root",
-				"memory",
-			],
-		});
+		const started = await startContainerOnFreePort(
+			(hostPort) => ({
+				image: this._image,
+				containerName: `mql-e2e-surreal-${hostPort}`,
+				publishPorts: [`${hostPort}:${SURREALDB_INTERNAL_PORT}`],
+				args: [
+					"start",
+					"--bind",
+					`0.0.0.0:${SURREALDB_INTERNAL_PORT}`,
+					"--user",
+					"root",
+					"--pass",
+					"root",
+					"memory",
+				],
+			}),
+			this._requestedPort,
+		);
+		this._container = started.container;
+		this._hostPort = started.hostPort;
 
 		await waitUntilReady(async () => {
 			const resp = await fetch(`http://127.0.0.1:${this._hostPort}/health`);
