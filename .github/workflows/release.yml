@@ -5,8 +5,15 @@ name: Release
 # (containing a hyphen, e.g. `v0.2.0-beta.1`) publish under the `next`
 # dist-tag instead of `latest`.
 #
-# Requires the `NPM_TOKEN` repository secret (an npm automation token with
-# publish access to the `@surrealdb` scope).
+# Publishing is via npm trusted publishing (OIDC), configured on npmjs.com against
+# this repository and this workflow filename. There is no `NPM_TOKEN`: the npm CLI
+# exchanges the workflow's OIDC token for a short-lived credential, which is why
+# `id-token: write` below is load-bearing. Provenance attestations are generated
+# automatically in that mode, so `--provenance` is not passed.
+#
+# Trusted publishing needs npm >= 11.5.1 and Node >= 22.14.0, which is why the Node
+# version here is not the one CI uses elsewhere. The check below fails loudly rather
+# than letting the publish fail with an auth error that looks nothing like the cause.
 
 on:
   push:
@@ -22,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # required for npm provenance attestations
+      id-token: write # the OIDC token trusted publishing exchanges, and provenance
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
@@ -37,11 +44,20 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Setup Node.js (npm registry auth + provenance)
+      - name: Setup Node.js (registry, and an npm new enough for OIDC)
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 20
+          node-version: 24
           registry-url: "https://registry.npmjs.org"
+
+      - name: Check npm is new enough for trusted publishing
+        run: |
+          NPM_VERSION="$(npm --version)"
+          echo "npm ${NPM_VERSION}, node $(node --version)"
+          if [ "$(printf '%s\n' "11.5.1" "${NPM_VERSION}" | sort -V | head -1)" != "11.5.1" ]; then
+            echo "::error::npm ${NPM_VERSION} cannot use trusted publishing; 11.5.1 or newer is required"
+            exit 1
+          fi
 
       - name: Install dependencies
         run: bun install
@@ -69,17 +85,30 @@ jobs:
 
       - name: Verify build output (incl. type declarations)
         run: |
-          for f in dist/index.d.ts dist/index.mjs dist/index.cjs dist/index.bundled.mjs; do
+          for f in dist/index.d.ts dist/index.d.cts dist/index.mjs dist/index.cjs dist/index.bundled.mjs; do
             test -f "$f" || { echo "::error::expected build artifact $f was not generated"; exit 1; }
           done
 
+      # The same checks the `package` job runs on every pull request, against the
+      # artefact about to be published rather than a rebuild of it. This is the last
+      # point at which a packaging mistake is still cheap.
+      - name: Verify the tarball is consumable from Node
+        run: bun run verify:package
+
+      # Idempotent, because a tag can be pushed for a version that is already on the
+      # registry — a tag created retroactively for a release published by hand, or a
+      # tag re-pushed after being moved. npm would answer that with a 403 that reads
+      # like a credentials problem, so it is established here instead.
       - name: Publish to npm
         run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "@surrealdb/mql@${VERSION}" version > /dev/null 2>&1; then
+            echo "::notice::@surrealdb/mql@${VERSION} is already on the registry; nothing to publish."
+            exit 0
+          fi
           if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
             echo "Prerelease tag detected; publishing under the 'next' dist-tag."
-            npm publish --provenance --access public --tag next
+            npm publish --access public --tag next
           else
-            npm publish --provenance --access public
+            npm publish --access public
           fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
