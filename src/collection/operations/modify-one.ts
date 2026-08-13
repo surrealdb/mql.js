@@ -19,23 +19,31 @@
  *     same contest produced a single winner in **972 of 1000 attempts**, the
  *     losers seeing what MongoDB shows them — no match.
  *
- * The remaining few per cent belong to SurrealDB rather than to the shape. Two
- * implicit transactions writing one record occasionally both commit, and the
- * second write is lost instead of being reported as the conflict it is — 28 of
- * those 1000 four-way contests, 12 of 300 with eight contenders. It reproduces
- * in raw SurrealQL with no driver in the picture, and no clause closes it. An
- * *explicit* transaction does: the identical statement issued inside one
- * reported a conflict to every loser in 500 of 500 attempts. So a caller who
- * needs MongoDB's exactly-one guarantee under contention has it by passing a
- * session, because routing through `ctx.executor` puts this very statement inside
- * the transaction that session is running.
+ * The remaining few per cent were not the shape's, and not this driver's to fix.
+ * Two transactions could both read the record, both commit, and the second write
+ * be dropped with no conflict reported — so both callers were told
+ * `modifiedCount: 1` and one of the writes was simply not there. It belongs to
+ * the **in-memory storage engine**, and the way to see that is to change nothing
+ * but the engine: the same statements, on the same 3.2.3 binary, over 1600
+ * contests on `rocksdb` produced a single winner every time, while `memory`
+ * produced 10 double claims in 3000. `rocksdb` also reported two to three times
+ * as many conflicts, which is the same fact from the other side — the collisions
+ * `memory` lost are the ones it failed to detect. Fixed in SurrealDB 3.3.0.
  *
- * The single statement is also the cheapest of the three shapes — one round trip
- * instead of two, 0.115 ms against 0.216 ms per uncontended `updateOne`, where
- * an explicit transaction around the pair costs 0.312 ms — which is why the hot
- * path is not transactional of its own accord. Nor could it nest one: SurrealDB
- * refuses `BEGIN` inside a transaction, so an operation given a session has to
- * join the caller's transaction rather than open another.
+ * Wrapping the statement in an explicit transaction does not substitute for that
+ * fix, which is worth stating because it looks as though it should: on the
+ * in-memory engine `BEGIN`/`COMMIT` around the identical statement still produced
+ * 4 double claims in 3000 contests. An earlier note here claimed otherwise on the
+ * strength of 500 clean attempts, which at a rate near 0.1% is what a run that
+ * simply never hit it looks like.
+ *
+ * So the single statement stays, and it is also the cheapest of the three shapes
+ * — one round trip instead of two, 0.115 ms against 0.216 ms per uncontended
+ * `updateOne`, where an explicit transaction around the pair costs 0.312 ms.
+ * Paying that on every write would not have bought the guarantee anyway. A
+ * caller's session still carries these statements, because SurrealDB refuses
+ * `BEGIN` inside a transaction and an operation given one has to join it rather
+ * than open another; it just is not the reason the write is atomic.
  */
 
 import { MongoErrorCode, MongoServerError } from "../../errors.ts";
