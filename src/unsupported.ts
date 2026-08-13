@@ -28,8 +28,9 @@
  * `initialize*BulkOp()` hand back a cursor or a builder *without contacting the
  * server*, so a caller who never iterates never sees an error there, while here
  * the call itself throws. Deferring the failure into iteration would move it
- * away from the call that caused it — and for `watch()` it would have to
- * surface on an `'error'` event, which this driver has no emitter for.
+ * away from the call that caused it — and for `watch()` it would have to arrive
+ * on the returned stream's `'error'` event, which a caller who never attaches a
+ * listener never sees at all.
  */
 
 import { MongoCompatibilityError } from "./errors.ts";
@@ -69,10 +70,16 @@ export const BULK_WRITE: UnsupportedFeature = {
 		"Call the single-purpose methods, or run them inside session.withTransaction() so they commit or roll back as a unit.",
 };
 
-/** Change streams. */
+/**
+ * Change streams.
+ *
+ * The obstacle is the resume contract, and only that. Somewhere to deliver the
+ * events is not a gap: `MqlEventEmitter` is exported and is what `MongoClient`
+ * already extends, so a `ChangeStream` would have an emitter to be built on.
+ */
 export const CHANGE_STREAMS: UnsupportedFeature = {
 	because:
-		"SurrealDB's live queries carry a different event shape and no resume token, so a ChangeStream built on them could not be resumed after a disconnect the way callers depend on — and this driver has no event emitter to deliver one on",
+		"SurrealDB's live queries carry a different event shape and no resume token, so a ChangeStream built on them could not be resumed after a disconnect the way callers depend on",
 	instead:
 		"Subscribe to a SurrealDB live query through the SurrealDB client this driver wraps.",
 };

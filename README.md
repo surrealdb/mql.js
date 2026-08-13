@@ -1536,7 +1536,8 @@ Why each is refused rather than approximated:
   contacting the server*, so a caller who never iterates never sees a failure
   there. Here the call itself throws. Deferring the failure into iteration would
   move it away from the call that caused it — and for `watch()` it would have to
-  arrive on an `'error'` event this driver has no emitter for.
+  arrive on the returned stream's `'error'` event, which a caller who never
+  attaches a listener never sees at all.
 - **A real MongoDB command this driver does not route still reports
   `no such command`.** `aggregate`, `collMod`, `count`, `distinct`,
   `findAndModify`, `getMore`, `killCursors` and `serverStatus` are all commands a
