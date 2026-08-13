@@ -19,13 +19,13 @@ import {
 	assertSupportedCollectionOptions,
 	assertSupportedOptions,
 } from "../collection/operation-options.ts";
+import type { AggregationCursor } from "../cursor/aggregation-cursor.ts";
 import { ListCollectionsCursor } from "../cursor/list-collections-cursor.ts";
 import type { ClientSession } from "../session/client-session.ts";
 import { sessionExecutor } from "../session/client-session.ts";
 import type { QueryExecutor } from "../surreal/query-executor.ts";
 import type {
 	AggregateOptions,
-	AggregationCursor,
 	ChangeStream,
 	ChangeStreamDocument,
 	ChangeStreamOptions,
@@ -41,8 +41,8 @@ import type {
 	RunCommandOptions,
 } from "../types.ts";
 import {
-	AGGREGATION,
 	CHANGE_STREAMS,
+	DB_AGGREGATION,
 	RENAME_COLLECTION,
 	unsupported,
 } from "../unsupported.ts";
@@ -192,16 +192,19 @@ export class Db {
 	// -----------------------------------------------------------------------
 
 	/**
-	 * Not implemented. MongoDB returns an `AggregationCursor` here without
-	 * contacting the server, so this throws where MongoDB would not have failed
-	 * until the cursor was iterated — see `src/unsupported.ts`.
+	 * Not implemented. `Collection.aggregate()` is.
+	 *
+	 * A database-level pipeline has no collection to read from: MongoDB starts it
+	 * from a stage that names its own source — `$documents`, `$listLocalSessions`,
+	 * `$currentOp` — and none of those has a SurrealDB counterpart. Serving it as
+	 * if it read from *some* table would be inventing the source.
 	 */
 	aggregate<T extends Document = Document>(
 		pipeline?: Document[],
 		options?: AggregateOptions,
 	): AggregationCursor<T>;
 	aggregate<T extends Document = Document>(): AggregationCursor<T> {
-		throw unsupported("Db.aggregate()", AGGREGATION);
+		throw unsupported("Db.aggregate()", DB_AGGREGATION);
 	}
 
 	/**
