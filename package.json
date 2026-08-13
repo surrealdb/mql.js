@@ -32,10 +32,6 @@
 		"semver": "^7.7.4",
 		"typescript": "6.0.3"
 	},
-	"peerDependencies": {
-		"typescript": "^5.0.0 || ^6.0.0",
-		"tslib": "^2.6.3"
-	},
 	"dependencies": {
 		"surrealdb": "^2.0.3"
 	},
@@ -61,7 +57,7 @@
 		"test:integration:3.2": "MQL_SURREAL_VERSION=3.2.4 bun test tests/integration"
 	},
 	"engines": {
-		"node": ">=18.0.0"
+		"node": ">=20.19.0"
 	},
 	"browser": "./dist/index.bundled.mjs",
 	"types": "./dist/index.d.ts",
@@ -80,5 +76,6 @@
 		"LICENSE",
 		"CHANGELOG.md",
 		"COMPATIBILITY.md"
-	]
+	],
+	"sideEffects": false
 }
