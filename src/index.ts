@@ -4,6 +4,12 @@
  * `client/`, `db/`, `collection/`, `cursor/`, `surreal/`, and `translators/`.
  */
 
+export type { Listener } from "./client/event-emitter.ts";
+export { MqlEventEmitter } from "./client/event-emitter.ts";
+export type {
+	MongoClientEvent,
+	MongoClientEvents,
+} from "./client/mongo-client.ts";
 export { MongoClient } from "./client/mongo-client.ts";
 export { Collection } from "./collection/collection.ts";
 export { MONGODB_COMPATIBILITY_VERSION } from "./constants.ts";

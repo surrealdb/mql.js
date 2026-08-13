@@ -45,8 +45,44 @@ import type { ClientSettings } from "./client-options.ts";
 import { ConnectionManager } from "./connection-manager.ts";
 import type { ParsedConnection } from "./connection-string.ts";
 import { parseConnectionString } from "./connection-string.ts";
+import { MqlEventEmitter } from "./event-emitter.ts";
 
-export class MongoClient {
+/**
+ * The events a `MongoClient` emits.
+ *
+ * Deliberately three. The real driver's client emits some thirty, and most of
+ * them describe machinery this driver does not have: `serverHeartbeat*` reports a
+ * monitor that polls, `server*` and `topology*` report discovery across a
+ * replica set or sharded cluster, and `connectionPool*` reports a pool. There is
+ * one connection here and nothing polling it, so emitting any of those would be
+ * inventing an event rather than reporting one — and a caller that gates on them
+ * (mongoose gates on `serverDescriptionChanged` and `topologyDescriptionChanged`)
+ * is better served by their absence than by a fiction. Command monitoring
+ * (`commandStarted`/`Succeeded`/`Failed`) is absent for a different reason: this
+ * driver sends SurrealQL rather than MongoDB commands, so the `commandName` and
+ * `command` a listener would read do not exist to report.
+ *
+ * What remains is what this driver genuinely knows: it opened, it closed, and a
+ * connection error reached it.
+ */
+export interface MongoClientEvents {
+	/** The connection is up, after `connect()` or the first operation. */
+	open: [client: MongoClient];
+	/** The connection has been closed by `close()`. */
+	close: [client: MongoClient];
+	/**
+	 * The connection reported an error.
+	 *
+	 * Unlike node's `EventEmitter`, an unhandled one is not re-raised as an
+	 * uncaught exception — see `MqlEventEmitter`.
+	 */
+	error: [error: Error];
+}
+
+/** One of the event names `MongoClient` emits. */
+export type MongoClientEvent = keyof MongoClientEvents;
+
+export class MongoClient extends MqlEventEmitter {
 	/** @internal Backwards-compatibility shim used by integration helpers. */
 	readonly _surreal: Surreal;
 	/** @internal Driver port consumed by `Db` / `Collection` / `FindCursor`. */
@@ -96,6 +132,7 @@ export class MongoClient {
 	 * @param options - Client settings; see `MongoClientOptions`.
 	 */
 	constructor(url: string, options?: MongoClientOptions) {
+		super();
 		this._parsed = parseConnectionString(url, options);
 		this._settings = this._parsed.settings;
 		// Every value crossing this connection passes through the BSON codec, which
@@ -265,6 +302,9 @@ export class MongoClient {
 		if (this._connected) {
 			this._connected = false;
 			await this._inner.close();
+			// After the connection is actually down, and only when there was one:
+			// `close()` on a client that never connected has closed nothing.
+			this.emit("close", this);
 		}
 	}
 
@@ -356,12 +396,21 @@ export class MongoClient {
 		if (this._connected) return;
 		this._connecting ??= this.establish().catch((err: unknown) => {
 			this._connecting = undefined;
+			if (err instanceof Error) this.emit("error", err);
 			throw err;
 		});
 		await this._connecting;
 	}
 
-	/** The connect sequence itself: connect, ensure the target exists, verify. */
+	/**
+	 * The connect sequence itself: connect, ensure the target exists, verify.
+	 *
+	 * `open` is emitted here rather than in `connect()` so it marks the connection
+	 * actually being established: a caller's first operation connects too, and
+	 * `connect()` on an already-open client has opened nothing. `error` is emitted
+	 * for a failure to establish, and the failure is still thrown — the event is a
+	 * notification, never the only report.
+	 */
 	private async establish(): Promise<void> {
 		const parsed = this._parsed;
 
@@ -407,6 +456,8 @@ export class MongoClient {
 		}
 
 		this._inner.setServerVersion(this._serverVersion);
+
+		this.emit("open", this);
 	}
 
 	private buildConnectOptions(): ConnectOptions {

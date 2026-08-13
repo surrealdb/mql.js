@@ -229,6 +229,56 @@ effect, or rejected with a reason. Nothing is accepted and silently dropped.
 default there: reporting `maxPoolSize: 100` would suggest a pool that does not
 exist.
 
+### Connection events
+
+`MongoClient` is an event emitter, with the part of node's `EventEmitter` surface
+consumers reach for — `on`, `once`, `off`/`removeListener`, `addListener`,
+`removeAllListeners`, `listeners`, `listenerCount`, `eventNames`, `emit`,
+`setMaxListeners`:
+
+```typescript
+client.on("open", (c) => console.log("connected to", c.databaseName));
+client.on("close", () => console.log("closed"));
+client.on("error", (err) => console.error("connection error", err));
+```
+
+Three events, and they are the three this driver genuinely knows about: it
+opened, it closed, and a connection error reached it. `open` marks the connection
+being *established*, so it also fires when a caller never calls `connect()` and
+the first operation connects for them, and it does not fire again for a
+`connect()` on an already-open client.
+
+**What is absent, and why.** The real driver's client emits some thirty events,
+and most describe machinery that is not here: `serverHeartbeat*` reports a monitor
+that polls, `server*` and `topology*` report discovery across a replica set or
+sharded cluster, and `connectionPool*` reports a pool. There is one connection
+here and nothing polling it, so emitting those would be inventing an event rather
+than reporting one. Command monitoring (`commandStarted`, `commandSucceeded`,
+`commandFailed`) is absent for a different reason: this driver sends SurrealQL, so
+the `commandName` and `command` a listener would read do not exist to report.
+
+Two divergences worth knowing:
+
+- **An unhandled `error` event does not throw.** Node's `EventEmitter` re-raises
+  it as an uncaught exception. Every error emitted here has already reached the
+  caller through the operation that produced it, so crashing the process would
+  punish exactly the callers who never asked for events. `emit` returns `false`
+  when nothing was listening.
+- **The emitter is this driver's own**, not `node:events`, because the browser
+  bundle cannot resolve that module. Behaviour a caller could tell apart from
+  node's — listener order, `once` detaching before it runs, a handler that
+  subscribes or unsubscribes mid-emit — is asserted in the test suite rather than
+  inherited.
+
+**`mongoose.connect()` still does not accept this client**, and events are not
+what stood in the way. `NativeConnection.prototype.setClient` gates on
+`client instanceof mongodb.MongoClient` (mongoose 9.9.1,
+`lib/drivers/node-mongodb-native/connection.js:411`), a nominal check against the
+real driver's class that no surface here can satisfy. Wire a mongoose connection
+to a `Db` from this driver by hand, as `tests/integration/mongoose-compat.test.ts`
+does. What the emitter does fix is that mongoose's wiring calls `client.on(...)`
+unconditionally, which used to be a `TypeError`.
+
 ### Connection behaviour that differs from MongoDB
 
 - **`mongodb+srv://` throws.** Resolving a seedlist needs a DNS `SRV` lookup,
@@ -1466,8 +1516,9 @@ Why each is refused rather than approximated:
   fails](#a-batch-insert-that-partly-fails).
 - **Change streams** — SurrealDB's live queries carry a different event shape and
   no resume token, so a `ChangeStream` built on them could not be resumed after a
-  disconnect the way callers depend on. This driver also has no event emitter to
-  deliver one on.
+  disconnect the way callers depend on. The client *is* an event emitter (see
+  [Connection events](#connection-events)), so the remaining gap is the resume
+  contract rather than somewhere to deliver events.
 - **Atlas Search indexes** — an Atlas service, with no SurrealDB counterpart to
   define one against.
 - **Renaming** — SurrealDB has no statement that renames a table, and copying
