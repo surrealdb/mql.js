@@ -1632,6 +1632,16 @@ handed to operations on two databases commits or rolls back both together — se
   where an abort still removes it. A `$text` search issued inside that same
   transaction cannot read the new analyzer; from the commit onwards it can.
 
+## Compatibility and changes
+
+[COMPATIBILITY.md](./COMPATIBILITY.md) states what this driver is compatible with —
+the MongoDB driver v7 API, MongoDB 8.0 behaviour, SurrealDB 3.x, Node 20.19.0,
+TypeScript 5.3 — and what a version bump means over a surface that is partly this
+driver's own and partly MongoDB's. The short version of the part most likely to
+matter: **correcting a wrong answer to match MongoDB is a minor release, not a
+major one**, and every such correction is listed in
+[CHANGELOG.md](./CHANGELOG.md) with the wrong behaviour spelled out.
+
 ## Contributing
 
 See our [contributing guide](CONTRIBUTING.md) for more information.
