@@ -58,7 +58,7 @@ function collection(): Collection {
  * a caller who never iterates never sees a failure there. Asserting the throw is
  * synchronous is asserting that divergence on purpose — the failure names the
  * call that caused it instead of arriving at an `await` somewhere else, or on an
- * `'error'` event this driver has no emitter for.
+ * `'error'` event no one attached a listener to.
  */
 describe("a method MongoDB answers with a lazy cursor throws at the call", () => {
 	const cases: readonly [string, () => unknown, string][] = [
@@ -75,17 +75,17 @@ describe("a method MongoDB answers with a lazy cursor throws at the call", () =>
 		[
 			"Collection.watch()",
 			() => collection().watch(),
-			"Collection.watch() is not implemented by @surrealdb/mql: SurrealDB's live queries carry a different event shape and no resume token, so a ChangeStream built on them could not be resumed after a disconnect the way callers depend on — and this driver has no event emitter to deliver one on. Subscribe to a SurrealDB live query through the SurrealDB client this driver wraps.",
+			"Collection.watch() is not implemented by @surrealdb/mql: SurrealDB's live queries carry a different event shape and no resume token, so a ChangeStream built on them could not be resumed after a disconnect the way callers depend on. Subscribe to a SurrealDB live query through the SurrealDB client this driver wraps.",
 		],
 		[
 			"Db.watch()",
 			() => db().watch(),
-			"Db.watch() is not implemented by @surrealdb/mql: SurrealDB's live queries carry a different event shape and no resume token, so a ChangeStream built on them could not be resumed after a disconnect the way callers depend on — and this driver has no event emitter to deliver one on. Subscribe to a SurrealDB live query through the SurrealDB client this driver wraps.",
+			"Db.watch() is not implemented by @surrealdb/mql: SurrealDB's live queries carry a different event shape and no resume token, so a ChangeStream built on them could not be resumed after a disconnect the way callers depend on. Subscribe to a SurrealDB live query through the SurrealDB client this driver wraps.",
 		],
 		[
 			"MongoClient.watch()",
 			() => client().watch(),
-			"MongoClient.watch() is not implemented by @surrealdb/mql: SurrealDB's live queries carry a different event shape and no resume token, so a ChangeStream built on them could not be resumed after a disconnect the way callers depend on — and this driver has no event emitter to deliver one on. Subscribe to a SurrealDB live query through the SurrealDB client this driver wraps.",
+			"MongoClient.watch() is not implemented by @surrealdb/mql: SurrealDB's live queries carry a different event shape and no resume token, so a ChangeStream built on them could not be resumed after a disconnect the way callers depend on. Subscribe to a SurrealDB live query through the SurrealDB client this driver wraps.",
 		],
 		[
 			"Collection.initializeOrderedBulkOp()",

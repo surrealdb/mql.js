@@ -2,6 +2,12 @@
 
 All notable changes to `@surrealdb/mql` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning follows the policy in [COMPATIBILITY.md](./COMPATIBILITY.md) — which is [Semantic Versioning](https://semver.org/spec/v2.0.0.html) over a surface that is partly this driver's own and partly MongoDB's.
 
+## [Unreleased]
+
+### Fixed
+
+- **`watch()`'s refusal gave a reason that stopped being true.** It told callers a change stream was not possible partly because "this driver has no event emitter to deliver one on", which `MongoClient` becoming an emitter in 0.1.0 had already made false — `MqlEventEmitter` is exported, and a `ChangeStream` would have an emitter to be built on. The obstacle is the resume contract and only that: SurrealDB's live queries carry no resume token, so the stream could not be resumed after a disconnect. The message now says that and nothing more.
+
 ## [0.2.0] — 2026-08-13
 
 Mongoose works. That is the whole of this release: `mongoose.connect()` against this driver, and the one breaking change that was standing in its way.
