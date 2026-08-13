@@ -22,7 +22,7 @@ import { MongoBulkWriteError } from "../../src/index.ts";
 import type { Document } from "../../src/types.ts";
 import { setupSurreal, teardownSurreal } from "./helpers.ts";
 
-const PORT = 18145;
+const PORT = 18147;
 
 interface Doc extends Document {
 	_id?: string;

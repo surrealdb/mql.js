@@ -22,13 +22,29 @@ export interface SurrealTestContext<TSchema extends Document = Document> {
 
 /**
  * Wait until the SurrealDB HTTP health endpoint responds OK.
+ *
+ * Pass `proc` whenever the process is to hand. A health check alone cannot tell
+ * *whose* server answered: if the port is already taken, `surreal start` exits
+ * immediately, this poll succeeds against the other process, and the file runs
+ * to the point where that other process is torn down — surfacing as
+ * "You must be connected to a SurrealDB instance" partway through, in a file
+ * whose setup appeared to succeed. That is a genuinely hard failure to read
+ * back to a cause. Watching our own process turns it into an error here, naming
+ * the port.
  */
 export async function waitForSurreal(
 	port: number,
 	timeoutMs = 10000,
+	proc?: Pick<Subprocess, "exitCode">,
 ): Promise<void> {
 	const start = Date.now();
 	while (Date.now() - start < timeoutMs) {
+		if (proc && proc.exitCode !== null) {
+			throw new Error(
+				`SurrealDB exited with code ${proc.exitCode} before serving ${port}; ` +
+					"the port is most likely already in use",
+			);
+		}
 		try {
 			const resp = await fetch(`http://127.0.0.1:${port}/health`);
 			if (resp.ok) return;
@@ -63,7 +79,7 @@ export async function setupSurreal<TSchema extends Document = Document>(
 		{ stdout: "ignore", stderr: "ignore" },
 	);
 
-	await waitForSurreal(port);
+	await waitForSurreal(port, 10000, proc);
 
 	const client = new MongoClient(
 		`mongodb://root:root@127.0.0.1:${port}/${dbName}?namespace=test`,

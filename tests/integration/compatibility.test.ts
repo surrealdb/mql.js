@@ -49,7 +49,7 @@ beforeAll(async () => {
 		],
 		{ stdout: "ignore", stderr: "ignore" },
 	);
-	await waitForSurreal(PORT);
+	await waitForSurreal(PORT, 10000, proc);
 });
 
 afterAll(() => {

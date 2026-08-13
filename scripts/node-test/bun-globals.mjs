@@ -31,14 +31,23 @@ globalThis.Bun ??= {
 
 		// Bun resolves `exited` with the exit code; a signalled process has none, so
 		// it is reported as a failure rather than as a clean 0.
+		let exitCode = null;
 		const exited = new Promise((resolve, reject) => {
 			child.on("error", reject);
-			child.on("close", (code, signal) => resolve(code ?? (signal ? 1 : 0)));
+			child.on("close", (code, signal) => {
+				exitCode = code ?? (signal ? 1 : 0);
+				resolve(exitCode);
+			});
 		});
 
 		return {
 			get pid() {
 				return child.pid;
+			},
+			// `null` until the process ends, as Bun's is. `waitForSurreal` reads it to
+			// tell "my server is still starting" from "my server is already dead".
+			get exitCode() {
+				return exitCode;
 			},
 			exited,
 			kill: (signal) => child.kill(signal),

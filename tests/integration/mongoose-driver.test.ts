@@ -44,7 +44,7 @@ beforeAll(async () => {
 		],
 		{ stdout: "ignore", stderr: "ignore" },
 	);
-	await waitForSurreal(PORT);
+	await waitForSurreal(PORT, 10000, proc);
 
 	mongoose.setDriver(mqlDriver(mongoose));
 	connection = await mongoose.connect(URI);
