@@ -43,6 +43,7 @@
 		"quality:apply:unsafe": "biome check . --write --unsafe",
 		"build": "bun run scripts/build.ts",
 		"prepublishOnly": "bun run build",
+		"verify:package": "bun run scripts/verify-package.ts",
 		"test": "bun test",
 		"test:unit": "bun test tests/unit",
 		"test:integration": "bun test tests/integration",
