@@ -215,7 +215,7 @@ describe("keyword-named collections", () => {
 
 	test("listCollections and createCollection name it as the caller wrote it", async () => {
 		await db.createCollection("upsert");
-		const listed = (await db.listCollections()).map((c) => c.name);
+		const listed = (await db.listCollections().toArray()).map((c) => c.name);
 		expect(listed).toContain("upsert");
 		expect(await db.dropCollection("upsert")).toBe(true);
 	});

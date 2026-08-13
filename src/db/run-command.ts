@@ -426,10 +426,9 @@ async function listCollectionsReply(
 	command: Document,
 	options: DelegateOptions,
 ): Promise<Document> {
-	const firstBatch = await db.listCollections(
-		command.filter as Document | undefined,
-		options,
-	);
+	const firstBatch = await db
+		.listCollections(command.filter as Document | undefined, options)
+		.toArray();
 	return {
 		cursor: {
 			id: 0,

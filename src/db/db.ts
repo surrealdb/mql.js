@@ -19,6 +19,7 @@ import {
 	assertSupportedCollectionOptions,
 	assertSupportedOptions,
 } from "../collection/operation-options.ts";
+import { ListCollectionsCursor } from "../cursor/list-collections-cursor.ts";
 import type { ClientSession } from "../session/client-session.ts";
 import { sessionExecutor } from "../session/client-session.ts";
 import type { QueryExecutor } from "../surreal/query-executor.ts";
@@ -88,17 +89,19 @@ export class Db {
 	/**
 	 * Returns a list of collections (tables) in this database.
 	 *
-	 * `async` rather than returning the helper's promise directly, so a rejected
-	 * option surfaces as a rejected promise. An awaited MongoDB method never
-	 * throws synchronously, and a caller who only attached `.catch()` would
-	 * otherwise miss it.
+	 * Returns the cursor **synchronously**, as MongoDB does — the listing is only
+	 * fetched when the cursor is consumed. An unsupported option is the one thing
+	 * still reported before then, because it is a mistake in the call rather than
+	 * a failure of the query, and MongoDB rejects it at the same point.
 	 */
-	async listCollections(
+	listCollections(
 		filter?: Document,
 		options?: ListCollectionsOptions,
-	): Promise<CollectionInfo[]> {
+	): ListCollectionsCursor {
 		assertSupportedOptions(options);
-		return listCollections(await this.executor(options), filter);
+		return new ListCollectionsCursor(async () =>
+			listCollections(await this.executor(options), filter),
+		);
 	}
 
 	/**
@@ -136,7 +139,10 @@ export class Db {
 	 * than as `{name, type}` documents.
 	 */
 	async collections(options?: ListCollectionsOptions): Promise<Collection[]> {
-		const infos = await this.listCollections(undefined, options);
+		const infos: CollectionInfo[] = await this.listCollections(
+			undefined,
+			options,
+		).toArray();
 		return infos.map((info) => createCollection<Document>(this, info.name));
 	}
 
