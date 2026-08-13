@@ -32,10 +32,6 @@
 		"semver": "^7.7.4",
 		"typescript": "6.0.3"
 	},
-	"peerDependencies": {
-		"typescript": "^5.0.0 || ^6.0.0",
-		"tslib": "^2.6.3"
-	},
 	"dependencies": {
 		"surrealdb": "^2.0.3"
 	},
@@ -47,6 +43,7 @@
 		"quality:apply:unsafe": "biome check . --write --unsafe",
 		"build": "bun run scripts/build.ts",
 		"prepublishOnly": "bun run build",
+		"verify:package": "bun run scripts/verify-package.ts",
 		"test": "bun test",
 		"test:unit": "bun test tests/unit",
 		"test:integration": "bun test tests/integration",
@@ -61,18 +58,27 @@
 		"test:integration:3.2": "MQL_SURREAL_VERSION=3.2.4 bun test tests/integration"
 	},
 	"engines": {
-		"node": ">=18.0.0"
+		"node": ">=20.19.0"
 	},
 	"browser": "./dist/index.bundled.mjs",
 	"types": "./dist/index.d.ts",
-	"main": "./dist/index.mjs",
+	"main": "./dist/index.cjs",
 	"exports": {
 		".": {
-			"require": "./dist/index.cjs",
-			"import": "./dist/index.mjs",
-			"types": "./dist/index.d.ts",
-			"browser": "./dist/index.bundled.mjs"
-		}
+			"browser": {
+				"types": "./dist/index.d.ts",
+				"default": "./dist/index.bundled.mjs"
+			},
+			"import": {
+				"types": "./dist/index.d.ts",
+				"default": "./dist/index.mjs"
+			},
+			"require": {
+				"types": "./dist/index.d.cts",
+				"default": "./dist/index.cjs"
+			}
+		},
+		"./package.json": "./package.json"
 	},
 	"files": [
 		"dist",
@@ -80,5 +86,7 @@
 		"LICENSE",
 		"CHANGELOG.md",
 		"COMPATIBILITY.md"
-	]
+	],
+	"sideEffects": false,
+	"module": "./dist/index.mjs"
 }

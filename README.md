@@ -64,6 +64,17 @@ npm install @surrealdb/mql
 latest patch release (currently 3.0.5, 3.1.5 and 3.2.4), plus SurrealDB
 `nightly` as an early-warning signal.
 
+**Node 20.19.0 or newer**, matching the MongoDB driver whose API this tracks. CI
+packs the tarball and consumes it from Node 20.19.0, 22 and 24, in both an ESM
+and a CommonJS project.
+
+**TypeScript 5.3 or newer**, if you use the types. The public API includes
+`await using session = client.startSession()`, so the declarations reference
+`lib.esnext.disposable` (TypeScript 5.2), and the CommonJS declarations use a
+`resolution-mode` import attribute (TypeScript 5.3) to reach `surrealdb`'s
+ESM-only types. Measured: 5.0 and 5.2 reject the latter. TypeScript is not a peer
+dependency — nothing in the shipped output needs it at runtime.
+
 SurrealDB 2.x is not supported: it speaks a different SurrealQL grammar
 (`type::is::*` rather than `type::is_*`, `~` rather than `string::matches()`,
 `SEARCH` rather than `FULLTEXT`). `connect()` detects the server version and
