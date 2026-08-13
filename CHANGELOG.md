@@ -10,11 +10,16 @@ this driver's own and partly MongoDB's.
 
 Nothing yet.
 
-## [0.1.0] — unreleased
+## [0.1.0] — 2026-08-13
 
-The first release. Nothing has been published before it, so there is nothing to
-be compatible with and no migration to describe: the entries below are what the
-driver does, not what changed for anyone.
+The first release, published to npm from a maintainer's terminal: a trusted
+publisher cannot be configured for a package that does not exist yet, so the
+first one cannot come from CI. Later releases publish from GitHub Actions over
+OIDC, which is also what gives them provenance attestations — 0.1.0 has none.
+
+Nothing has been published before it, so there is nothing to be compatible with
+and no migration to describe: the entries below are what the driver does, not
+what changed for anyone.
 
 They are worth reading anyway. Most of this work was correcting behaviour that
 looked right and was not — a driver that answered a query with plausible wrong
