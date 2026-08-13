@@ -170,7 +170,11 @@ describe("FindCursor lifecycle", () => {
 		const cursor = col.find({});
 		await cursor.close();
 		expect(cursor.closed).toBe(true);
-		expect(() => cursor.toArray()).toThrow();
+		// Awaited as a rejection rather than asserted with `toThrow()` on the call:
+		// the method is async, so it *rejects*, and only Bun's `expect` unwraps a
+		// returned promise to find the error. Written this way it asserts the same
+		// thing under both runtimes.
+		await expect(cursor.toArray()).rejects.toThrow();
 	});
 
 	test("rewind() allows re-iteration", async () => {

@@ -73,9 +73,9 @@ describe("minimum supported SurrealDB version", () => {
 		// `db()` is available before connecting, as it is in the official driver, so
 		// the refusal has to surface on the operation instead — and it does so while
 		// the operation is still choosing its dialect, before any statement is built.
-		expect(() =>
+		await expect(
 			client.db("compatdb").collection("things").countDocuments(),
-		).toThrow(MongoCompatibilityError);
+		).rejects.toThrow(MongoCompatibilityError);
 	});
 
 	test("older majors are rejected too", async () => {

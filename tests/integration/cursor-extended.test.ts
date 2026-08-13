@@ -167,35 +167,39 @@ describe("closed cursor errors", () => {
 		const cursor = col.find({});
 		await cursor.close();
 		expect(cursor.closed).toBe(true);
-		expect(() => cursor.toArray()).toThrow();
+		// Awaited as a rejection rather than asserted with `toThrow()` on the call:
+		// the method is async, so it *rejects*, and only Bun's `expect` unwraps a
+		// returned promise to find the error. Written this way it asserts the same
+		// thing under both runtimes.
+		await expect(cursor.toArray()).rejects.toThrow();
 	});
 
 	test("next() throws after close()", async () => {
 		const cursor = col.find({});
 		await cursor.close();
-		expect(() => cursor.next()).toThrow();
+		await expect(cursor.next()).rejects.toThrow();
 	});
 
 	test("hasNext() throws after close()", async () => {
 		const cursor = col.find({});
 		await cursor.close();
-		expect(() => cursor.hasNext()).toThrow();
+		await expect(cursor.hasNext()).rejects.toThrow();
 	});
 
 	test("forEach() throws after close()", async () => {
 		const cursor = col.find({});
 		await cursor.close();
-		expect(() =>
+		await expect(
 			cursor.forEach(() => {
 				/* noop */
 			}),
-		).toThrow();
+		).rejects.toThrow();
 	});
 
 	test("count() throws after close()", async () => {
 		const cursor = col.find({});
 		await cursor.close();
-		expect(() => cursor.count()).toThrow();
+		await expect(cursor.count()).rejects.toThrow();
 	});
 });
 
