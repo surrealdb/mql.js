@@ -281,14 +281,9 @@ Two divergences worth knowing:
   subscribes or unsubscribes mid-emit — is asserted in the test suite rather than
   inherited.
 
-**`mongoose.connect()` still does not accept this client**, and events are not
-what stood in the way. `NativeConnection.prototype.setClient` gates on
-`client instanceof mongodb.MongoClient` (mongoose 9.9.1,
-`lib/drivers/node-mongodb-native/connection.js:411`), a nominal check against the
-real driver's class that no surface here can satisfy. Wire a mongoose connection
-to a `Db` from this driver by hand, as `tests/integration/mongoose-compat.test.ts`
-does. What the emitter does fix is that mongoose's wiring calls `client.on(...)`
-unconditionally, which used to be a `TypeError`.
+`mongoose.connect()` works through `mongoose.setDriver()` — see
+[Mongoose](#mongoose). What the emitter fixes there is that mongoose's wiring
+calls `client.on(...)` unconditionally, which used to be a `TypeError`.
 
 ### Connection behaviour that differs from MongoDB
 
@@ -1600,6 +1595,37 @@ signature is nonetheless the final one — the same parameters and return type t
 method will have once it is real, checked against `mongodb`'s own by the parity
 probes in `tests/unit/types-parity.test.ts` — so filling one in is additive rather
 than breaking.
+
+## Mongoose
+
+`mongoose.connect()` works against this driver, through mongoose's own
+`setDriver()` extension point:
+
+```typescript
+import mongoose from "mongoose";
+import { mqlDriver } from "@surrealdb/mql/mongoose";
+
+mongoose.setDriver(mqlDriver(mongoose));
+await mongoose.connect("mongodb://root:root@127.0.0.1:8000/app?namespace=app");
+
+const Author = mongoose.model("Author", new mongoose.Schema({ name: String }));
+await Author.create({ name: "Ursula" });
+```
+
+Models, queries, `populate()`, sessions and `connection.transaction()` — commit
+and rollback — all work. `mongoose` is an **optional peer dependency** (`^9.0.0`)
+and lives behind a separate entry point, so importing `@surrealdb/mql` never pulls
+it in and the browser bundle is untouched.
+
+`mqlDriver` takes your `mongoose` instance rather than resolving one, because the
+base `Connection` and `Collection` it extends must be the ones belonging to the
+instance whose `setDriver` you are about to call. It imports nothing from mongoose
+itself, so there is no private path to break and nothing for a bundler to follow.
+
+What does not work is what does not work anywhere else in this driver: mongoose
+calls that need `aggregate()`, `bulkWrite()` or change streams reach the same
+named errors as a direct call would — see [What is not
+implemented](#what-is-not-implemented).
 
 ## Sessions and transactions
 

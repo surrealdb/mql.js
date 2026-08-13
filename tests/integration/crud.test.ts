@@ -638,7 +638,7 @@ describe("Db operations", () => {
 	test("listCollections returns created tables", async () => {
 		// The 'users' table exists from beforeEach
 		await col.insertOne({ name: "Alice", age: 30 });
-		const collections = await db.listCollections();
+		const collections = await db.listCollections().toArray();
 		const names = collections.map((c) => c.name);
 		expect(names).toContain("users");
 		for (const c of collections) {
@@ -650,7 +650,7 @@ describe("Db operations", () => {
 		await db.createCollection("temp_drop");
 		const result = await db.dropCollection("temp_drop");
 		expect(result).toBe(true);
-		const collections = await db.listCollections();
+		const collections = await db.listCollections().toArray();
 		const names = collections.map((c) => c.name);
 		expect(names).not.toContain("temp_drop");
 	});

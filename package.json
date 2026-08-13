@@ -78,6 +78,16 @@
 				"default": "./dist/index.cjs"
 			}
 		},
+		"./mongoose": {
+			"import": {
+				"types": "./dist/mongoose.d.ts",
+				"default": "./dist/mongoose.mjs"
+			},
+			"require": {
+				"types": "./dist/mongoose.d.cts",
+				"default": "./dist/mongoose.cjs"
+			}
+		},
 		"./package.json": "./package.json"
 	},
 	"files": [
@@ -88,5 +98,20 @@
 		"COMPATIBILITY.md"
 	],
 	"sideEffects": false,
-	"module": "./dist/index.mjs"
+	"module": "./dist/index.mjs",
+	"peerDependencies": {
+		"mongoose": "^9.0.0"
+	},
+	"peerDependenciesMeta": {
+		"mongoose": {
+			"optional": true
+		}
+	},
+	"typesVersions": {
+		"*": {
+			"mongoose": [
+				"./dist/mongoose.d.ts"
+			]
+		}
+	}
 }

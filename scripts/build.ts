@@ -1,6 +1,8 @@
 import * as esbuild from "esbuild";
 import tscPlugin from "esbuild-plugin-tsc";
 
+const MONGOOSE_EXTERNAL = ["surrealdb", "mongoose", "node:module"];
+
 await Promise.all([
 	esbuild.build({
 		entryPoints: ["src/index.ts"],
@@ -19,6 +21,28 @@ await Promise.all([
 		outfile: "dist/index.cjs",
 		plugins: [tscPlugin({ force: true })],
 		external: ["surrealdb"],
+		format: "cjs",
+		minifyWhitespace: true,
+		minifySyntax: true,
+		sourcemap: true,
+	}),
+	esbuild.build({
+		entryPoints: ["src/mongoose.ts"],
+		bundle: true,
+		outfile: "dist/mongoose.mjs",
+		plugins: [tscPlugin({ force: true })],
+		external: MONGOOSE_EXTERNAL,
+		format: "esm",
+		minifyWhitespace: true,
+		minifySyntax: true,
+		sourcemap: true,
+	}),
+	esbuild.build({
+		entryPoints: ["src/mongoose.ts"],
+		bundle: true,
+		outfile: "dist/mongoose.cjs",
+		plugins: [tscPlugin({ force: true })],
+		external: MONGOOSE_EXTERNAL,
 		format: "cjs",
 		minifyWhitespace: true,
 		minifySyntax: true,
@@ -98,6 +122,21 @@ function consumable(declarations: string, module: "esm" | "cjs"): string {
 	return `/// <reference lib="esnext.disposable" />\n${resolved}`;
 }
 
+const mongooseDeclarations = Bun.spawn(
+	[
+		"node_modules/.bin/dts-bundle-generator",
+		"-o",
+		"dist/mongoose.d.ts",
+		"src/mongoose.ts",
+		"--no-check",
+		"--export-referenced-types",
+		"false",
+	],
+	{ stdout: "inherit", stderr: "inherit" },
+);
+const mongooseExit = await mongooseDeclarations.exited;
+if (mongooseExit !== 0) process.exit(mongooseExit);
+
 const declarationText = await Bun.file("dist/index.d.ts").text();
 
 // The same declarations under both extensions, differing only in how they reach
@@ -107,3 +146,7 @@ const declarationText = await Bun.file("dist/index.d.ts").text();
 // ESM".
 await Bun.write("dist/index.d.ts", consumable(declarationText, "esm"));
 await Bun.write("dist/index.d.cts", consumable(declarationText, "cjs"));
+
+const mongooseText = await Bun.file("dist/mongoose.d.ts").text();
+await Bun.write("dist/mongoose.d.ts", consumable(mongooseText, "esm"));
+await Bun.write("dist/mongoose.d.cts", consumable(mongooseText, "cjs"));

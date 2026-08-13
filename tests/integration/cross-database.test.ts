@@ -314,8 +314,10 @@ describe("the Db surface", () => {
 		const onlyOther = `solo_${sequence}`;
 		await other.collection<Doc>(onlyOther).insertOne({ who: "other" });
 
-		const otherNames = (await other.listCollections()).map((c) => c.name);
-		const connectedNames = (await connected.listCollections()).map(
+		const otherNames = (await other.listCollections().toArray()).map(
+			(c) => c.name,
+		);
+		const connectedNames = (await connected.listCollections().toArray()).map(
 			(c) => c.name,
 		);
 
@@ -337,18 +339,20 @@ describe("the Db surface", () => {
 		const name = `explicit_${sequence}`;
 
 		await other.createCollection(name);
-		expect((await other.listCollections()).map((c) => c.name)).toContain(name);
 		expect(
-			(await connected.listCollections()).map((c) => c.name),
+			(await other.listCollections().toArray()).map((c) => c.name),
+		).toContain(name);
+		expect(
+			(await connected.listCollections().toArray()).map((c) => c.name),
 		).not.toContain(name);
 
 		// A table of the same name in the connected database, to be sure the drop
 		// below removes the right one of the two.
 		await connected.collection<Doc>(name).insertOne({ who: "connected" });
 		expect(await other.dropCollection(name)).toBe(true);
-		expect((await other.listCollections()).map((c) => c.name)).not.toContain(
-			name,
-		);
+		expect(
+			(await other.listCollections().toArray()).map((c) => c.name),
+		).not.toContain(name);
 		expect(await connected.collection<Doc>(name).countDocuments({})).toBe(1);
 	});
 
@@ -383,16 +387,16 @@ describe("the Db surface", () => {
 		sequence += 1;
 		const created = `cmd_${sequence}`;
 		await other.command({ create: created });
-		expect((await other.listCollections()).map((c) => c.name)).toContain(
-			created,
-		);
 		expect(
-			(await connected.listCollections()).map((c) => c.name),
+			(await other.listCollections().toArray()).map((c) => c.name),
+		).toContain(created);
+		expect(
+			(await connected.listCollections().toArray()).map((c) => c.name),
 		).not.toContain(created);
 		await other.command({ drop: created });
-		expect((await other.listCollections()).map((c) => c.name)).not.toContain(
-			created,
-		);
+		expect(
+			(await other.listCollections().toArray()).map((c) => c.name),
+		).not.toContain(created);
 	});
 
 	test("options() and isCapped() report on the database named", async () => {
@@ -451,7 +455,7 @@ describe("a database nothing has addressed before", () => {
 		expect(await fresh.collection<Doc>("k").findOne({})).toBeNull();
 		expect(await fresh.collection<Doc>("k").countDocuments({})).toBe(0);
 		expect(await fresh.collection<Doc>("k").distinct("who")).toEqual([]);
-		expect(await fresh.listCollections()).toEqual([]);
+		expect(await fresh.listCollections().toArray()).toEqual([]);
 		expect(await fresh.stats()).toMatchObject({
 			db: fresh.databaseName,
 			collections: 0,
@@ -525,7 +529,7 @@ describe("a database whose name is a SurrealQL keyword", () => {
 			expect((await keyword.collection<Doc>(collection).findOne({}))?.who).toBe(
 				name,
 			);
-			expect(await keyword.listCollections()).toContainEqual({
+			expect(await keyword.listCollections().toArray()).toContainEqual({
 				name: collection,
 				type: "collection",
 			});
@@ -636,9 +640,9 @@ describe("transactions across two databases", () => {
 			await session.endSession();
 		}
 
-		expect((await other.listCollections()).map((c) => c.name)).not.toContain(
-			name,
-		);
+		expect(
+			(await other.listCollections().toArray()).map((c) => c.name),
+		).not.toContain(name);
 	});
 
 	test("a database created inside a transaction survives the commit", async () => {

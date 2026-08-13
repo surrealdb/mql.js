@@ -279,7 +279,9 @@ describe("create and drop", () => {
 		const name = freshName("created");
 
 		expect(await ctx.db.command({ create: name })).toEqual({ ok: 1 });
-		expect((await ctx.db.listCollections()).map((c) => c.name)).toContain(name);
+		expect(
+			(await ctx.db.listCollections().toArray()).map((c) => c.name),
+		).toContain(name);
 	});
 
 	test("a collection shape SurrealDB cannot give a table is refused, not dropped", async () => {
@@ -310,9 +312,9 @@ describe("create and drop", () => {
 			ns: `${DB_NAME}.${name}`,
 			ok: 1,
 		});
-		expect((await ctx.db.listCollections()).map((c) => c.name)).not.toContain(
-			name,
-		);
+		expect(
+			(await ctx.db.listCollections().toArray()).map((c) => c.name),
+		).not.toContain(name);
 	});
 
 	test("dropping a collection that is not there is the state the caller asked for", async () => {
@@ -456,9 +458,9 @@ describe("Collection.drop", () => {
 		await ctx.collection(name).insertOne({ a: 1 });
 
 		expect(await ctx.collection(name).drop()).toBe(true);
-		expect((await ctx.db.listCollections()).map((c) => c.name)).not.toContain(
-			name,
-		);
+		expect(
+			(await ctx.db.listCollections().toArray()).map((c) => c.name),
+		).not.toContain(name);
 	});
 });
 
@@ -535,8 +537,8 @@ describe("a command inside a transaction", () => {
 
 		// The command routes its session the same way the method it delegates to
 		// does, so a rolled-back `create` leaves nothing behind.
-		expect((await ctx.db.listCollections()).map((c) => c.name)).not.toContain(
-			name,
-		);
+		expect(
+			(await ctx.db.listCollections().toArray()).map((c) => c.name),
+		).not.toContain(name);
 	});
 });

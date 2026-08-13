@@ -70,9 +70,11 @@ function makeTransactionalDb(): {
 describe("Db statements honour a session", () => {
 	test.each([
 		[
+			// Consumed, not merely called: the cursor is returned synchronously and
+			// issues nothing until something reads it, as MongoDB's does.
 			"listCollections",
 			(db: Db, session: ClientSession) =>
-				db.listCollections(undefined, { session }),
+				db.listCollections(undefined, { session }).toArray(),
 			"INFO FOR DB",
 		],
 		[
@@ -107,7 +109,7 @@ describe("Db statements honour a session", () => {
 		const { db, connection, transaction } = makeTransactionalDb();
 		connection.enqueue({ tables: {} });
 
-		await db.listCollections();
+		await db.listCollections().toArray();
 
 		expect(connection.queries.map((q) => q.sql)).toEqual(["INFO FOR DB"]);
 		expect(transaction.queries).toEqual([]);
@@ -151,8 +153,11 @@ describe("Db statements validate the session they are given", () => {
 		);
 		foreign.startTransaction();
 
+		// On consumption rather than at the call, because that is when the session
+		// is used — the same point MongoDB reports it. An unsupported *option* is
+		// still refused at the call: that is a mistake in the call itself.
 		await expect(
-			db.listCollections(undefined, { session: foreign }),
+			db.listCollections(undefined, { session: foreign }).toArray(),
 		).rejects.toBeInstanceOf(MongoInvalidArgumentError);
 	});
 

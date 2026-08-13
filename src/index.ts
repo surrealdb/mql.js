@@ -15,6 +15,10 @@ export { Collection } from "./collection/collection.ts";
 export { MONGODB_COMPATIBILITY_VERSION } from "./constants.ts";
 export { FindCursor } from "./cursor/find-cursor.ts";
 export {
+	ListCollectionsCursor,
+	type ListCollectionsRunner,
+} from "./cursor/list-collections-cursor.ts";
+export {
 	ListIndexesCursor,
 	type ListIndexesRunner,
 } from "./cursor/list-indexes-cursor.ts";
