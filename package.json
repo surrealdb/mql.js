@@ -61,14 +61,23 @@
 	},
 	"browser": "./dist/index.bundled.mjs",
 	"types": "./dist/index.d.ts",
-	"main": "./dist/index.mjs",
+	"main": "./dist/index.cjs",
 	"exports": {
 		".": {
-			"require": "./dist/index.cjs",
-			"import": "./dist/index.mjs",
-			"types": "./dist/index.d.ts",
-			"browser": "./dist/index.bundled.mjs"
-		}
+			"browser": {
+				"types": "./dist/index.d.ts",
+				"default": "./dist/index.bundled.mjs"
+			},
+			"import": {
+				"types": "./dist/index.d.ts",
+				"default": "./dist/index.mjs"
+			},
+			"require": {
+				"types": "./dist/index.d.cts",
+				"default": "./dist/index.cjs"
+			}
+		},
+		"./package.json": "./package.json"
 	},
 	"files": [
 		"dist",
@@ -77,5 +86,6 @@
 		"CHANGELOG.md",
 		"COMPATIBILITY.md"
 	],
-	"sideEffects": false
+	"sideEffects": false,
+	"module": "./dist/index.mjs"
 }
