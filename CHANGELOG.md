@@ -8,7 +8,27 @@ this driver's own and partly MongoDB's.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **`mongoose.connect()` works**, through mongoose's own `setDriver()` extension
+  point: `mongoose.setDriver(mqlDriver(mongoose))`. Models, queries, `populate()`,
+  sessions and `connection.transaction()` — commit and rollback — all work.
+  `mongoose` is an optional peer dependency behind a separate entry point,
+  `@surrealdb/mql/mongoose`, so importing the driver never pulls it in.
+
+### Changed
+
+- **`Db.listCollections()` returns a cursor**, synchronously, as MongoDB does —
+  not `Promise<CollectionInfo[]>`. A caller who wrote `await db.listCollections()`
+  adds `.toArray()`. This is why mongoose could not consume the driver: it calls
+  `db.listCollections()` and then reads `.toArray` off the result.
+
+### Fixed
+
+- **The claim that `mongoose.connect()` could not work was wrong**, and it was in
+  the 0.1.0 README and release notes. The `instanceof mongodb.MongoClient` gate
+  that claim rested on is on `setClient()`, which `connect()` never calls —
+  `connect()` goes through `createClient()`, which a custom driver may override.
 
 ## [0.1.0] — 2026-08-13
 

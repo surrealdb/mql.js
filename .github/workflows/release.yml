@@ -85,7 +85,7 @@ jobs:
 
       - name: Verify build output (incl. type declarations)
         run: |
-          for f in dist/index.d.ts dist/index.d.cts dist/index.mjs dist/index.cjs dist/index.bundled.mjs; do
+          for f in dist/index.d.ts dist/index.d.cts dist/index.mjs dist/index.cjs dist/index.bundled.mjs dist/mongoose.d.ts dist/mongoose.d.cts dist/mongoose.mjs dist/mongoose.cjs; do
             test -f "$f" || { echo "::error::expected build artifact $f was not generated"; exit 1; }
           done
 
