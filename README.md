@@ -1152,8 +1152,9 @@ You do not have to think about that, except when reading a slow query. What is w
 | `$skip`, `$limit` | In either order, meaning what MongoDB means by that order |
 | `$count` | One document of one field |
 | `$unwind` | Including `preserveNullAndEmptyArrays`. Not `includeArrayIndex` — SurrealDB's `SPLIT` does not report the position a value came from |
+| `$lookup` | The `localField`/`foreignField` form, including `foreignField: "_id"`. Not the `pipeline`/`let` form — see below |
 
-Everything else — `$lookup`, `$facet`, `$bucket`, `$graphLookup`, `$unionWith`, `$out`, `$merge`, `$setWindowFields` — raises `MongoCompatibilityError` naming the stage. A pipeline whose later stages were silently dropped would still return documents, so the caller would get a plausible wrong answer instead of an error.
+Everything else — `$facet`, `$bucket`, `$graphLookup`, `$unionWith`, `$out`, `$merge`, `$setWindowFields` — raises `MongoCompatibilityError` naming the stage. A pipeline whose later stages were silently dropped would still return documents, so the caller would get a plausible wrong answer instead of an error.
 
 ### Expressions
 
@@ -1177,6 +1178,30 @@ An operator not in that table raises rather than compiling to something approxim
 - **`$round` with a decimal place** is refused. SurrealDB's `math::round` takes no precision, so the result would be rounded to a different place than the one asked for.
 
 `$$ROOT` and `$$CURRENT` are not available: a whole-document value has nowhere to go in the statements this driver emits.
+
+### How `$lookup` joins, and what it costs
+
+```typescript
+await orders.aggregate([
+  { $lookup: { from: "customers", localField: "customerId", foreignField: "_id", as: "customer" } },
+  { $unwind: "$customer" },
+]).toArray();
+```
+
+The obvious translation is a correlated subquery — `(SELECT * FROM customers WHERE id = $parent.customerId)` — and it is semantically exact. It is not what this driver emits, because it does not use an index. Measured with `EXPLAIN` on 3.2.x against an indexed foreign field:
+
+```
+WHERE cid = 'c1'              → IndexScan cust_cid
+WHERE cid = $parent.customer  → TableScan, "no (unsupported predicate)"
+```
+
+Correlating the predicate loses the index, which makes that shape a full scan of the foreign collection *for every outer row*. So the join runs in two phases inside one round trip: the outer rows are bound to a variable, their distinct keys are collected, the matching foreign rows are fetched in a single uncorrelated query that *does* use an index, and the join itself is an in-memory filter per row. The cost is the number of **distinct keys**, not the number of rows.
+
+What you pay instead is memory: every matching foreign document is held server-side for the length of the statement, where MongoDB would stream. A join whose foreign side is very large is the case to watch.
+
+The `pipeline`/`let` form is refused. It runs a sub-pipeline per joined document, and the two-phase plan cannot express that — the foreign rows are gathered before any per-row work could decide which of them are wanted. Use the `localField`/`foreignField` form and filter the joined array with a later `$match` or `$unwind`.
+
+A collection that does not exist joins as empty, matching MongoDB, rather than raising the way SurrealDB does when read directly.
 
 ### Where `$unwind` differs from `SPLIT`
 

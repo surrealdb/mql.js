@@ -251,9 +251,107 @@ describe("bindings", () => {
 	});
 });
 
+describe("$lookup", () => {
+	const join = [
+		{
+			$lookup: {
+				from: "people",
+				localField: "who",
+				foreignField: "code",
+				as: "p",
+			},
+		},
+	];
+
+	test("binds the outer rows once rather than repeating the pipeline", () => {
+		// The outer set is needed twice — to collect the keys and to read — and a
+		// subquery in both places would evaluate the pipeline so far twice.
+		const statement = sql(join);
+		expect(statement).toStartWith("LET $mql_rows_0 = (SELECT * FROM `sales`)");
+		expect(compile(join).isBatch).toBe(true);
+	});
+
+	test("gathers the foreign rows in one uncorrelated, indexable query", () => {
+		// The whole point: `WHERE code IN $keys` uses an index, and the correlated
+		// `WHERE code = $parent.who` it replaces does not.
+		expect(sql(join)).toContain(
+			"LET $mql_join_0 = (SELECT *, record::id(id) AS _id OMIT id FROM `people` WHERE `code` IN $mql_keys_0)",
+		);
+		// The scan itself must not be correlated; `$parent` may only appear later,
+		// in the in-memory array filter.
+		const scan = sql(join).split("; ")[2];
+		expect(scan).toContain("LET $mql_join_0 =");
+		expect(scan).not.toContain("$parent");
+	});
+
+	test("flattens and dedupes the keys", () => {
+		expect(sql(join)).toContain(
+			"array::distinct(array::flatten($mql_rows_0.`who`))",
+		);
+	});
+
+	test("matches a scalar local field and any element of an array one", () => {
+		const statement = sql(join);
+		expect(statement).toContain("`code` = $parent.`who`");
+		expect(statement).toContain(
+			"type::is_array($parent.`who`) AND `code` IN $parent.`who`",
+		);
+	});
+
+	test("answers an empty array when the foreign collection does not exist", () => {
+		// SurrealDB refuses to read an undefined table, leaving the variable unset;
+		// MongoDB answers a collection it has never seen as an empty one.
+		expect(sql(join)).toContain("($mql_join_0 ?? [])[WHERE");
+	});
+
+	test("joining on the foreign _id builds record ids for the scan", () => {
+		const statement = sql([
+			{
+				$lookup: {
+					from: "people",
+					localField: "who",
+					foreignField: "_id",
+					as: "p",
+				},
+			},
+		]);
+		expect(statement).toContain(
+			"WHERE id IN $mql_keys_0.map(|$v| type::record('people', $v))",
+		);
+		// The array filter compares keys, because the projection already extracted them.
+		expect(statement).toContain("`_id` = $parent.`who`");
+	});
+
+	test("two lookups do not share variables", () => {
+		const statement = sql([
+			{ $lookup: { from: "a", localField: "x", foreignField: "k", as: "ra" } },
+			{ $lookup: { from: "b", localField: "y", foreignField: "k", as: "rb" } },
+		]);
+		expect(statement).toContain("$mql_join_0");
+		expect(statement).toContain("$mql_join_1");
+	});
+
+	test("the joined field does not make _id a plain field", () => {
+		// `SELECT *, … AS joined` keeps every column the rows had, `id` among them,
+		// so a later sort on `_id` still means the record identity.
+		expect(sql([...join, { $sort: { _id: 1 } }])).toContain("ORDER BY id ASC");
+	});
+
+	test("the pipeline/let form is refused", () => {
+		expect(() =>
+			sql([{ $lookup: { from: "a", let: {}, pipeline: [], as: "r" } }]),
+		).toThrow(/`pipeline` or `let` is not implemented/);
+	});
+
+	test("a missing field is refused by name", () => {
+		expect(() => sql([{ $lookup: { from: "a", as: "r" } }])).toThrow(
+			/requires a non-empty string `localField`/,
+		);
+	});
+});
+
 describe("what is refused", () => {
 	test.each([
-		["$lookup", { $lookup: { from: "a", as: "b" } }],
 		["$facet", { $facet: {} }],
 		["$bucket", { $bucket: {} }],
 		["$graphLookup", { $graphLookup: {} }],

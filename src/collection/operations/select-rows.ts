@@ -36,9 +36,21 @@ export async function selectRows<T = Record<string, unknown>>(
 	ctx: OperationContext,
 	sql: string,
 	bindings?: Record<string, unknown>,
+	options?: {
+		/**
+		 * Read the last statement's result rather than the first.
+		 *
+		 * For a batch whose earlier statements set something up — an aggregation
+		 * `$lookup` binds its outer and joined rows before reading them.
+		 */
+		readonly lastFrame?: boolean;
+	},
 ): Promise<T[]> {
 	try {
-		return (await ctx.executor.query<T[]>(sql, bindings)) ?? [];
+		const run = options?.lastFrame
+			? ctx.executor.queryLast<T[]>(sql, bindings)
+			: ctx.executor.query<T[]>(sql, bindings);
+		return (await run) ?? [];
 	} catch (err) {
 		if (isMissingTableError(err, ctx.collectionName)) return [];
 		throw err;

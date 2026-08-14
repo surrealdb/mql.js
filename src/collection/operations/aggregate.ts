@@ -33,14 +33,18 @@ export async function executeAggregate<TSchema extends Document>(
 	const plan = await resolveOperationPlan(ctx, options);
 	const filterOptions = await filterOptionsFor(ctx, undefined);
 
-	const { sql, bindings } = translatePipeline(pipeline, {
+	const { sql, bindings, isBatch } = translatePipeline(pipeline, {
 		table: ctx.escapedTable,
 		collection: ctx.collectionName,
 		dialect: filterOptions.dialect,
 		textFields: filterOptions.textFields,
 	});
 
-	const rows = await selectRows(ctx, statement(sql, plan.timeout), bindings);
+	// A `$lookup` binds its outer and joined rows ahead of the statement that reads
+	// them, so the answer is the last frame rather than the first.
+	const rows = await selectRows(ctx, statement(sql, plan.timeout), bindings, {
+		lastFrame: isBatch,
+	});
 
 	// A pipeline of only row-preserving stages ($match/$sort/$limit/$skip/$unwind)
 	// still yields stored records, and those carry their identity in `id`.
@@ -62,9 +66,34 @@ export async function executeAggregate<TSchema extends Document>(
  * is untouched.
  */
 function reviveAggregated(row: Record<string, unknown>): Document {
-	const revived = reviveBsonValues(row) as Document;
-	if (!("_id" in revived)) return revived;
-	return { ...revived, _id: toMongoId(revived._id) };
+	return mapIdentities(reviveBsonValues(row)) as Document;
+}
+
+/**
+ * Map every `_id` in the value, however deep, through the read path's `toMongoId`.
+ *
+ * Depth matters because of `$lookup`: the joined documents sit inside an array
+ * field, each carrying an `_id` that is still a `RecordId`, and a later `$unwind`
+ * or `$project` can move them anywhere in the document. Walking rather than
+ * reaching for a known field is what survives that.
+ *
+ * Safe to apply blindly: `toMongoId` passes through anything that is not a record
+ * id, so a `$group` key that happens to be called `_id` and holds a string is
+ * untouched.
+ */
+function mapIdentities(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(mapIdentities);
+
+	if (value === null || typeof value !== "object") return value;
+	// Only plain objects are walked. A `Date`, an `ObjectId` or a `RecordId` is a
+	// value, and rebuilding it field by field would destroy it.
+	if (Object.getPrototypeOf(value) !== Object.prototype) return value;
+
+	const mapped: Document = {};
+	for (const [key, nested] of Object.entries(value as Document)) {
+		mapped[key] = key === "_id" ? toMongoId(nested) : mapIdentities(nested);
+	}
+	return mapped;
 }
 
 /** Stages that replace the document shape, so the rows are no longer records. */

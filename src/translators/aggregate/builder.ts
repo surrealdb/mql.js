@@ -115,6 +115,9 @@ export class SelectBuilder {
 	 */
 	private reshaped = false;
 
+	/** `LET` statements that run before the final one, in order. */
+	private readonly preamble: string[] = [];
+
 	constructor(source: string) {
 		this.level = emptyLevel(source);
 	}
@@ -150,6 +153,29 @@ export class SelectBuilder {
 	}
 
 	/**
+	 * Bind the statement so far to a variable and continue reading from it.
+	 *
+	 * A subquery would do for continuing, and is what `nest` uses. This exists for
+	 * `$lookup`, which needs the outer rows *twice* — once to collect the join
+	 * keys and once to read — and a subquery repeated in two places is the outer
+	 * pipeline evaluated twice. Binding it evaluates once.
+	 */
+	materialise(name: string): void {
+		this.preamble.push(`LET $${name} = (${this.render()})`);
+		this.level = emptyLevel(`$${name}`);
+	}
+
+	/** Add a `LET` that runs before the final statement. */
+	bind(statement: string): void {
+		this.preamble.push(statement);
+	}
+
+	/** True once anything has been bound, so the answer is the last frame. */
+	get isBatch(): boolean {
+		return this.preamble.length > 0;
+	}
+
+	/**
 	 * Set the field list, and record that this statement's is now spoken for.
 	 *
 	 * Marking the slot matters beyond bookkeeping. `$group` writes a field list of
@@ -159,10 +185,13 @@ export class SelectBuilder {
 	 * its expressions name `_id` and the accumulator aliases, which do not exist
 	 * until the grouping has run.
 	 */
-	setFields(fields: string): void {
+	setFields(fields: string, reshapes = true): void {
 		this.level.fields = fields;
 		this.level.highest = Math.max(this.level.highest, Slot.Fields);
-		this.reshaped = true;
+		// `$lookup` sets a field list of `*` plus its joined array, so the rows keep
+		// their `id` column and `_id` still means the record identity. Every other
+		// caller replaces the shape.
+		if (reshapes) this.reshaped = true;
 	}
 
 	setWhere(clause: string): void {
@@ -204,6 +233,16 @@ export class SelectBuilder {
 	/** The field list as it currently stands, for stages that extend it. */
 	get fields(): string {
 		return this.level.fields;
+	}
+
+	/**
+	 * Everything to send: the bound variables, then the statement.
+	 *
+	 * The caller reads the **last** frame, which is this statement's, whatever the
+	 * preamble bound ahead of it.
+	 */
+	renderBatch(): string {
+		return [...this.preamble, this.render()].join("; ");
 	}
 
 	/** The finished statement, without a trailing `TIMEOUT`. */

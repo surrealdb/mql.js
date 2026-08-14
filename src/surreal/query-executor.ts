@@ -50,6 +50,24 @@ export interface QueryExecutor {
 	): Promise<T>;
 
 	/**
+	 * Run a batch and return the result of its **last** statement.
+	 *
+	 * `query` answers with the caller's first statement, which is what nearly every
+	 * operation wants, because nearly every operation sends one. A batch whose
+	 * earlier statements exist to set something up needs the other end: an
+	 * aggregation `$lookup` binds the outer rows and the matching foreign rows to
+	 * `LET` variables and then reads them, so the answer is the third statement and
+	 * the first two are working.
+	 *
+	 * Reading the last frame is right whether or not a `USE DB` prefix was added,
+	 * since the prefix only ever goes in front.
+	 */
+	queryLast<T = unknown>(
+		sql: string,
+		bindings?: Record<string, unknown>,
+	): Promise<T>;
+
+	/**
 	 * Run every statement in `sql` and report each outcome, rather than throwing on
 	 * the first failure.
 	 *

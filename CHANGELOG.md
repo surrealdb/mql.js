@@ -12,6 +12,22 @@ The bug is worth a word on its own, because of how it was found. It was not foun
 
 ### Added
 
+- **`$lookup`.** The `localField`/`foreignField` form, including `foreignField: "_id"`, with MongoDB's left-outer semantics: an array per row, empty where nothing matched, and a match on any element when the local field is an array.
+
+  It is not translated as the obvious correlated subquery, which is semantically exact but loses the index — measured with `EXPLAIN`, `WHERE cid = $parent.customer` plans as a `TableScan` where `WHERE cid = 'c1'` plans as an `IndexScan`, so that shape scans the whole foreign collection once per outer row. Instead the outer rows are bound to a variable, their distinct keys collected, and the foreign rows fetched by a single uncorrelated query that keeps the index; the join is then an in-memory filter. The cost is the number of distinct keys rather than the number of rows. What it costs instead is memory, since the matching foreign documents are held server-side for the length of the statement — documented rather than discovered.
+
+  The `pipeline`/`let` form is refused: it runs a sub-pipeline per joined document, which this plan cannot express. A foreign collection that does not exist joins as empty, as MongoDB answers a collection it has never seen.
+
+## [0.3.0] — 2026-08-14
+
+Aggregation. `collection.aggregate(pipeline)` works, which was the largest thing this driver did not do.
+
+It is also the first release to change an answer this driver had already given. `{$divide: [7, 2]}` returned `3`; it now returns `3.5`, which is what MongoDB returns. Under the policy in [COMPATIBILITY.md](./COMPATIBILITY.md) that is a minor release rather than a major one, and this is the first time that rule has been exercised on something real — so if you wrote code against the old answer, this paragraph is the notice, and the entry under **Fixed** is the detail.
+
+The bug is worth a word on its own, because of how it was found. It was not found by review, or by the unit tests, or by the integration tests, all of which agreed with `3`. It was found by running the same expectations through the official MongoDB driver against a real `mongod` and comparing — on the parity suite's first run, minutes after aggregation was written. A wrong number is not an error; nothing else was ever going to notice.
+
+### Added
+
 - **Aggregation pipelines.** `collection.aggregate(pipeline)` returns an `AggregationCursor` synchronously, as MongoDB does, and serves `$match`, `$group`, `$project`, `$sort`, `$skip`, `$limit`, `$count` and `$unwind`, with about forty expression operators available inside `$project` and inside accumulators. A pipeline compiles to as few `SELECT`s as its stages allow: SurrealQL is one statement with clause slots in a fixed evaluation order rather than a sequence of steps, so consecutive stages fold into one statement while each lands in a slot it has not passed, and a subquery opens when one does not — which is how `$match` after `$group` becomes a `HAVING`. Every stage and every expression operator that is not implemented raises `MongoCompatibilityError` naming it, because a pipeline whose later stages were dropped would still return documents. `Db.aggregate()` still refuses: a database-level pipeline reads from a source stage such as `$documents`, and none of those has a SurrealDB counterpart. See the README's Aggregation section for the boundary in full.
 
   The parity suite also runs under Node now, not only Bun — the mql leg of it, on every pull request, against two SurrealDB versions. That is the strongest check in the repository: it asserts MongoDB's answers rather than this driver's, on undici's WebSocket, which is the transport the published package actually uses. Only the mql leg, because the MongoDB leg runs the official driver and would be re-testing a Node library.

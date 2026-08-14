@@ -41,6 +41,14 @@ export class ClientExecutor implements QueryExecutor {
 		return this.inner.query<T>(sql, bindings);
 	}
 
+	async queryLast<T = unknown>(
+		sql: string,
+		bindings?: Record<string, unknown>,
+	): Promise<T> {
+		await this.assertUsable();
+		return this.inner.queryLast<T>(sql, bindings);
+	}
+
 	async queryEach(
 		sql: string,
 		bindings?: Record<string, unknown>,

@@ -69,6 +69,18 @@ export class FakeQueryExecutor implements QueryExecutor {
 		return this;
 	}
 
+	/**
+	 * The last statement's result, which for the fake is the next queued response:
+	 * nothing here splits a batch into frames, so a test asserting on a `$lookup`
+	 * queues the answer it wants and reads the SQL to check the shape.
+	 */
+	async queryLast<T = unknown>(
+		sql: string,
+		bindings?: Record<string, unknown>,
+	): Promise<T> {
+		return this.query<T>(sql, bindings);
+	}
+
 	async query<T = unknown>(
 		sql: string,
 		bindings?: Record<string, unknown>,
