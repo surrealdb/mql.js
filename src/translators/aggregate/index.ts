@@ -142,9 +142,20 @@ function applyStage(
 		case "$lookup":
 			applyLookup(spec, index, builder);
 			return;
+		case "$addFields":
+		case "$set":
+			applyAddFields(name, spec, builder, bind);
+			return;
+		case "$replaceRoot":
+		case "$replaceWith":
+			applyReplaceRoot(name, spec, builder, bind);
+			return;
+		case "$sortByCount":
+			applySortByCount(spec, builder, bind);
+			return;
 		default:
 			throw new MongoCompatibilityError(
-				`The aggregation stage ${name} is not implemented by @surrealdb/mql. Translating it partially would answer with documents that ignored it, so it is refused instead. $match, $sort, $limit, $skip, $count, $project, $group, $unwind and $lookup are supported.`,
+				`The aggregation stage ${name} is not implemented by @surrealdb/mql. Translating it partially would answer with documents that ignored it, so it is refused instead. $match, $sort, $limit, $skip, $count, $project, $group, $unwind, $lookup, $addFields/$set, $replaceRoot/$replaceWith and $sortByCount are supported.`,
 			);
 	}
 }
@@ -451,6 +462,102 @@ function applyLookup(
 
 	builder.claim(Slot.Fields);
 	builder.setFields(`*, ${joined} AS ${escapeAlias(lookup.as)}`, false);
+}
+
+/**
+ * `$addFields`, and its alias `$set` — extra fields beside the existing ones.
+ *
+ * `SELECT *, <expr> AS name`, which carries MongoDB's rule that a field already
+ * present is *replaced* rather than duplicated. Measured rather than assumed,
+ * because nothing in the grammar promises which of two same-named entries wins:
+ * `SELECT *, 99 AS a` answers `a: 99`.
+ *
+ * The documents are not marked reshaped, for the reason `$lookup`'s are not:
+ * every column the rows already had survives, `id` among them, so `_id` still
+ * means the record identity for the stages after this one.
+ */
+function applyAddFields(
+	stage: string,
+	spec: unknown,
+	builder: SelectBuilder,
+	bind: (value: unknown) => string,
+): void {
+	if (typeof spec !== "object" || spec === null || Array.isArray(spec)) {
+		throw new MongoCompatibilityError(
+			`${stage} takes a document of field names and expressions.`,
+		);
+	}
+
+	const entries = Object.entries(spec as Document);
+	if (entries.length === 0) {
+		throw new MongoCompatibilityError(`${stage} takes at least one field.`);
+	}
+
+	const plainId = builder.identityIsPlainField;
+	const added = entries.map(
+		([key, value]) =>
+			`${compileExpression(value, bind, plainId)} AS ${escapeAlias(key)}`,
+	);
+
+	// Claimed *before* the field list is read, not after. `claim` may open a new
+	// statement — it does whenever a `$group` or `$project` already spoke for this
+	// one's field list — and the list to extend is then the new statement's `*`,
+	// not the aggregate list of the statement just closed. Reading it first
+	// re-emitted that aggregate list over the subquery already computing it.
+	builder.claim(Slot.Fields);
+	builder.setFields(`${builder.fields}, ${added.join(", ")}`, false);
+}
+
+/**
+ * `$replaceRoot`, and its shorthand `$replaceWith` — promote a value to the root.
+ *
+ * `SELECT VALUE <expr>` answers with the value itself rather than a document
+ * wrapping it, which is the stage's whole contract.
+ */
+function applyReplaceRoot(
+	stage: string,
+	spec: unknown,
+	builder: SelectBuilder,
+	bind: (value: unknown) => string,
+): void {
+	// `$replaceRoot` wraps its expression in `newRoot`; `$replaceWith` is the same
+	// stage written without the wrapper.
+	const expression =
+		stage === "$replaceWith" ? spec : (spec as Document | null)?.newRoot;
+
+	if (expression === undefined) {
+		throw new MongoCompatibilityError(
+			`${stage} takes ${stage === "$replaceWith" ? "an expression" : "a document with a `newRoot` expression"}.`,
+		);
+	}
+
+	builder.claim(Slot.Fields);
+	builder.setFields(
+		`VALUE ${compileExpression(expression, bind, builder.identityIsPlainField)}`,
+	);
+}
+
+/**
+ * `$sortByCount` — group by an expression, count, and order by the count.
+ *
+ * MongoDB defines it as exactly `$group` with a `$sum: 1` named `count` followed
+ * by `$sort: {count: -1}`, so it is applied as those two rather than given a
+ * translation of its own. Everything true of that pair stays true here for
+ * free — that the sort folds into the grouping statement, above all.
+ */
+function applySortByCount(
+	spec: unknown,
+	builder: SelectBuilder,
+	bind: (value: unknown) => string,
+): void {
+	if (spec === undefined) {
+		throw new MongoCompatibilityError(
+			"$sortByCount takes an expression to group by.",
+		);
+	}
+
+	applyGroup({ _id: spec, count: { $sum: 1 } }, builder, bind);
+	applySort({ count: -1 }, builder);
 }
 
 /** `1` and `true` include; `0` and `false` exclude. */

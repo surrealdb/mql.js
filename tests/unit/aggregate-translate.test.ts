@@ -350,6 +350,74 @@ describe("$lookup", () => {
 	});
 });
 
+describe("$addFields, $replaceRoot and $sortByCount", () => {
+	test("$addFields extends the field list rather than replacing it", () => {
+		expect(sql([{ $addFields: { n: 1 } }])).toBe(
+			"SELECT *, $a0 AS `n` FROM `sales`",
+		);
+	});
+
+	test("$set compiles identically", () => {
+		expect(sql([{ $set: { n: 1 } }])).toBe(sql([{ $addFields: { n: 1 } }]));
+	});
+
+	test("$addFields does not make _id a plain field", () => {
+		// It keeps every column, `id` among them, so a later sort still means the
+		// record identity.
+		expect(sql([{ $addFields: { n: 1 } }, { $sort: { _id: 1 } }])).toContain(
+			"ORDER BY id ASC",
+		);
+	});
+
+	test("$addFields after $group nests, and extends the subquery's rows", () => {
+		// The bug this pins: reading the field list before claiming the slot took
+		// the *closed* statement's aggregate list and re-emitted it over the
+		// subquery already computing it.
+		const statement = sql([
+			{ $group: { _id: "$cat", total: { $sum: "$price" } } },
+			{ $addFields: { doubled: { $multiply: ["$total", 2] } } },
+		]);
+		expect(
+			depth([
+				{ $group: { _id: "$cat", total: { $sum: "$price" } } },
+				{ $addFields: { doubled: { $multiply: ["$total", 2] } } },
+			]),
+		).toBe(2);
+		expect(statement).toStartWith(
+			"SELECT *, (`total` * $a0) AS `doubled` FROM (",
+		);
+		expect(statement).not.toContain("math::sum($a0) AS `total`, (`total`");
+	});
+
+	test("$replaceRoot is a VALUE selection", () => {
+		expect(sql([{ $replaceRoot: { newRoot: "$sub" } }])).toBe(
+			"SELECT VALUE `sub` FROM `sales`",
+		);
+	});
+
+	test("$replaceWith takes the expression directly", () => {
+		expect(sql([{ $replaceWith: "$sub" }])).toBe(
+			sql([{ $replaceRoot: { newRoot: "$sub" } }]),
+		);
+	});
+
+	test("$replaceRoot without newRoot is refused", () => {
+		expect(() => sql([{ $replaceRoot: {} }])).toThrow(/`newRoot` expression/);
+	});
+
+	test("$sortByCount is $group plus $sort, in one statement", () => {
+		const statement = sql([{ $sortByCount: "$cat" }]);
+		expect(statement).toContain("count() AS `count`");
+		expect(statement).toContain("GROUP BY `_id`");
+		expect(statement).toEndWith("ORDER BY `count` DESC");
+		expect(depth([{ $sortByCount: "$cat" }])).toBe(1);
+	});
+
+	test("$addFields with no fields is refused", () => {
+		expect(() => sql([{ $addFields: {} }])).toThrow(/at least one field/);
+	});
+});
+
 describe("what is refused", () => {
 	test.each([
 		["$facet", { $facet: {} }],
