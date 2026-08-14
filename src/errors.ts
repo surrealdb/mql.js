@@ -392,6 +392,18 @@ export interface BulkWriteOutcome {
 	insertedCount: number;
 	/** The `_id` of each written document, keyed by its index in the batch. */
 	insertedIds: Record<number, unknown>;
+	/**
+	 * The counts only a `bulkWrite` can produce.
+	 *
+	 * Optional because `insertMany` raises this error too, and a batch of inserts
+	 * has nothing to say about matches or deletions. A `bulkWrite` fills all of
+	 * them in, so a caller who mixed models can still tell what landed.
+	 */
+	matchedCount?: number;
+	modifiedCount?: number;
+	deletedCount?: number;
+	upsertedCount?: number;
+	upsertedIds?: Record<number, unknown>;
 }
 
 /**

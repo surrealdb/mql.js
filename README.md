@@ -1596,7 +1596,7 @@ synchronously.
 | Method | Raises | Instead |
 | --- | --- | --- |
 | `Db.aggregate()` | `MongoCompatibilityError` | `db.collection(name).aggregate(pipeline)`, which is implemented. A database-level pipeline reads from a source stage such as `$documents` or `$currentOp`, and none of those has a SurrealDB counterpart |
-| `Collection.bulkWrite()`, `initializeOrderedBulkOp()`, `initializeUnorderedBulkOp()` | `MongoCompatibilityError` | The single-purpose methods, or `session.withTransaction()` so they commit or roll back as a unit |
+| `Collection.initializeOrderedBulkOp()`, `initializeUnorderedBulkOp()` | `MongoCompatibilityError` | `bulkWrite()` with the models as an array, which is implemented |
 | `Collection.watch()`, `Db.watch()`, `MongoClient.watch()` | `MongoCompatibilityError` | A SurrealDB live query through the SurrealDB client this driver wraps |
 | `Collection.rename()`, `Db.renameCollection()` | `MongoCompatibilityError` | Create the new collection, copy the documents across, `dropCollection()` the old one |
 | `Collection.createSearchIndex()`, `createSearchIndexes()`, `dropSearchIndex()`, `updateSearchIndex()`, `listSearchIndexes()` | `MongoCompatibilityError` | `createIndex()` with a text index, which becomes a SurrealDB full-text search index |
@@ -1605,10 +1605,10 @@ synchronously.
 
 Why each is refused rather than approximated:
 
-- **Bulk writes** — the gap is the per-model result accounting across mixed
-  insert, update and delete models. The ordered/unordered failure semantics
-  themselves are implemented, for `insertMany` — see [A batch insert that partly
-  fails](#a-batch-insert-that-partly-fails).
+- **The fluent bulk builders** — `initializeOrderedBulkOp().find().updateOne()`
+  accumulates through a chained API of its own. `bulkWrite()` is implemented and
+  reports the same `BulkWriteResult`, so this is a second spelling rather than a
+  second capability.
 - **Change streams** — SurrealDB's live queries carry a different event shape and
   no resume token, so a `ChangeStream` built on them could not be resumed after a
   disconnect the way callers depend on. The client *is* an event emitter (see

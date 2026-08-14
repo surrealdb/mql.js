@@ -21,6 +21,7 @@ import { isDockerAvailable } from "./providers/docker-container.ts";
 import { MongoDbDockerProvider } from "./providers/mongodb-provider.ts";
 import { SurrealDbDockerProvider } from "./providers/surrealdb-provider.ts";
 import { registerAggregationScenarios } from "./scenarios/aggregation-scenarios.ts";
+import { registerBulkWriteScenarios } from "./scenarios/bulk-write-scenarios.ts";
 import { registerCrudScenarios } from "./scenarios/crud-scenarios.ts";
 import { registerGeospatialScenarios } from "./scenarios/geospatial-scenarios.ts";
 import { registerParityGapScenarios } from "./scenarios/parity-gap-scenarios.ts";
@@ -61,6 +62,7 @@ if (!dockerAvailable) {
 	for (const build of buildProviders(resolveDriver())) {
 		registerCrudScenarios(build());
 		registerAggregationScenarios(build());
+		registerBulkWriteScenarios(build());
 		registerGeospatialScenarios(build());
 		registerParityGapScenarios(build());
 	}

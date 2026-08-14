@@ -27,7 +27,7 @@ describe("updateOne", () => {
 		// into a pair of queries is the regression this guards.
 		expect(executor.queries.length).toBe(1);
 		expect(executor.queries[0].sql).toBe(
-			"UPDATE (SELECT VALUE id FROM (SELECT id FROM `users` WHERE (`name` = $p0 OR (type::is_array(`name`) AND `name` CONTAINS $p0)) LIMIT 1)) SET `age` = $p1",
+			"UPDATE (SELECT VALUE id FROM (SELECT id FROM `users` WHERE (`name` = $p0 OR (type::is_array(`name`) AND `name` CONTAINS $p0)) LIMIT 1)) SET `age` = $p1 RETURN DIFF",
 		);
 		// The filter's placeholders are numbered first, so the update's continue
 		// from where they stopped rather than colliding with them.
@@ -110,7 +110,7 @@ describe("updateMany", () => {
 
 		expect(executor.queries.length).toBe(1);
 		expect(executor.queries[0].sql).toBe(
-			"UPDATE `users` SET `tier` = $p1 WHERE (`status` = $p0 OR (type::is_array(`status`) AND `status` CONTAINS $p0))",
+			"UPDATE `users` SET `tier` = $p1 WHERE (`status` = $p0 OR (type::is_array(`status`) AND `status` CONTAINS $p0)) RETURN DIFF",
 		);
 		expect(executor.queries[0].bindings).toEqual({
 			p0: "active",
@@ -124,7 +124,9 @@ describe("updateMany", () => {
 		const { ctx, executor } = makeContext();
 		executor.enqueue([]);
 		await updateMany(ctx, {}, { $set: { x: 1 } });
-		expect(executor.queries[0].sql).toBe("UPDATE `users` SET `x` = $p0");
+		expect(executor.queries[0].sql).toBe(
+			"UPDATE `users` SET `x` = $p0 RETURN DIFF",
+		);
 	});
 
 	test("forwards arrayFilters into the SET clause translator", async () => {
