@@ -85,12 +85,12 @@ describe("a method MongoDB answers with a lazy cursor throws at the call", () =>
 		[
 			"Collection.initializeOrderedBulkOp()",
 			() => collection().initializeOrderedBulkOp(),
-			"Collection.initializeOrderedBulkOp() is not implemented by @surrealdb/mql: mixing insert, update, replace and delete models into one batch needs the per-model result accounting and the ordered/unordered failure semantics that BulkWriteResult reports, and neither is implemented. Call the single-purpose methods, or run them inside session.withTransaction() so they commit or roll back as a unit.",
+			"Collection.initializeOrderedBulkOp() is not implemented by @surrealdb/mql: the fluent bulk builders accumulate operations through a chained API of their own, and this driver implements the batch through bulkWrite() rather than through a builder. Call bulkWrite() with the write models as an array, which is implemented and reports the same BulkWriteResult.",
 		],
 		[
 			"Collection.initializeUnorderedBulkOp()",
 			() => collection().initializeUnorderedBulkOp(),
-			"Collection.initializeUnorderedBulkOp() is not implemented by @surrealdb/mql: mixing insert, update, replace and delete models into one batch needs the per-model result accounting and the ordered/unordered failure semantics that BulkWriteResult reports, and neither is implemented. Call the single-purpose methods, or run them inside session.withTransaction() so they commit or roll back as a unit.",
+			"Collection.initializeUnorderedBulkOp() is not implemented by @surrealdb/mql: the fluent bulk builders accumulate operations through a chained API of their own, and this driver implements the batch through bulkWrite() rather than through a builder. Call bulkWrite() with the write models as an array, which is implemented and reports the same BulkWriteResult.",
 		],
 		[
 			"Collection.listSearchIndexes()",
@@ -120,11 +120,6 @@ describe("a method MongoDB answers with a lazy cursor throws at the call", () =>
  */
 describe("a method MongoDB answers with a promise rejects", () => {
 	const cases: readonly [string, () => Promise<unknown>, string][] = [
-		[
-			"Collection.bulkWrite()",
-			() => collection().bulkWrite([{ insertOne: { document: { a: 1 } } }]),
-			"Collection.bulkWrite() is not implemented by @surrealdb/mql: mixing insert, update, replace and delete models into one batch needs the per-model result accounting and the ordered/unordered failure semantics that BulkWriteResult reports, and neither is implemented. Call the single-purpose methods, or run them inside session.withTransaction() so they commit or roll back as a unit.",
-		],
 		[
 			"Collection.rename()",
 			() => collection().rename("other"),

@@ -79,6 +79,7 @@ import type { OperationContext } from "./operation-context.ts";
 import type { AnyOperationOptions } from "./operation-options.ts";
 import { assertSupportedOptions } from "./operation-options.ts";
 import { executeAggregate } from "./operations/aggregate.ts";
+import { bulkWrite as bulkWriteOp } from "./operations/bulk-write.ts";
 import {
 	countDocuments as countDocumentsOp,
 	estimatedDocumentCount as estimatedDocumentCountOp,
@@ -586,13 +587,27 @@ export class Collection<TSchema extends Document = Document> {
 		);
 	}
 
-	/** Not implemented — see `src/unsupported.ts`. */
-	bulkWrite(
+	/**
+	 * Run mixed write models in one call.
+	 *
+	 * `ordered: true` (the default) stops at the first model that fails and keeps
+	 * everything before it; `ordered: false` attempts every model. A failure
+	 * raises `MongoBulkWriteError` carrying both the counts of what did land and
+	 * one `writeErrors` entry per refused model, named by its index.
+	 *
+	 * One statement per model rather than one batched message, so this does not
+	 * save round trips — see the README.
+	 */
+	async bulkWrite(
 		operations: readonly AnyBulkWriteOperation<TSchema>[],
 		options?: BulkWriteOptions,
-	): Promise<BulkWriteResult>;
-	async bulkWrite(): Promise<BulkWriteResult> {
-		throw unsupported("Collection.bulkWrite()", BULK_WRITE);
+	): Promise<BulkWriteResult> {
+		assertSupportedOptions(options);
+		return bulkWriteOp<TSchema>(
+			await this.context(options),
+			operations,
+			options,
+		);
 	}
 
 	/**

@@ -35,6 +35,7 @@ import {
 	SurrealDbBinaryProvider,
 } from "./providers/surrealdb-binary-provider.ts";
 import { registerAggregationScenarios } from "./scenarios/aggregation-scenarios.ts";
+import { registerBulkWriteScenarios } from "./scenarios/bulk-write-scenarios.ts";
 import { registerCrudScenarios } from "./scenarios/crud-scenarios.ts";
 import { registerGeospatialScenarios } from "./scenarios/geospatial-scenarios.ts";
 import { registerParityGapScenarios } from "./scenarios/parity-gap-scenarios.ts";
@@ -105,6 +106,7 @@ if (!anyAvailable) {
 		if (available) {
 			registerCrudScenarios(create());
 			registerAggregationScenarios(create());
+			registerBulkWriteScenarios(create());
 			registerGeospatialScenarios(create());
 			registerParityGapScenarios(create());
 		} else {

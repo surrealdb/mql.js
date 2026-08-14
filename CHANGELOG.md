@@ -6,6 +6,10 @@ All notable changes to `@surrealdb/mql` are recorded here. The format follows [K
 
 ### Added
 
+- **`bulkWrite`.** Mixed `insertOne`, `updateOne`, `updateMany`, `replaceOne`, `deleteOne` and `deleteMany` models in one call, with MongoDB's counts, its index-keyed `insertedIds` and `upsertedIds`, its ordered and unordered failure semantics, and a `MongoBulkWriteError` naming each refused model by index. Each model runs through the operation that already implements it rather than being translated afresh, because `updateOne` with an upsert is a read then a write and the single-record writes retry on a write conflict — rebuilding those to pack into one dispatch would be a second implementation of the subtlest write logic in the driver. The consequence is that this does not save round trips: one statement per model. The counts and the semantics are MongoDB's; the batching is not, and the README says so.
+
+  `initializeOrderedBulkOp` and `initializeUnorderedBulkOp` still refuse, and now say why they are different: they are the same batch through a chained builder rather than a capability this driver lacks.
+
 - **`$addFields` and `$set`, `$replaceRoot` and `$replaceWith`, `$sortByCount`.** `$addFields` is `SELECT *, <expr> AS name`, which carries MongoDB's rule that a field already present is replaced rather than duplicated — measured, since nothing in SurrealQL's grammar promises which of two same-named entries wins. `$replaceRoot` is `SELECT VALUE <expr>`. `$sortByCount` is applied as the `$group` and `$sort` MongoDB defines it to be, so everything true of that pair — that the sort folds into the grouping statement — stays true here without being restated.
 
   Like `$lookup`, `$addFields` leaves `_id` meaning the record identity for the stages after it: it keeps every column the rows already had rather than replacing the shape.

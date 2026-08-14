@@ -128,6 +128,21 @@ export interface MongoLikeCollection<
 	aggregate<T extends MongoLikeDocument = MongoLikeDocument>(
 		pipeline: MongoLikeDocument[],
 	): MongoLikeAggregationCursor<T>;
+	bulkWrite(
+		operations: MongoLikeDocument[],
+		options?: { ordered?: boolean },
+	): Promise<MongoLikeBulkWriteResult>;
+}
+
+/** The counts both drivers report for a batch of mixed write models. */
+export interface MongoLikeBulkWriteResult {
+	insertedCount: number;
+	matchedCount: number;
+	modifiedCount: number;
+	deletedCount: number;
+	upsertedCount: number;
+	insertedIds: Record<number, unknown>;
+	upsertedIds: Record<number, unknown>;
 }
 
 export interface MongoLikeDb {

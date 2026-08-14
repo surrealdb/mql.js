@@ -67,6 +67,55 @@ export function registerCrudScenarios(provider: DatabaseProvider): void {
 		// INSERT
 		// -----------------------------------------------------------------
 
+		describe("what an update counts as modified", () => {
+			// `matchedCount` and `modifiedCount` are different numbers, and this
+			// driver reported them as the same one until the bulkWrite parity
+			// scenarios put the question to a real mongod.
+			test("a $set to the value already there matches but does not modify", async () => {
+				await users.insertOne({ name: "Alice", age: 30 });
+				const result = await users.updateOne(
+					{ name: "Alice" },
+					{ $set: { age: 30 } },
+				);
+				expect(result.matchedCount).toBe(1);
+				expect(result.modifiedCount).toBe(0);
+			});
+
+			test("a $set to a new value modifies", async () => {
+				await users.insertOne({ name: "Alice", age: 30 });
+				const result = await users.updateOne(
+					{ name: "Alice" },
+					{ $set: { age: 31 } },
+				);
+				expect(result.matchedCount).toBe(1);
+				expect(result.modifiedCount).toBe(1);
+			});
+
+			test("updateMany counts only the documents it changed", async () => {
+				await users.insertMany([
+					{ name: "Alice", age: 30 },
+					{ name: "Bob", age: 31 },
+				]);
+				const result = await users.updateMany({}, { $set: { age: 30 } });
+				expect(result.matchedCount).toBe(2);
+				expect(result.modifiedCount).toBe(1);
+			});
+
+			test("a replace counts as modified even when the content is identical", async () => {
+				// Measured, and not what the $set rule above would predict: MongoDB
+				// compares values for an update operator and does not for a
+				// whole-document replace. Asserting it of both drivers is what stops
+				// the asymmetry being tidied away into a consistency that is wrong.
+				await users.insertOne({ name: "Alice", age: 30 });
+				const result = await users.replaceOne(
+					{ name: "Alice" },
+					{ name: "Alice", age: 30 },
+				);
+				expect(result.matchedCount).toBe(1);
+				expect(result.modifiedCount).toBe(1);
+			});
+		});
+
 		describe("insert", () => {
 			test("insertOne acknowledges and returns an id", async () => {
 				const result = await users.insertOne({ name: "Alice", age: 30 });

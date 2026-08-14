@@ -59,16 +59,18 @@ export const DB_AGGREGATION: UnsupportedFeature = {
 };
 
 /**
- * Batched writes of mixed models in one call.
+ * The fluent bulk builders, `initializeOrderedBulkOp` and its unordered twin.
  *
- * The gap is not the loop — it is the per-model result accounting and the
- * ordered/unordered failure semantics that `BulkWriteResult` reports.
+ * `bulkWrite()` is implemented; these are not. They are the same batch reached
+ * through a chained builder — `.find().updateOne()` accumulating operations
+ * before `.execute()` — which is a second API for something this driver already
+ * does, rather than a second capability.
  */
 export const BULK_WRITE: UnsupportedFeature = {
 	because:
-		"mixing insert, update, replace and delete models into one batch needs the per-model result accounting and the ordered/unordered failure semantics that BulkWriteResult reports, and neither is implemented",
+		"the fluent bulk builders accumulate operations through a chained API of their own, and this driver implements the batch through bulkWrite() rather than through a builder",
 	instead:
-		"Call the single-purpose methods, or run them inside session.withTransaction() so they commit or roll back as a unit.",
+		"Call bulkWrite() with the write models as an array, which is implemented and reports the same BulkWriteResult.",
 };
 
 /**

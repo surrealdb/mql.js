@@ -136,6 +136,9 @@ async function updateOneMatch(
 		statement(
 			`UPDATE ${oneRecordTarget(ctx, whereClause, plan, undefined, nearDistance)}`,
 			clause,
+			// The diff, not the document: the caller only counts these, and it is
+			// what tells a match that changed something from one that did not.
+			"RETURN DIFF",
 			plan.timeout,
 		),
 		{ ...filterBindings, ...bindings },
@@ -162,6 +165,7 @@ async function updateWhere(
 		plan.indexHint,
 		clause,
 		whereClause && `WHERE ${whereClause}`,
+		"RETURN DIFF",
 		plan.timeout,
 	);
 
