@@ -248,6 +248,21 @@ jobs:
         env:
           MQL_SURREAL_VERSION: ${{ matrix.surrealdb.target }}
 
+      # The parity scenarios, on the transport the published package actually
+      # uses. These are the strongest thing this job can run: they assert
+      # MongoDB's answers rather than this driver's, so a difference undici's
+      # WebSocket introduced would show up as a parity failure and not merely as
+      # a connection that behaved oddly.
+      #
+      # The mql leg only. The MongoDB leg runs the official driver, which is a
+      # Node library already — running it here would re-test somebody else's
+      # code. What it is for is establishing that the expectations are right, and
+      # the Docker e2e job does that on every pull request.
+      - name: Run e2e parity under Node
+        run: bun run test:e2e:node
+        env:
+          MQL_SURREAL_VERSION: ${{ matrix.surrealdb.target }}
+
   integration-tests:
     name: Integration Tests (SurrealDB ${{ matrix.surrealdb.name }})
     runs-on: ubuntu-latest

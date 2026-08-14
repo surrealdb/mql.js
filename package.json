@@ -57,6 +57,7 @@
 		"test:e2e:in-memory": "bun test tests/e2e/parity-in-memory.test.ts",
 		"test:e2e:in-memory:mongodb": "E2E_DRIVER=mongodb bun test tests/e2e/parity-in-memory.test.ts",
 		"test:e2e:in-memory:mql": "E2E_DRIVER=mql bun test tests/e2e/parity-in-memory.test.ts",
+		"test:e2e:node": "E2E_DRIVER=mql node --import ./scripts/node-test/register.mjs --test \"tests/e2e/parity-in-memory.test.ts\"",
 		"test:integration:3.0": "MQL_SURREAL_VERSION=3.0.5 bun test tests/integration",
 		"test:integration:3.1": "MQL_SURREAL_VERSION=3.1.5 bun test tests/integration",
 		"test:integration:3.2": "MQL_SURREAL_VERSION=3.2.4 bun test tests/integration"
