@@ -4,6 +4,12 @@ All notable changes to `@surrealdb/mql` are recorded here. The format follows [K
 
 ## [Unreleased]
 
+### Added
+
+- **Aggregation pipelines.** `collection.aggregate(pipeline)` returns an `AggregationCursor` synchronously, as MongoDB does, and serves `$match`, `$group`, `$project`, `$sort`, `$skip`, `$limit`, `$count` and `$unwind`, with about forty expression operators available inside `$project` and inside accumulators. A pipeline compiles to as few `SELECT`s as its stages allow: SurrealQL is one statement with clause slots in a fixed evaluation order rather than a sequence of steps, so consecutive stages fold into one statement while each lands in a slot it has not passed, and a subquery opens when one does not — which is how `$match` after `$group` becomes a `HAVING`. Every stage and every expression operator that is not implemented raises `MongoCompatibilityError` naming it, because a pipeline whose later stages were dropped would still return documents. `Db.aggregate()` still refuses: a database-level pipeline reads from a source stage such as `$documents`, and none of those has a SurrealDB counterpart. See the README's Aggregation section for the boundary in full.
+
+  Two places where SurrealDB's nearest equivalent is not MongoDB's answer, both measured rather than assumed. `SPLIT` emits a row for an empty array and for a missing field where `$unwind` emits neither, so `$unwind` filters those out first. And `SELECT NULL AS _id … GROUP ALL` returns `_id` as one null per row rather than a single collapsed group, so `$group` always groups by the `_id` alias instead — one idiom that covers a scalar key, a compound key and `null` alike.
+
 ### Fixed
 
 - **`watch()`'s refusal gave a reason that stopped being true.** It told callers a change stream was not possible partly because "this driver has no event emitter to deliver one on", which `MongoClient` becoming an emitter in 0.1.0 had already made false — `MqlEventEmitter` is exported, and a `ChangeStream` would have an emitter to be built on. The obstacle is the resume contract and only that: SurrealDB's live queries carry no resume token, so the stream could not be resumed after a disconnect. The message now says that and nothing more.

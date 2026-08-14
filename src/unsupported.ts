@@ -44,17 +44,18 @@ export interface UnsupportedFeature {
 }
 
 /**
- * The aggregation framework.
+ * A database-level aggregation pipeline.
  *
- * A partial translation is worse than none: a pipeline whose later stages were
- * dropped still returns documents, so the caller gets a plausible wrong answer
- * instead of an error.
+ * `Collection.aggregate()` is implemented; this is the `Db` one, which is a
+ * different thing. A pipeline with no collection behind it takes its input from
+ * a source stage — `$documents`, `$listLocalSessions`, `$currentOp` — and none
+ * of those has anything to read from here.
  */
-export const AGGREGATION: UnsupportedFeature = {
+export const DB_AGGREGATION: UnsupportedFeature = {
 	because:
-		"the aggregation pipeline has no SurrealQL translation here, and a partial one would answer with documents that silently ignored the stages it could not translate",
+		"a database-level pipeline reads from a source stage such as $documents or $currentOp rather than from a collection, and none of those has a SurrealDB counterpart to draw rows from",
 	instead:
-		"Use find() with a filter, sort, skip, limit and projection, countDocuments() or distinct() for the single-stage equivalents, or run SurrealQL through the SurrealDB client this driver wraps.",
+		"Use db.collection(name).aggregate(pipeline), which is implemented, or run SurrealQL through the SurrealDB client this driver wraps.",
 };
 
 /**

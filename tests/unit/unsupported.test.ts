@@ -63,14 +63,9 @@ function collection(): Collection {
 describe("a method MongoDB answers with a lazy cursor throws at the call", () => {
 	const cases: readonly [string, () => unknown, string][] = [
 		[
-			"Collection.aggregate()",
-			() => collection().aggregate([{ $match: {} }]),
-			"Collection.aggregate() is not implemented by @surrealdb/mql: the aggregation pipeline has no SurrealQL translation here, and a partial one would answer with documents that silently ignored the stages it could not translate. Use find() with a filter, sort, skip, limit and projection, countDocuments() or distinct() for the single-stage equivalents, or run SurrealQL through the SurrealDB client this driver wraps.",
-		],
-		[
 			"Db.aggregate()",
 			() => db().aggregate([{ $match: {} }]),
-			"Db.aggregate() is not implemented by @surrealdb/mql: the aggregation pipeline has no SurrealQL translation here, and a partial one would answer with documents that silently ignored the stages it could not translate. Use find() with a filter, sort, skip, limit and projection, countDocuments() or distinct() for the single-stage equivalents, or run SurrealQL through the SurrealDB client this driver wraps.",
+			"Db.aggregate() is not implemented by @surrealdb/mql: a database-level pipeline reads from a source stage such as $documents or $currentOp rather than from a collection, and none of those has a SurrealDB counterpart to draw rows from. Use db.collection(name).aggregate(pipeline), which is implemented, or run SurrealQL through the SurrealDB client this driver wraps.",
 		],
 		[
 			"Collection.watch()",
@@ -180,7 +175,7 @@ describe("an unimplemented method is a driver-side error, not a server one", () 
 	test("it narrows through the driver branch of the hierarchy", () => {
 		let caught: unknown;
 		try {
-			collection().aggregate();
+			collection().initializeOrderedBulkOp();
 		} catch (error) {
 			caught = error;
 		}
@@ -200,7 +195,8 @@ describe("an unimplemented method is a driver-side error, not a server one", () 
 		// The whole point of declaring these methods: before they existed, every
 		// call above was `TypeError: … is not a function`, which says nothing about
 		// whether the driver is broken, old, or deliberately narrow.
-		expect(() => collection().aggregate()).not.toThrow(TypeError);
+		expect(() => collection().initializeOrderedBulkOp()).not.toThrow(TypeError);
+		expect(typeof collection().aggregate).toBe("function");
 		expect(typeof collection().bulkWrite).toBe("function");
 		expect(typeof collection().watch).toBe("function");
 		expect(typeof db().command).toBe("function");

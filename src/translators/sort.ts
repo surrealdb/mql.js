@@ -23,11 +23,28 @@ import { isIdField, SURREAL_ID_FIELD } from "./filter/id-field.ts";
  * Translate a MongoDB sort specification into a SurrealQL ORDER BY clause.
  * Returns an empty string when no sort is specified.
  */
-export function translateSort(sort?: Sort | null): string {
+export function translateSort(
+	sort?: Sort | null,
+	options?: SortFieldOptions,
+): string {
 	const parts = sortEntries(sort).map(
-		([field, dir]) => `${escapeSortField(field)} ${normaliseDirection(dir)}`,
+		([field, dir]) =>
+			`${escapeSortField(field, options)} ${normaliseDirection(dir)}`,
 	);
 	return parts.length > 0 ? `ORDER BY ${parts.join(", ")}` : "";
+}
+
+/** How `_id` is to be read when a sort names it. */
+export interface SortFieldOptions {
+	/**
+	 * Treat `_id` as an ordinary field rather than the document identity.
+	 *
+	 * A sort over stored rows means SurrealDB's `id` column when it says `_id`.
+	 * A sort over the output of an aggregation `$group` or `$project` does not:
+	 * those rows have a literal `_id` field and no `id` at all, so rewriting it
+	 * would order by a column that is not there.
+	 */
+	readonly identityIsPlainField?: boolean;
 }
 
 /** One column a sort orders by, in both spellings. */
@@ -52,10 +69,13 @@ export interface SortColumn {
  * about `a.b` rather than about `` `a`.`b` ``. Pairing them here is what stops
  * the two from being assembled separately and drifting.
  */
-export function sortColumns(sort?: Sort | null): SortColumn[] {
+export function sortColumns(
+	sort?: Sort | null,
+	options?: SortFieldOptions,
+): SortColumn[] {
 	const seen = new Map<string, SortColumn>();
 	for (const [key] of sortEntries(sort)) {
-		const column = escapeSortField(key);
+		const column = escapeSortField(key, options);
 		if (!seen.has(column)) seen.set(column, { key, column });
 	}
 	return [...seen.values()];
@@ -122,6 +142,9 @@ function normaliseDirection(dir: SortDirection): "ASC" | "DESC" {
  * Only the field is rewritten: a sort compares no value, so unlike a filter
  * this needs no table name to build a `RecordId` from.
  */
-function escapeSortField(field: string): string {
-	return isIdField(field) ? SURREAL_ID_FIELD : escapeFieldPath(field);
+function escapeSortField(field: string, options?: SortFieldOptions): string {
+	if (isIdField(field) && !options?.identityIsPlainField) {
+		return SURREAL_ID_FIELD;
+	}
+	return escapeFieldPath(field);
 }

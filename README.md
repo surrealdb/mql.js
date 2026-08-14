@@ -48,6 +48,7 @@ A drop-in MongoDB driver replacement powered by SurrealDB. Use the MongoDB API y
 - **Admin commands** - db.command and db.admin() answer ping, buildInfo, listDatabases, dbStats, collStats and the create/drop/index commands, reporting only what SurrealDB can actually tell you
 - **TypeScript generics** - Typed collections with full type inference
 - **MongoDB connection strings** - Use `mongodb://` connection strings that map to SurrealDB
+- **Aggregation pipelines** - `$match`, `$group`, `$project`, `$sort`, `$skip`, `$limit`, `$count` and `$unwind`, with an expression language for computed fields — see [Aggregation](#aggregation)
 - **A documented edge** - every MongoDB method this driver does not implement is still there, and says what it cannot do and where to go instead — see [What is not implemented](#what-is-not-implemented)
 
 ## Installation
@@ -1122,6 +1123,71 @@ await users.updateMany(
 | `"field.$[]"` | All elements in the array |
 | `"field.$[id]"` | Elements matching the `arrayFilters` condition for `id` |
 
+## Aggregation
+
+`collection.aggregate(pipeline)` returns an `AggregationCursor` synchronously, as MongoDB does, and sends nothing until you consume it.
+
+```typescript
+const byCategory = await orders.aggregate([
+  { $match: { status: "shipped" } },
+  { $group: { _id: "$category", revenue: { $sum: { $multiply: ["$price", "$qty"] } }, n: { $sum: 1 } } },
+  { $match: { n: { $gt: 5 } } },
+  { $sort: { revenue: -1 } },
+  { $limit: 10 },
+]).toArray();
+```
+
+The pipeline becomes as few `SELECT`s as its stages allow. SurrealQL is not a sequence of steps — it is one statement with clause slots evaluated in a fixed order — so consecutive stages are folded into one statement while each lands in a slot the statement has not passed, and a subquery opens when one does not. The example above is two: the `$match` after the `$group` is a `HAVING`, and everything else rides in the inner statement.
+
+You do not have to think about that, except when reading a slow query. What is worth knowing is that `$group` → `$sort` → `$limit` is a single statement, which is the shape most pipelines end in.
+
+### Stages
+
+| Stage | Notes |
+| --- | --- |
+| `$match` | The same translator as a `find()` filter, so every filter operator works here — including `$text`, and `$elemMatch`. Not `$near`/`$nearSphere`: those order the whole result set as well as filtering it, and a stage has nowhere to put that ordering |
+| `$group` | `_id` may be a field path, an expression, a compound document or `null`. Accumulators: `$sum`, `$avg`, `$min`, `$max`, `$push`, `$addToSet`, `$first`, `$last`, `$count` |
+| `$project` | Inclusion and computed fields. `_id` may be excluded; excluding anything else is refused, because MongoDB forbids mixing inclusions and exclusions and serving half the form invites the other half to look supported |
+| `$sort` | As a `find()` sort |
+| `$skip`, `$limit` | In either order, meaning what MongoDB means by that order |
+| `$count` | One document of one field |
+| `$unwind` | Including `preserveNullAndEmptyArrays`. Not `includeArrayIndex` — SurrealDB's `SPLIT` does not report the position a value came from |
+
+Everything else — `$lookup`, `$facet`, `$bucket`, `$graphLookup`, `$unionWith`, `$out`, `$merge`, `$setWindowFields` — raises `MongoCompatibilityError` naming the stage. A pipeline whose later stages were silently dropped would still return documents, so the caller would get a plausible wrong answer instead of an error.
+
+### Expressions
+
+Inside `$project` and inside accumulators:
+
+| Group | Operators |
+| --- | --- |
+| Arithmetic | `$add` `$subtract` `$multiply` `$divide` `$mod` `$abs` `$ceil` `$floor` `$round` `$pow` `$sqrt` |
+| String | `$concat` `$toUpper` `$toLower` `$strLenCP` `$split` `$trim` |
+| Comparison | `$eq` `$ne` `$gt` `$gte` `$lt` `$lte` |
+| Boolean | `$and` `$or` `$not` |
+| Conditional | `$cond` `$ifNull` `$switch` |
+| Array | `$size` `$arrayElemAt` `$in` `$reverseArray` `$concatArrays` |
+| Type | `$toString` `$toInt` `$toDouble` `$toBool` |
+| Date | `$year` `$month` `$dayOfMonth` `$dayOfWeek` `$dayOfYear` `$hour` `$minute` `$second` |
+| Other | `$literal`, and `$$NOW` |
+
+An operator not in that table raises rather than compiling to something approximate. Two are worth calling out because they look like they should be there:
+
+- **`$type`** is refused. It answers with a BSON type name, and SurrealDB's type names are its own — `float` where BSON says `double`, and no `objectId` at all — so any mapping would be invented rather than translated.
+- **`$round` with a decimal place** is refused. SurrealDB's `math::round` takes no precision, so the result would be rounded to a different place than the one asked for.
+
+`$$ROOT` and `$$CURRENT` are not available: a whole-document value has nowhere to go in the statements this driver emits.
+
+### Where `$unwind` differs from `SPLIT`
+
+SurrealDB's `SPLIT` is close to `$unwind` but not equal to it, and the difference is extra documents rather than an error. Measured against a live server, `SPLIT tags` emits a row for a document whose `tags` is `[]`, and a row for one that has no `tags` at all. MongoDB emits neither.
+
+So `$unwind` filters first, keeping exactly what MongoDB keeps: a non-empty array, or any present non-array value — MongoDB unwinds a scalar as though it were an array of one, and so does this. `preserveNullAndEmptyArrays: true` drops the filter, which is what that option asks for.
+
+### `_id` in a pipeline
+
+`_id` means SurrealDB's `id` column over stored rows, and an ordinary field after a `$group` or `$project` has run. The driver switches at the first reshaping stage, so `{$group: {_id: "$cat"}}` followed by `{$sort: {_id: 1}}` sorts by the group key, and `{$match: {_id: "x"}}` before any reshaping still matches the record.
+
 ## Cursors
 
 The `find()` method returns a `FindCursor` that is lazy -- no query is executed until results are consumed.
@@ -1501,7 +1567,7 @@ synchronously.
 
 | Method | Raises | Instead |
 | --- | --- | --- |
-| `Collection.aggregate()`, `Db.aggregate()` | `MongoCompatibilityError` | `find()` with a filter, sort, skip, limit and projection; `countDocuments()`; `distinct()`. For anything a pipeline is genuinely needed for, run SurrealQL through the SurrealDB client this driver wraps |
+| `Db.aggregate()` | `MongoCompatibilityError` | `db.collection(name).aggregate(pipeline)`, which is implemented. A database-level pipeline reads from a source stage such as `$documents` or `$currentOp`, and none of those has a SurrealDB counterpart |
 | `Collection.bulkWrite()`, `initializeOrderedBulkOp()`, `initializeUnorderedBulkOp()` | `MongoCompatibilityError` | The single-purpose methods, or `session.withTransaction()` so they commit or roll back as a unit |
 | `Collection.watch()`, `Db.watch()`, `MongoClient.watch()` | `MongoCompatibilityError` | A SurrealDB live query through the SurrealDB client this driver wraps |
 | `Collection.rename()`, `Db.renameCollection()` | `MongoCompatibilityError` | Create the new collection, copy the documents across, `dropCollection()` the old one |
@@ -1511,9 +1577,6 @@ synchronously.
 
 Why each is refused rather than approximated:
 
-- **Aggregation** — a partial translation is worse than none. A pipeline whose
-  later stages were silently dropped still returns documents, so the caller gets a
-  plausible wrong answer instead of an error.
 - **Bulk writes** — the gap is the per-model result accounting across mixed
   insert, update and delete models. The ordered/unordered failure semantics
   themselves are implemented, for `insertMany` — see [A batch insert that partly

@@ -13,6 +13,7 @@ export type {
 export { MongoClient } from "./client/mongo-client.ts";
 export { Collection } from "./collection/collection.ts";
 export { MONGODB_COMPATIBILITY_VERSION } from "./constants.ts";
+export { AggregationCursor } from "./cursor/aggregation-cursor.ts";
 export { FindCursor } from "./cursor/find-cursor.ts";
 export {
 	ListCollectionsCursor,

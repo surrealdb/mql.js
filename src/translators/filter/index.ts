@@ -65,6 +65,17 @@ export interface TranslateFilterOptions {
 	 * cannot match, so every caller inside the driver supplies it.
 	 */
 	collection?: string;
+	/**
+	 * Prefix for the parameter names this call allocates, `"p"` by default.
+	 *
+	 * Every call numbers from zero, so two filters translated into the same
+	 * statement both bind `$p0` — to different values. One filter per statement
+	 * cannot hit that; an aggregation pipeline with two `$match` stages does, and
+	 * the second set of bindings would overwrite the first while the clause still
+	 * read `$p0`. That is a wrong answer rather than an error, so callers that put
+	 * more than one filter in a statement pass a distinct prefix for each.
+	 */
+	paramPrefix?: string;
 }
 
 /** Top-level operators whose operand is an array of sub-filters. */
@@ -117,7 +128,7 @@ export function translateFilter(
 		textFields: options?.textFields,
 		collection: options?.collection,
 		bindings,
-		nextParam: () => `p${counter++}`,
+		nextParam: () => `${options?.paramPrefix ?? "p"}${counter++}`,
 		bind(value) {
 			const name = ctx.nextParam();
 			bindings[name] = value;

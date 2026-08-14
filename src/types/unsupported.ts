@@ -55,16 +55,6 @@ export interface AggregateOptions extends CommandOperationOptions {
 	out?: string;
 }
 
-/**
- * The cursor `aggregate` returns.
- *
- * Declared so the return type is settled; nothing produces one.
- */
-export interface AggregationCursor<TSchema extends Document = Document> {
-	/** @internal Keeps the parameter used, so the type is not silently structural. */
-	readonly _aggregationCursorSchema?: TSchema;
-}
-
 // ---------------------------------------------------------------------------
 // Change streams
 // ---------------------------------------------------------------------------

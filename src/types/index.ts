@@ -89,7 +89,6 @@ export type {
 } from "./results.ts";
 export type {
 	AggregateOptions,
-	AggregationCursor,
 	AnyBulkWriteOperation,
 	ChangeStream,
 	ChangeStreamDocument,

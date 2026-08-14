@@ -8,6 +8,7 @@
  * easy to test and extend.
  */
 
+import { AggregationCursor } from "../cursor/aggregation-cursor.ts";
 import type { FindCursorState, FindRunner } from "../cursor/find-cursor.ts";
 import { FindCursor } from "../cursor/find-cursor.ts";
 import { ListIndexesCursor } from "../cursor/list-indexes-cursor.ts";
@@ -22,7 +23,6 @@ import {
 } from "../translators/dialect/index.ts";
 import type {
 	AggregateOptions,
-	AggregationCursor,
 	AnyBulkWriteOperation,
 	BulkWriteOptions,
 	BulkWriteResult,
@@ -68,7 +68,6 @@ import type {
 	WithoutId,
 } from "../types.ts";
 import {
-	AGGREGATION,
 	BULK_WRITE,
 	CHANGE_STREAMS,
 	RENAME_COLLECTION,
@@ -79,6 +78,7 @@ import { IndexRegistry } from "./index-registry.ts";
 import type { OperationContext } from "./operation-context.ts";
 import type { AnyOperationOptions } from "./operation-options.ts";
 import { assertSupportedOptions } from "./operation-options.ts";
+import { executeAggregate } from "./operations/aggregate.ts";
 import {
 	countDocuments as countDocumentsOp,
 	estimatedDocumentCount as estimatedDocumentCountOp,
@@ -568,16 +568,22 @@ export class Collection<TSchema extends Document = Document> {
 	// -----------------------------------------------------------------------
 
 	/**
-	 * Not implemented. MongoDB returns an `AggregationCursor` here without
-	 * contacting the server, so this throws where MongoDB would not have failed
-	 * until the cursor was iterated — see `src/unsupported.ts`.
+	 * Run an aggregation pipeline, returning a cursor over its output.
+	 *
+	 * The cursor comes back synchronously and sends nothing until it is consumed,
+	 * as MongoDB's does. `$match`, `$sort`, `$limit`, `$skip`, `$count`,
+	 * `$project`, `$group` and `$unwind` are translated; every other stage raises
+	 * `MongoCompatibilityError` naming it, rather than being skipped — see the
+	 * README's aggregation section for the full boundary.
 	 */
 	aggregate<T extends Document = Document>(
-		pipeline?: Document[],
+		pipeline: Document[] = [],
 		options?: AggregateOptions,
-	): AggregationCursor<T>;
-	aggregate<T extends Document = Document>(): AggregationCursor<T> {
-		throw unsupported("Collection.aggregate()", AGGREGATION);
+	): AggregationCursor<T> {
+		assertSupportedOptions(options);
+		return new AggregationCursor<T>(async () =>
+			executeAggregate<T>(await this.context(options), pipeline, options),
+		);
 	}
 
 	/** Not implemented — see `src/unsupported.ts`. */
