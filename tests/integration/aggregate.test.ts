@@ -383,8 +383,8 @@ describe("paging", () => {
 describe("refusals reach the caller", () => {
 	test("an unimplemented stage names itself", async () => {
 		await expect(
-			sales.aggregate([{ $facet: { a: [] } }]).toArray(),
-		).rejects.toThrow(/\$facet is not implemented/);
+			sales.aggregate([{ $graphLookup: { from: "other" } }]).toArray(),
+		).rejects.toThrow(/\$graphLookup is not implemented/);
 	});
 
 	test("Db.aggregate() still refuses, and says which one works", () => {

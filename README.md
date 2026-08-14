@@ -1153,6 +1153,7 @@ You do not have to think about that, except when reading a slow query. What is w
 | `$count` | One document of one field |
 | `$unwind` | Including `preserveNullAndEmptyArrays`. Not `includeArrayIndex` — SurrealDB's `SPLIT` does not report the position a value came from |
 | `$lookup` | The `localField`/`foreignField` form, including `foreignField: "_id"`. Not the `pipeline`/`let` form — see below |
+| `$facet` | Several sub-pipelines over the same input, answered as one document. `$facet`, `$out`, `$merge` and `$geoNear` are refused inside a branch, as MongoDB refuses them |
 | `$addFields`, `$set` | Extra fields beside the existing ones. A field already present is replaced, as in MongoDB |
 | `$replaceRoot`, `$replaceWith` | Promote a value — a subdocument or a computed one — to the root |
 | `$sortByCount` | Group by an expression, count, order by the count descending |
@@ -1205,6 +1206,21 @@ What you pay instead is memory: every matching foreign document is held server-s
 The `pipeline`/`let` form is refused. It runs a sub-pipeline per joined document, and the two-phase plan cannot express that — the foreign rows are gathered before any per-row work could decide which of them are wanted. Use the `localField`/`foreignField` form and filter the joined array with a later `$match` or `$unwind`.
 
 A collection that does not exist joins as empty, matching MongoDB, rather than raising the way SurrealDB does when read directly.
+
+### How `$facet` runs its branches
+
+The input is bound once and every branch reads it, so the pipeline before the `$facet` runs a single time however many branches there are:
+
+```sql
+LET $in    = (<the pipeline so far>);
+LET $fac_0 = (<branch one, reading $in>);
+LET $fac_1 = (<branch two, reading $in>);
+SELECT * FROM [{ "one": $fac_0, "two": $fac_1 }];
+```
+
+The one-row literal at the end is what keeps `$facet` a stage rather than a terminus: MongoDB answers a `$facet` with a single document, and a statement reading one row of that shape is something later stages go on folding into. `{$facet: …}` followed by `{$project: {n: {$size: "$branch"}}}` is two statements, not two round trips.
+
+A branch may contain a `$lookup`, whose own bound variables are emitted ahead of the branch that reads them.
 
 ### Where `$unwind` differs from `SPLIT`
 

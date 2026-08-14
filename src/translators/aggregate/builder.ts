@@ -176,6 +176,24 @@ export class SelectBuilder {
 	}
 
 	/**
+	 * The `LET`s bound so far, for a caller assembling one statement out of several
+	 * builders.
+	 *
+	 * `$facet` compiles each of its branches with a builder of its own and then has
+	 * to emit their setup ahead of its own — a branch containing a `$lookup` binds
+	 * variables that must be in place before the branch is read.
+	 */
+	get letStatements(): readonly string[] {
+		return this.preamble;
+	}
+
+	/** Read from a literal source, for a stage that builds its own rows. */
+	replaceSource(from: string): void {
+		this.level = emptyLevel(from);
+		this.reshaped = true;
+	}
+
+	/**
 	 * Set the field list, and record that this statement's is now spoken for.
 	 *
 	 * Marking the slot matters beyond bookkeeping. `$group` writes a field list of
