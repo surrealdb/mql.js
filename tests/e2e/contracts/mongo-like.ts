@@ -60,6 +60,18 @@ export interface MongoLikeDeleteResult {
 	deletedCount: number;
 }
 
+/**
+ * The aggregation cursor surface both drivers share.
+ *
+ * Narrower than `MongoLikeFindCursor` on purpose: a pipeline says what it does
+ * in its stages, so there is nothing to chain afterwards.
+ */
+export interface MongoLikeAggregationCursor<
+	TSchema extends MongoLikeDocument = MongoLikeDocument,
+> {
+	toArray(): Promise<TSchema[]>;
+}
+
 /** Minimal cursor surface – the chainable methods both drivers share. */
 export interface MongoLikeFindCursor<TSchema extends MongoLikeDocument> {
 	sort(spec: MongoLikeSort): MongoLikeFindCursor<TSchema>;
@@ -113,6 +125,9 @@ export interface MongoLikeCollection<
 	): Promise<TSchema | null>;
 	findOneAndDelete(filter: MongoLikeFilter): Promise<TSchema | null>;
 	createIndex(spec: Record<string, unknown>): Promise<string>;
+	aggregate<T extends MongoLikeDocument = MongoLikeDocument>(
+		pipeline: MongoLikeDocument[],
+	): MongoLikeAggregationCursor<T>;
 }
 
 export interface MongoLikeDb {

@@ -1594,10 +1594,18 @@ Why each is refused rather than approximated:
 
 ### Deliberate divergences
 
-- **A cursor-returning method throws at the call.** MongoDB's `aggregate()`,
-  `watch()` and `initialize*BulkOp()` hand back a cursor or a builder *without
-  contacting the server*, so a caller who never iterates never sees a failure
-  there. Here the call itself throws. Deferring the failure into iteration would
+- **`$divide` by zero answers `null` rather than raising.** MongoDB fails the
+  pipeline with `can't $divide by zero`; SurrealDB's `/` evaluates to `NONE`,
+  which reaches the caller as `null`. Refusing a literal `0` divisor at translate
+  time would catch only the case nobody writes — the divisor is normally a field —
+  so the difference is documented rather than half-caught. Guard the divisor with
+  `$cond` if a zero is possible in your data.
+- **A cursor-returning method that is not implemented throws at the call.**
+  MongoDB's `watch()`, `Db.aggregate()` and `initialize*BulkOp()` hand back a
+  cursor or a builder *without contacting the server*, so a caller who never
+  iterates never sees a failure there. Here the call itself throws.
+  (`Collection.aggregate()` is implemented and returns a cursor, as MongoDB's
+  does.) Deferring the failure into iteration would
   move it away from the call that caused it — and for `watch()` it would have to
   arrive on the returned stream's `'error'` event, which a caller who never
   attaches a listener never sees at all.

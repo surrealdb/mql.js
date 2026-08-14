@@ -8,10 +8,13 @@ All notable changes to `@surrealdb/mql` are recorded here. The format follows [K
 
 - **Aggregation pipelines.** `collection.aggregate(pipeline)` returns an `AggregationCursor` synchronously, as MongoDB does, and serves `$match`, `$group`, `$project`, `$sort`, `$skip`, `$limit`, `$count` and `$unwind`, with about forty expression operators available inside `$project` and inside accumulators. A pipeline compiles to as few `SELECT`s as its stages allow: SurrealQL is one statement with clause slots in a fixed evaluation order rather than a sequence of steps, so consecutive stages fold into one statement while each lands in a slot it has not passed, and a subquery opens when one does not — which is how `$match` after `$group` becomes a `HAVING`. Every stage and every expression operator that is not implemented raises `MongoCompatibilityError` naming it, because a pipeline whose later stages were dropped would still return documents. `Db.aggregate()` still refuses: a database-level pipeline reads from a source stage such as `$documents`, and none of those has a SurrealDB counterpart. See the README's Aggregation section for the boundary in full.
 
+  Aggregation now runs in the e2e parity suite, so every expectation is asserted of the official driver against a real `mongod` as well as of this one — an assumption about MongoDB that is wrong fails on the MongoDB leg rather than becoming this driver's behaviour. One divergence is documented rather than fixed: `$divide` by zero answers `null` where MongoDB raises, because SurrealDB's `/` evaluates to `NONE` and the divisor is normally a field rather than a literal.
+
   Two places where SurrealDB's nearest equivalent is not MongoDB's answer, both measured rather than assumed. `SPLIT` emits a row for an empty array and for a missing field where `$unwind` emits neither, so `$unwind` filters those out first. And `SELECT NULL AS _id … GROUP ALL` returns `_id` as one null per row rather than a single collapsed group, so `$group` always groups by the `_id` alias instead — one idiom that covers a scalar key, a compound key and `null` alike.
 
 ### Fixed
 
+- **`$divide` did integer division.** `{$divide: [7, 2]}` answered `3` where MongoDB answers `3.5`, because SurrealQL's `/` on two integers is integer division while MongoDB's `$divide` always produces a double. Found by the new e2e parity scenarios on their first run against a real `mongod`, which is the point of them: `3` is a number rather than an error, so nothing short of comparing the two drivers would have noticed.
 - **`watch()`'s refusal gave a reason that stopped being true.** It told callers a change stream was not possible partly because "this driver has no event emitter to deliver one on", which `MongoClient` becoming an emitter in 0.1.0 had already made false — `MqlEventEmitter` is exported, and a `ChangeStream` would have an emitter to be built on. The obstacle is the resume contract and only that: SurrealDB's live queries carry no resume token, so the stream could not be resumed after a disconnect. The message now says that and nothing more.
 
 ## [0.2.0] — 2026-08-13
@@ -30,7 +33,7 @@ And it is the first release whose test suite has run under Node. `surrealdb` res
 
 - **`Db.listCollections()` returns a cursor**, synchronously, as MongoDB does — not `Promise<CollectionInfo[]>`. A caller who wrote `await db.listCollections()` adds `.toArray()`. This is why mongoose could not consume the driver: it calls `db.listCollections()` and then reads `.toArray` off the result.
 
-  This is a breaking change in a minor release, which is what the `0.x` policy in [COMPATIBILITY.md](./COMPATIBILITY.md) allows: while the major is `0`, the minor acts as the major.
+  This is a breaking change in a minor release, which is what the `0.x` policy in force at the time allowed: while the major was `0`, the minor acted as the major.
 
 ### Fixed
 
