@@ -418,9 +418,102 @@ describe("$addFields, $replaceRoot and $sortByCount", () => {
 	});
 });
 
+describe("$facet", () => {
+	const facet = [
+		{
+			$facet: {
+				byCat: [{ $group: { _id: "$cat", n: { $sum: 1 } } }],
+				top: [{ $limit: 2 }],
+			},
+		},
+	];
+
+	test("binds the input once and reads it from every branch", () => {
+		// The point of binding rather than repeating a subquery: the branches must
+		// see the same rows, and the pipeline before them must run once.
+		const statement = sql(facet);
+		expect(statement).toContain(
+			"LET $mql_facet_in_0 = (SELECT * FROM `sales`)",
+		);
+		expect(statement.match(/FROM \$mql_facet_in_0/g) ?? []).toHaveLength(2);
+	});
+
+	test("each branch becomes its own bound statement", () => {
+		const statement = sql(facet);
+		expect(statement).toContain("LET $mql_facet_0_0 = (SELECT `cat` AS `_id`");
+		expect(statement).toContain(
+			"LET $mql_facet_0_1 = (SELECT * FROM $mql_facet_in_0 LIMIT 2)",
+		);
+	});
+
+	test("answers from a one-row literal, so later stages can still fold", () => {
+		expect(sql(facet)).toEndWith(
+			'SELECT * FROM [{ "byCat": $mql_facet_0_0, "top": $mql_facet_0_1 }]',
+		);
+	});
+
+	test("a later stage reads the facet document rather than nesting again", () => {
+		const statement = sql([...facet, { $project: { n: { $size: "$byCat" } } }]);
+		expect(statement).toContain('FROM [{ "byCat"');
+		expect(statement).toContain("array::len(`byCat`)");
+	});
+
+	test("branches at the same index do not collide on a parameter", () => {
+		// Both branches have a `$match` at index 0 of their own pipeline.
+		const { bindings } = compile([
+			{
+				$facet: {
+					a: [{ $match: { x: "left" } }],
+					b: [{ $match: { x: "right" } }],
+				},
+			},
+		]);
+		expect(Object.values(bindings).sort()).toEqual(["left", "right"]);
+	});
+
+	test("a branch carrying a $lookup binds its variables before the branch", () => {
+		const statement = sql([
+			{
+				$facet: {
+					joined: [
+						{
+							$lookup: {
+								from: "p",
+								localField: "w",
+								foreignField: "k",
+								as: "j",
+							},
+						},
+					],
+				},
+			},
+		]);
+		const joinLet = statement.indexOf("LET $mql_join_");
+		const branchLet = statement.indexOf("LET $mql_facet_0_0");
+		expect(joinLet).toBeGreaterThan(-1);
+		expect(joinLet).toBeLessThan(branchLet);
+	});
+
+	test.each([
+		["$facet"],
+		["$out"],
+		["$merge"],
+		["$geoNear"],
+	])("refuses %s inside a branch, as MongoDB does", (name) => {
+		expect(() => sql([{ $facet: { a: [{ [name]: {} }] } }])).toThrow(
+			new RegExp(`\\${name} cannot appear inside a \\$facet`),
+		);
+	});
+
+	test("a branch that is not an array is refused", () => {
+		expect(() => sql([{ $facet: { a: {} } }])).toThrow(
+			/branch a must be an array of stages/,
+		);
+	});
+});
+
 describe("what is refused", () => {
 	test.each([
-		["$facet", { $facet: {} }],
 		["$bucket", { $bucket: {} }],
 		["$graphLookup", { $graphLookup: {} }],
 		["$unionWith", { $unionWith: "other" }],

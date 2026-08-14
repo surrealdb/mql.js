@@ -758,6 +758,82 @@ export function registerAggregationScenarios(provider: DatabaseProvider): void {
 		});
 
 		// -----------------------------------------------------------------
+		// $facet
+		// -----------------------------------------------------------------
+
+		describe("$facet", () => {
+			test("answers with one document carrying an array per branch", async () => {
+				await seed();
+				const out = await sales
+					.aggregate([
+						{
+							$facet: {
+								byCat: [
+									{ $group: { _id: "$cat", n: { $sum: 1 } } },
+									{ $sort: { _id: 1 } },
+								],
+								dearest: [
+									{ $sort: { price: -1 } },
+									{ $limit: 1 },
+									{ $project: { _id: 0, price: 1 } },
+								],
+							},
+						},
+					])
+					.toArray();
+
+				expect(out).toHaveLength(1);
+				expect(out[0]?.byCat).toEqual([
+					{ _id: "a", n: 2 },
+					{ _id: "b", n: 2 },
+				]);
+				expect(out[0]?.dearest).toEqual([{ price: 40 }]);
+			});
+
+			test("every branch sees the same input, filtered by what came before", async () => {
+				await seed();
+				const out = await sales
+					.aggregate([
+						{ $match: { cat: "a" } },
+						{
+							$facet: {
+								count: [{ $count: "n" }],
+								prices: [
+									{ $sort: { price: 1 } },
+									{ $project: { _id: 0, price: 1 } },
+								],
+							},
+						},
+					])
+					.toArray();
+
+				expect(out[0]?.count).toEqual([{ n: 2 }]);
+				expect(out[0]?.prices).toEqual([{ price: 10 }, { price: 20 }]);
+			});
+
+			test("a branch that matches nothing is an empty array, not a missing field", async () => {
+				await seed();
+				const out = await sales
+					.aggregate([{ $facet: { none: [{ $match: { cat: "nope" } }] } }])
+					.toArray();
+
+				expect(out[0]?.none).toEqual([]);
+			});
+
+			test("a later stage reads the facet document", async () => {
+				await seed();
+				const out = await sales
+					.aggregate([
+						{ $facet: { all: [{ $match: {} }] } },
+						{ $project: { _id: 0, howMany: { $size: "$all" } } },
+					])
+					.toArray();
+
+				expect(out).toEqual([{ howMany: 4 }]);
+			});
+		});
+
+		// -----------------------------------------------------------------
 		// Paging and $count
 		// -----------------------------------------------------------------
 

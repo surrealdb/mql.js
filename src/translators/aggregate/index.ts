@@ -12,9 +12,9 @@
  * The stages that are served:
  *
  *   `$match` `$sort` `$limit` `$skip` `$count` `$project` `$group` `$unwind`
- *   `$lookup`
+ *   `$lookup` `$facet`
  *
- * `$facet`, `$bucket`, `$graphLookup`, `$unionWith`, `$out`, `$merge`,
+ * `$bucket`, `$graphLookup`, `$unionWith`, `$out`, `$merge`,
  * `$setWindowFields` and the rest are refused.
  */
 
@@ -82,17 +82,35 @@ export function translatePipeline(
 	};
 
 	const builder = new SelectBuilder(options.table);
-
-	for (const [index, stage] of pipeline.entries()) {
-		applyStage(stage, index, builder, bind, options, bindings);
-	}
+	runStages(pipeline, builder, bind, options, bindings, "");
 
 	return { sql: builder.renderBatch(), bindings, isBatch: builder.isBatch };
 }
 
+/**
+ * Apply every stage of a pipeline to `builder`.
+ *
+ * `scope` distinguishes stages that share an index because they are in
+ * different branches of a `$facet` — it is what keeps their bound parameters and
+ * their variable names apart. Empty for the top-level pipeline, so the SQL that
+ * pipeline emits is unchanged by this existing.
+ */
+function runStages(
+	pipeline: readonly Document[],
+	builder: SelectBuilder,
+	bind: (value: unknown) => string,
+	options: TranslatePipelineOptions,
+	bindings: Record<string, unknown>,
+	scope: string,
+): void {
+	for (const [index, stage] of pipeline.entries()) {
+		applyStage(stage, `${scope}${index}`, builder, bind, options, bindings);
+	}
+}
+
 function applyStage(
 	stage: Document,
-	index: number,
+	index: string,
 	builder: SelectBuilder,
 	bind: (value: unknown) => string,
 	options: TranslatePipelineOptions,
@@ -142,6 +160,9 @@ function applyStage(
 		case "$lookup":
 			applyLookup(spec, index, builder);
 			return;
+		case "$facet":
+			applyFacet(spec, index, builder, bind, options, bindings);
+			return;
 		case "$addFields":
 		case "$set":
 			applyAddFields(name, spec, builder, bind);
@@ -169,7 +190,7 @@ function applyStage(
  */
 function applyMatch(
 	spec: unknown,
-	index: number,
+	index: string,
 	builder: SelectBuilder,
 	options: TranslatePipelineOptions,
 	bindings: Record<string, unknown>,
@@ -426,6 +447,101 @@ function unwindPath(path: unknown): string {
 }
 
 /**
+ * `$facet` — several sub-pipelines over the same input, in one document.
+ *
+ * The input is bound once and each branch reads it, which is the only way to run
+ * them over the *same* rows without evaluating the pipeline so far once per
+ * branch:
+ *
+ *     LET $in    = (<the pipeline so far>);
+ *     LET $fac_0 = (<branch one, reading $in>);
+ *     LET $fac_1 = (<branch two, reading $in>);
+ *     SELECT * FROM [{ "one": $fac_0, "two": $fac_1 }];
+ *
+ * The literal one-row source is what makes `$facet` a stage rather than a
+ * terminus: MongoDB's `$facet` answers with a single document, and a statement
+ * reading one row of that shape is something later stages can go on folding into.
+ *
+ * Each branch compiles with a builder of its own, and its `LET`s are emitted
+ * ahead of it — a branch containing a `$lookup` binds variables that have to be
+ * in place before the branch is read. The branches share the outer pipeline's
+ * parameter counter, so nothing they bind can collide.
+ */
+function applyFacet(
+	spec: unknown,
+	index: string,
+	builder: SelectBuilder,
+	bind: (value: unknown) => string,
+	options: TranslatePipelineOptions,
+	bindings: Record<string, unknown>,
+): void {
+	if (typeof spec !== "object" || spec === null || Array.isArray(spec)) {
+		throw new MongoCompatibilityError("$facet takes a specification document.");
+	}
+
+	const branches = Object.entries(spec as Document);
+	if (branches.length === 0) {
+		throw new MongoCompatibilityError("$facet takes at least one branch.");
+	}
+
+	const input = `mql_facet_in_${index}`;
+	builder.materialise(input);
+
+	const fields: string[] = [];
+
+	for (const [position, [name, stages]] of branches.entries()) {
+		if (!Array.isArray(stages)) {
+			throw new MongoCompatibilityError(
+				`The $facet branch ${name} must be an array of stages.`,
+			);
+		}
+		assertFacetable(name, stages);
+
+		const branch = new SelectBuilder(`$${input}`);
+		runStages(
+			stages as Document[],
+			branch,
+			bind,
+			options,
+			bindings,
+			`${index}f${position}_`,
+		);
+
+		// The branch's own setup first, then the branch. Order matters: a `$lookup`
+		// inside it binds variables the branch's statement reads.
+		for (const statement of branch.letStatements) builder.bind(statement);
+
+		const variable = `mql_facet_${index}_${position}`;
+		builder.bind(`LET $${variable} = (${branch.render()})`);
+		fields.push(`${JSON.stringify(name)}: $${variable}`);
+	}
+
+	builder.replaceSource(`[{ ${fields.join(", ")} }]`);
+}
+
+/**
+ * Stages MongoDB forbids inside a `$facet`, refused here for its reasons.
+ *
+ * `$facet` inside `$facet` is forbidden outright; the others write, or name
+ * their own source, and a branch has neither a collection to write to nor a
+ * source of its own.
+ */
+const NOT_IN_FACET = new Set(["$facet", "$out", "$merge", "$geoNear"]);
+
+function assertFacetable(name: string, stages: readonly unknown[]): void {
+	for (const stage of stages) {
+		if (typeof stage !== "object" || stage === null) continue;
+		for (const stageName of Object.keys(stage as Document)) {
+			if (NOT_IN_FACET.has(stageName)) {
+				throw new MongoCompatibilityError(
+					`${stageName} cannot appear inside a $facet, and MongoDB refuses it too. It is in the branch ${name}.`,
+				);
+			}
+		}
+	}
+}
+
+/**
  * `$lookup` — a left outer join in two indexed phases.
  *
  * The shape and the reason for it are in `lookup.ts`. What belongs here is the
@@ -439,7 +555,7 @@ function unwindPath(path: unknown): string {
  */
 function applyLookup(
 	spec: unknown,
-	index: number,
+	index: string,
 	builder: SelectBuilder,
 ): void {
 	const lookup = readLookupSpec(spec);

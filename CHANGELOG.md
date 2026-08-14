@@ -6,6 +6,10 @@ All notable changes to `@surrealdb/mql` are recorded here. The format follows [K
 
 ### Added
 
+- **`$facet`.** Several sub-pipelines over the same input, answered as MongoDB answers it: one document with an array per branch. The input is bound once and every branch reads it, so the pipeline before the `$facet` runs a single time however many branches there are, and the result is a one-row literal source rather than a terminus — a stage after a `$facet` goes on folding into the same statement. A branch may contain a `$lookup`, whose bound variables are emitted ahead of it. `$facet`, `$out`, `$merge` and `$geoNear` are refused inside a branch, as MongoDB refuses them.
+
+  This became expressible only with the `LET` machinery `$lookup` introduced. Before it, running several pipelines over one input meant evaluating that input once per branch.
+
 - **`bulkWrite`.** Mixed `insertOne`, `updateOne`, `updateMany`, `replaceOne`, `deleteOne` and `deleteMany` models in one call, with MongoDB's counts, its index-keyed `insertedIds` and `upsertedIds`, its ordered and unordered failure semantics, and a `MongoBulkWriteError` naming each refused model by index. Each model runs through the operation that already implements it rather than being translated afresh, because `updateOne` with an upsert is a read then a write and the single-record writes retry on a write conflict — rebuilding those to pack into one dispatch would be a second implementation of the subtlest write logic in the driver. The consequence is that this does not save round trips: one statement per model. The counts and the semantics are MongoDB's; the batching is not, and the README says so.
 
   `initializeOrderedBulkOp` and `initializeUnorderedBulkOp` still refuse, and now say why they are different: they are the same batch through a chained builder rather than a capability this driver lacks.
