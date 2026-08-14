@@ -39,10 +39,6 @@ Semantic versioning, over the surface below.
 - The exact SurrealQL emitted. It is an implementation detail, and identifier quoting, statement shape and clause order have all changed within a patch release.
 - Timing and round-trip counts, except where the README states a guarantee (the single-statement atomicity of the single-document writes is one).
 
-## Pre-1.0.0
-
-While the major version is `0`, the minor acts as the major: `0.2.0` may break what `0.1.0` did, and it will say so. The releases up to `1.0.0` exist to exercise the publish path and to shake out packaging under real consumption — the parts no amount of testing in this repository can prove.
-
 ## Reporting an incompatibility
 
 A difference from MongoDB that is not in the README's divergence tables is a bug. The most useful report is the one that says what the official driver answers and what this one answers, for the same operation on the same data — that is the form the fix gets tested in.

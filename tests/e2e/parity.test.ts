@@ -20,6 +20,7 @@ import type { DatabaseProvider } from "./providers/database-provider.ts";
 import { isDockerAvailable } from "./providers/docker-container.ts";
 import { MongoDbDockerProvider } from "./providers/mongodb-provider.ts";
 import { SurrealDbDockerProvider } from "./providers/surrealdb-provider.ts";
+import { registerAggregationScenarios } from "./scenarios/aggregation-scenarios.ts";
 import { registerCrudScenarios } from "./scenarios/crud-scenarios.ts";
 import { registerGeospatialScenarios } from "./scenarios/geospatial-scenarios.ts";
 import { registerParityGapScenarios } from "./scenarios/parity-gap-scenarios.ts";
@@ -59,6 +60,7 @@ if (!dockerAvailable) {
 	// one instance shared between two of them would be restarted in between.
 	for (const build of buildProviders(resolveDriver())) {
 		registerCrudScenarios(build());
+		registerAggregationScenarios(build());
 		registerGeospatialScenarios(build());
 		registerParityGapScenarios(build());
 	}

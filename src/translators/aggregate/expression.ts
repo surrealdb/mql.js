@@ -131,7 +131,12 @@ const OPERATORS: readonly ExpressionOperator[] = [
 	variadicInfix("$add", "+"),
 	variadicInfix("$multiply", "*"),
 	fixedArity("$subtract", 2, ([a, b]) => `(${a} - ${b})`),
-	fixedArity("$divide", 2, ([a, b]) => `(${a} / ${b})`),
+	// The left operand is cast because SurrealQL's `/` on two integers is integer
+	// division — `7 / 2` is `3` — while MongoDB's `$divide` always produces a
+	// double. Caught by the e2e parity suite rather than by reading: `3` is a
+	// number, not an error, so nothing else would have noticed. Casting one side
+	// is enough to make the whole expression floating point.
+	fixedArity("$divide", 2, ([a, b]) => `(<float>(${a}) / ${b})`),
 	fixedArity("$mod", 2, ([a, b]) => `(${a} % ${b})`),
 	call("$abs", "math::abs", 1),
 	call("$ceil", "math::ceil", 1),
