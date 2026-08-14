@@ -469,6 +469,129 @@ export function registerAggregationScenarios(provider: DatabaseProvider): void {
 		});
 
 		// -----------------------------------------------------------------
+		// $addFields / $set, $replaceRoot / $replaceWith, $sortByCount
+		// -----------------------------------------------------------------
+
+		describe("$addFields", () => {
+			test("adds a computed field and keeps the rest", async () => {
+				await sales.insertOne({ cat: "a", price: 10, qty: 3 });
+				const [row] = await sales
+					.aggregate([
+						{ $addFields: { total: { $multiply: ["$price", "$qty"] } } },
+						{ $project: { _id: 0, cat: 1, price: 1, total: 1 } },
+					])
+					.toArray();
+				expect(row).toEqual({ cat: "a", price: 10, total: 30 });
+			});
+
+			test("replaces a field that is already there", async () => {
+				// The behaviour that separates it from $project, and the one nothing in
+				// SurrealQL's grammar promised.
+				await sales.insertOne({ cat: "a", price: 10 });
+				const [row] = await sales
+					.aggregate([
+						{ $addFields: { price: 999 } },
+						{ $project: { _id: 0, price: 1 } },
+					])
+					.toArray();
+				expect(row).toEqual({ price: 999 });
+			});
+
+			test("$set is the same stage", async () => {
+				await sales.insertOne({ cat: "a", price: 10 });
+				const [row] = await sales
+					.aggregate([{ $set: { tag: "x" } }, { $project: { _id: 0, tag: 1 } }])
+					.toArray();
+				expect(row).toEqual({ tag: "x" });
+			});
+
+			test("leaves _id addressable afterwards", async () => {
+				await sales.insertMany([
+					{ _id: "a1", price: 1 },
+					{ _id: "a2", price: 2 },
+				]);
+				expect(
+					await sales
+						.aggregate([
+							{ $addFields: { n: 1 } },
+							{ $sort: { _id: -1 } },
+							{ $project: { _id: 1 } },
+						])
+						.toArray(),
+				).toEqual([{ _id: "a2" }, { _id: "a1" }]);
+			});
+
+			test("works on the output of a $group", async () => {
+				await sales.insertMany([
+					{ cat: "a", price: 10 },
+					{ cat: "a", price: 20 },
+					{ cat: "b", price: 30 },
+				]);
+				expect(
+					await sales
+						.aggregate([
+							{ $group: { _id: "$cat", total: { $sum: "$price" } } },
+							{ $addFields: { doubled: { $multiply: ["$total", 2] } } },
+							{ $sort: { _id: 1 } },
+						])
+						.toArray(),
+				).toEqual([
+					{ _id: "a", total: 30, doubled: 60 },
+					{ _id: "b", total: 30, doubled: 60 },
+				]);
+			});
+		});
+
+		describe("$replaceRoot", () => {
+			test("promotes a subdocument to the root", async () => {
+				await sales.insertOne({ cat: "a", sub: { x: 9, y: 8 } });
+				expect(
+					await sales
+						.aggregate([{ $replaceRoot: { newRoot: "$sub" } }])
+						.toArray(),
+				).toEqual([{ x: 9, y: 8 }]);
+			});
+
+			test("$replaceWith is the shorthand", async () => {
+				await sales.insertOne({ cat: "a", sub: { x: 7 } });
+				expect(
+					await sales.aggregate([{ $replaceWith: "$sub" }]).toArray(),
+				).toEqual([{ x: 7 }]);
+			});
+
+			test("accepts a computed document", async () => {
+				await sales.insertOne({ cat: "a", price: 10 });
+				expect(
+					await sales
+						.aggregate([
+							{ $replaceRoot: { newRoot: { label: "$cat", value: "$price" } } },
+						])
+						.toArray(),
+				).toEqual([{ label: "a", value: 10 }]);
+			});
+		});
+
+		describe("$sortByCount", () => {
+			test("counts by the expression and orders by the count", async () => {
+				await sales.insertMany([
+					{ cat: "a" },
+					{ cat: "a" },
+					{ cat: "a" },
+					{ cat: "b" },
+					{ cat: "b" },
+					{ cat: "c" },
+				]);
+				expect(
+					await sales.aggregate([{ $sortByCount: "$cat" }]).toArray(),
+				).toEqual([
+					{ _id: "a", count: 3 },
+					{ _id: "b", count: 2 },
+					{ _id: "c", count: 1 },
+				]);
+			});
+		});
+
+		// -----------------------------------------------------------------
 		// $lookup
 		// -----------------------------------------------------------------
 
