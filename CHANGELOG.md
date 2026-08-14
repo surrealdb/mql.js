@@ -2,7 +2,13 @@
 
 All notable changes to `@surrealdb/mql` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning follows the policy in [COMPATIBILITY.md](./COMPATIBILITY.md) — which is [Semantic Versioning](https://semver.org/spec/v2.0.0.html) over a surface that is partly this driver's own and partly MongoDB's.
 
-## [Unreleased]
+## [0.3.0] — 2026-08-14
+
+Aggregation. `collection.aggregate(pipeline)` works, which was the largest thing this driver did not do.
+
+It is also the first release to change an answer this driver had already given. `{$divide: [7, 2]}` returned `3`; it now returns `3.5`, which is what MongoDB returns. Under the policy in [COMPATIBILITY.md](./COMPATIBILITY.md) that is a minor release rather than a major one, and this is the first time that rule has been exercised on something real — so if you wrote code against the old answer, this paragraph is the notice, and the entry under **Fixed** is the detail.
+
+The bug is worth a word on its own, because of how it was found. It was not found by review, or by the unit tests, or by the integration tests, all of which agreed with `3`. It was found by running the same expectations through the official MongoDB driver against a real `mongod` and comparing — on the parity suite's first run, minutes after aggregation was written. A wrong number is not an error; nothing else was ever going to notice.
 
 ### Added
 
