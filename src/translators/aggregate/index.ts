@@ -12,9 +12,10 @@
  * The stages that are served:
  *
  *   `$match` `$sort` `$limit` `$skip` `$count` `$project` `$group` `$unwind`
+ *   `$lookup`
  *
- * `$lookup`, `$facet`, `$bucket`, `$graphLookup`, `$unionWith`, `$out`,
- * `$merge`, `$setWindowFields` and the rest are refused.
+ * `$facet`, `$bucket`, `$graphLookup`, `$unionWith`, `$out`, `$merge`,
+ * `$setWindowFields` and the rest are refused.
  */
 
 import { MongoCompatibilityError } from "../../errors.ts";
@@ -25,6 +26,7 @@ import { translateSort } from "../sort.ts";
 import { compileAccumulator } from "./accumulators.ts";
 import { SelectBuilder, Slot } from "./builder.ts";
 import { compileExpression, fieldPath } from "./expression.ts";
+import { compileLookup, readLookupSpec } from "./lookup.ts";
 
 /** What the pipeline translator needs from the collection it runs against. */
 export interface TranslatePipelineOptions {
@@ -42,6 +44,13 @@ export interface TranslatePipelineOptions {
 export interface TranslatedPipeline {
 	readonly sql: string;
 	readonly bindings: Record<string, unknown>;
+	/**
+	 * True when `sql` is more than one statement, so the answer is its last frame.
+	 *
+	 * Only `$lookup` produces one, by binding the outer rows and the joined rows
+	 * ahead of the statement that reads them.
+	 */
+	readonly isBatch: boolean;
 }
 
 /**
@@ -78,7 +87,7 @@ export function translatePipeline(
 		applyStage(stage, index, builder, bind, options, bindings);
 	}
 
-	return { sql: builder.render(), bindings };
+	return { sql: builder.renderBatch(), bindings, isBatch: builder.isBatch };
 }
 
 function applyStage(
@@ -130,9 +139,12 @@ function applyStage(
 		case "$unwind":
 			applyUnwind(spec, builder);
 			return;
+		case "$lookup":
+			applyLookup(spec, index, builder);
+			return;
 		default:
 			throw new MongoCompatibilityError(
-				`The aggregation stage ${name} is not implemented by @surrealdb/mql. Translating it partially would answer with documents that ignored it, so it is refused instead. $match, $sort, $limit, $skip, $count, $project, $group and $unwind are supported.`,
+				`The aggregation stage ${name} is not implemented by @surrealdb/mql. Translating it partially would answer with documents that ignored it, so it is refused instead. $match, $sort, $limit, $skip, $count, $project, $group, $unwind and $lookup are supported.`,
 			);
 	}
 }
@@ -400,6 +412,45 @@ function unwindPath(path: unknown): string {
 		);
 	}
 	return path.slice(1);
+}
+
+/**
+ * `$lookup` — a left outer join in two indexed phases.
+ *
+ * The shape and the reason for it are in `lookup.ts`. What belongs here is the
+ * order of operations: the pipeline so far is bound to a variable, the two join
+ * statements are bound after it, and a fresh statement reads the variable with
+ * the joined array added to `*`.
+ *
+ * The field list is set without marking the documents reshaped, because they are
+ * not: `SELECT *, … AS joined` keeps every column the rows already had, `id`
+ * among them, so `_id` still means the record identity for later stages.
+ */
+function applyLookup(
+	spec: unknown,
+	index: number,
+	builder: SelectBuilder,
+): void {
+	const lookup = readLookupSpec(spec);
+
+	// Suffixed by stage, so two `$lookup`s in one pipeline do not share variables.
+	const vars = {
+		rows: `mql_rows_${index}`,
+		keys: `mql_keys_${index}`,
+		join: `mql_join_${index}`,
+	};
+
+	builder.materialise(vars.rows);
+
+	const { lets, joined } = compileLookup(
+		lookup,
+		vars,
+		builder.identityIsPlainField,
+	);
+	for (const binding of lets) builder.bind(binding);
+
+	builder.claim(Slot.Fields);
+	builder.setFields(`*, ${joined} AS ${escapeAlias(lookup.as)}`, false);
 }
 
 /** `1` and `true` include; `0` and `false` exclude. */

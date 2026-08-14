@@ -40,7 +40,7 @@ import type { DatabaseProvider } from "../providers/database-provider.ts";
 interface SaleDoc extends MongoLikeDocument {
 	_id?: unknown;
 	cat?: string;
-	sub?: string;
+	sub?: unknown;
 	price?: number;
 	qty?: number;
 	tags?: unknown;
@@ -465,6 +465,172 @@ export function registerAggregationScenarios(provider: DatabaseProvider): void {
 						])
 						.toArray(),
 				).toEqual([{ y: 2026, mo: 3, d: 4, wd: 4, yd: 63, h: 5, mi: 6 }]);
+			});
+		});
+
+		// -----------------------------------------------------------------
+		// $lookup
+		// -----------------------------------------------------------------
+
+		describe("$lookup", () => {
+			const CUSTOMERS = "agg_customers";
+
+			/** Two customers, and orders pointing at them by key and by id. */
+			async function seedJoin(): Promise<void> {
+				const customers = db.collection<MongoLikeDocument>(CUSTOMERS);
+				try {
+					await customers.deleteMany({});
+				} catch {
+					// Missing collection; ignore.
+				}
+				await customers.insertMany([
+					{ _id: "c1", cid: "c1", name: "Ada" },
+					{ _id: "c2", cid: "c2", name: "Bob" },
+				]);
+				await sales.insertMany([
+					{ _id: "o1", cat: "a", sub: "c1", price: 10 },
+					{ _id: "o2", cat: "b", sub: "c2", price: 20 },
+					{ _id: "o3", cat: "c", sub: "missing", price: 30 },
+					{ _id: "o4", cat: "d", sub: ["c1", "c2"], price: 40 },
+				]);
+			}
+
+			test("attaches the matching documents as an array", async () => {
+				await seedJoin();
+				const [row] = await sales
+					.aggregate([
+						{ $match: { _id: "o1" } },
+						{
+							$lookup: {
+								from: CUSTOMERS,
+								localField: "sub",
+								foreignField: "cid",
+								as: "c",
+							},
+						},
+					])
+					.toArray();
+				expect(row?.c).toEqual([{ _id: "c1", cid: "c1", name: "Ada" }]);
+			});
+
+			test("a document with no match keeps an empty array", async () => {
+				// The left-outer half: MongoDB does not drop the row.
+				await seedJoin();
+				const [row] = await sales
+					.aggregate([
+						{ $match: { _id: "o3" } },
+						{
+							$lookup: {
+								from: CUSTOMERS,
+								localField: "sub",
+								foreignField: "cid",
+								as: "c",
+							},
+						},
+					])
+					.toArray();
+				expect(row?.c).toEqual([]);
+			});
+
+			test("an array local field matches on any element", async () => {
+				await seedJoin();
+				const [row] = await sales
+					.aggregate([
+						{ $match: { _id: "o4" } },
+						{
+							$lookup: {
+								from: CUSTOMERS,
+								localField: "sub",
+								foreignField: "cid",
+								as: "c",
+							},
+						},
+					])
+					.toArray();
+				expect(
+					(row?.c as MongoLikeDocument[]).map((d) => d.name).sort(),
+				).toEqual(["Ada", "Bob"]);
+			});
+
+			test("joins on the foreign _id", async () => {
+				await seedJoin();
+				const [row] = await sales
+					.aggregate([
+						{ $match: { _id: "o1" } },
+						{
+							$lookup: {
+								from: CUSTOMERS,
+								localField: "sub",
+								foreignField: "_id",
+								as: "c",
+							},
+						},
+					])
+					.toArray();
+				expect((row?.c as MongoLikeDocument[])[0]?._id).toBe("c1");
+			});
+
+			test("the joined documents carry _id, and it survives being moved", async () => {
+				await seedJoin();
+				const [row] = await sales
+					.aggregate([
+						{ $match: { _id: "o1" } },
+						{
+							$lookup: {
+								from: CUSTOMERS,
+								localField: "sub",
+								foreignField: "cid",
+								as: "c",
+							},
+						},
+						{ $unwind: "$c" },
+						{ $project: { _id: 0, who: "$c._id", name: "$c.name" } },
+					])
+					.toArray();
+				expect(row).toEqual({ who: "c1", name: "Ada" });
+			});
+
+			test("joining a collection with no matches at all yields empty arrays", async () => {
+				await seedJoin();
+				const rows = await sales
+					.aggregate([
+						{ $match: { _id: "o1" } },
+						{
+							$lookup: {
+								from: "agg_nothing_here",
+								localField: "sub",
+								foreignField: "cid",
+								as: "c",
+							},
+						},
+					])
+					.toArray();
+				expect(rows).toHaveLength(1);
+				expect(rows[0]?.c).toEqual([]);
+			});
+
+			test("feeds $unwind and $group, which is what a join is usually for", async () => {
+				await seedJoin();
+				expect(
+					await sales
+						.aggregate([
+							{
+								$lookup: {
+									from: CUSTOMERS,
+									localField: "sub",
+									foreignField: "cid",
+									as: "c",
+								},
+							},
+							{ $unwind: "$c" },
+							{ $group: { _id: "$c.name", spend: { $sum: "$price" } } },
+							{ $sort: { _id: 1 } },
+						])
+						.toArray(),
+				).toEqual([
+					{ _id: "Ada", spend: 50 },
+					{ _id: "Bob", spend: 60 },
+				]);
 			});
 		});
 

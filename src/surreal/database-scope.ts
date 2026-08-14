@@ -111,6 +111,25 @@ export abstract class ScopedExecutor implements QueryExecutor {
 		return frames[scoped.frame] as T;
 	}
 
+	async queryLast<T = unknown>(
+		sql: string,
+		bindings?: Record<string, unknown>,
+	): Promise<T> {
+		const scoped = scopeStatement(sql, this.database);
+		// Per-statement outcomes rather than `dispatch`, which throws as soon as any
+		// statement failed. Here an earlier statement is allowed to fail: a `$lookup`
+		// on a collection SurrealDB has no definition for leaves its variable unset,
+		// and the statement that reads it answers with empty joins — which is what
+		// MongoDB answers for a collection it has never seen. A failure that the last
+		// statement cannot absorb reaches it, and is thrown below.
+		const outcomes = await this.dispatchEach(scoped.sql, bindings);
+		// The prefix only ever goes in front, so the caller's last statement is the
+		// last frame however the statement was scoped.
+		const last = outcomes[outcomes.length - 1];
+		if (!last.ok) throw last.error;
+		return last.value as T;
+	}
+
 	async queryEach(
 		sql: string,
 		bindings?: Record<string, unknown>,

@@ -2,6 +2,16 @@
 
 All notable changes to `@surrealdb/mql` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning follows the policy in [COMPATIBILITY.md](./COMPATIBILITY.md) — which is [Semantic Versioning](https://semver.org/spec/v2.0.0.html) over a surface that is partly this driver's own and partly MongoDB's.
 
+## [Unreleased]
+
+### Added
+
+- **`$lookup`.** The `localField`/`foreignField` form, including `foreignField: "_id"`, with MongoDB's left-outer semantics: an array per row, empty where nothing matched, and a match on any element when the local field is an array.
+
+  It is not translated as the obvious correlated subquery, which is semantically exact but loses the index — measured with `EXPLAIN`, `WHERE cid = $parent.customer` plans as a `TableScan` where `WHERE cid = 'c1'` plans as an `IndexScan`, so that shape scans the whole foreign collection once per outer row. Instead the outer rows are bound to a variable, their distinct keys collected, and the foreign rows fetched by a single uncorrelated query that keeps the index; the join is then an in-memory filter. The cost is the number of distinct keys rather than the number of rows. What it costs instead is memory, since the matching foreign documents are held server-side for the length of the statement — documented rather than discovered.
+
+  The `pipeline`/`let` form is refused: it runs a sub-pipeline per joined document, which this plan cannot express. A foreign collection that does not exist joins as empty, as MongoDB answers a collection it has never seen.
+
 ## [0.3.0] — 2026-08-14
 
 Aggregation. `collection.aggregate(pipeline)` works, which was the largest thing this driver did not do.
