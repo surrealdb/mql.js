@@ -1168,11 +1168,12 @@ Inside `$project` and inside accumulators:
 | Group | Operators |
 | --- | --- |
 | Arithmetic | `$add` `$subtract` `$multiply` `$divide` `$mod` `$abs` `$ceil` `$floor` `$round` `$pow` `$sqrt` |
-| String | `$concat` `$toUpper` `$toLower` `$strLenCP` `$split` `$trim` |
+| String | `$concat` `$toUpper` `$toLower` `$strLenCP` `$split` `$trim` `$regexMatch` |
 | Comparison | `$eq` `$ne` `$gt` `$gte` `$lt` `$lte` |
 | Boolean | `$and` `$or` `$not` |
 | Conditional | `$cond` `$ifNull` `$switch` |
-| Array | `$size` `$arrayElemAt` `$in` `$reverseArray` `$concatArrays` |
+| Array | `$size` `$arrayElemAt` `$in` `$reverseArray` `$concatArrays` `$map` `$filter` |
+| Object | `$mergeObjects` |
 | Type | `$toString` `$toInt` `$toDouble` `$toBool` |
 | Date | `$year` `$month` `$dayOfMonth` `$dayOfWeek` `$dayOfYear` `$hour` `$minute` `$second` |
 | Other | `$literal`, and `$$NOW` |
@@ -1182,7 +1183,7 @@ An operator not in that table raises rather than compiling to something approxim
 - **`$type`** is refused. It answers with a BSON type name, and SurrealDB's type names are its own — `float` where BSON says `double`, and no `objectId` at all — so any mapping would be invented rather than translated.
 - **`$round` with a decimal place** is refused. SurrealDB's `math::round` takes no precision, so the result would be rounded to a different place than the one asked for.
 
-`$$ROOT` and `$$CURRENT` are not available: a whole-document value has nowhere to go in the statements this driver emits.
+`$$ROOT` and `$$CURRENT` are not available: a whole-document value has nowhere to go in the statements this driver emits. `$map` and `$filter` bind their own variable — `as: "item"`, read back as `$$item`, defaulting to `$$this` — and nest, so a `$map` inside a `$map` sees both.
 
 ### How `$lookup` joins, and what it costs
 

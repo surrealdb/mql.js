@@ -1029,6 +1029,191 @@ export function registerAggregationScenarios(provider: DatabaseProvider): void {
 		});
 
 		// -----------------------------------------------------------------
+		// Array expressions with a bound variable
+		// -----------------------------------------------------------------
+
+		describe("$map and $filter", () => {
+			test("$map applies an expression to every element", async () => {
+				await sales.insertOne({ cat: "a", tags: [1, 2, 3] });
+				expect(
+					await sales
+						.aggregate([
+							{
+								$project: {
+									_id: 0,
+									doubled: {
+										$map: {
+											input: "$tags",
+											as: "t",
+											in: { $multiply: ["$$t", 2] },
+										},
+									},
+								},
+							},
+						])
+						.toArray(),
+				).toEqual([{ doubled: [2, 4, 6] }]);
+			});
+
+			test("$$this is the element when `as` is omitted", async () => {
+				await sales.insertOne({ cat: "a", tags: [1, 2] });
+				expect(
+					await sales
+						.aggregate([
+							{
+								$project: {
+									_id: 0,
+									up: {
+										$map: { input: "$tags", in: { $add: ["$$this", 10] } },
+									},
+								},
+							},
+						])
+						.toArray(),
+				).toEqual([{ up: [11, 12] }]);
+			});
+
+			test("$filter keeps the elements the condition accepts", async () => {
+				await sales.insertOne({ cat: "a", tags: [1, 5, 2, 9] });
+				expect(
+					await sales
+						.aggregate([
+							{
+								$project: {
+									_id: 0,
+									big: {
+										$filter: {
+											input: "$tags",
+											as: "t",
+											cond: { $gte: ["$$t", 5] },
+										},
+									},
+								},
+							},
+						])
+						.toArray(),
+				).toEqual([{ big: [5, 9] }]);
+			});
+
+			test("$filter's limit keeps the first matches", async () => {
+				await sales.insertOne({ cat: "a", tags: [5, 6, 7] });
+				expect(
+					await sales
+						.aggregate([
+							{
+								$project: {
+									_id: 0,
+									some: {
+										$filter: {
+											input: "$tags",
+											as: "t",
+											cond: { $gte: ["$$t", 5] },
+											limit: 2,
+										},
+									},
+								},
+							},
+						])
+						.toArray(),
+				).toEqual([{ some: [5, 6] }]);
+			});
+
+			test("a $map inside a $map binds both variables", async () => {
+				await sales.insertOne({ cat: "a", tags: [1, 2] });
+				expect(
+					await sales
+						.aggregate([
+							{
+								$project: {
+									_id: 0,
+									grid: {
+										$map: {
+											input: "$tags",
+											as: "outer",
+											in: {
+												$map: {
+													input: "$tags",
+													as: "inner",
+													in: { $add: ["$$outer", "$$inner"] },
+												},
+											},
+										},
+									},
+								},
+							},
+						])
+						.toArray(),
+				).toEqual([
+					{
+						grid: [
+							[2, 3],
+							[3, 4],
+						],
+					},
+				]);
+			});
+		});
+
+		describe("$mergeObjects and $regexMatch", () => {
+			test("$mergeObjects lets later objects win", async () => {
+				await sales.insertOne({ cat: "a", price: 1 });
+				expect(
+					await sales
+						.aggregate([
+							{
+								$project: {
+									_id: 0,
+									merged: {
+										$mergeObjects: [
+											{ a: 1, b: 1 },
+											{ b: 2, c: 3 },
+										],
+									},
+								},
+							},
+						])
+						.toArray(),
+				).toEqual([{ merged: { a: 1, b: 2, c: 3 } }]);
+			});
+
+			test("$regexMatch answers true or false", async () => {
+				await sales.insertOne({ cat: "hello", price: 1 });
+				expect(
+					await sales
+						.aggregate([
+							{
+								$project: {
+									_id: 0,
+									starts: { $regexMatch: { input: "$cat", regex: "^hel" } },
+									nope: { $regexMatch: { input: "$cat", regex: "^zzz" } },
+								},
+							},
+						])
+						.toArray(),
+				).toEqual([{ starts: true, nope: false }]);
+			});
+
+			test("$regexMatch honours the i flag", async () => {
+				await sales.insertOne({ cat: "Hello", price: 1 });
+				expect(
+					await sales
+						.aggregate([
+							{
+								$project: {
+									_id: 0,
+									sensitive: { $regexMatch: { input: "$cat", regex: "^hel" } },
+									insensitive: {
+										$regexMatch: { input: "$cat", regex: "^hel", options: "i" },
+									},
+								},
+							},
+						])
+						.toArray(),
+				).toEqual([{ sensitive: false, insensitive: true }]);
+			});
+		});
+
+		// -----------------------------------------------------------------
 		// Paging and $count
 		// -----------------------------------------------------------------
 

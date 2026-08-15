@@ -95,7 +95,7 @@ describe("a method MongoDB answers with a lazy cursor throws at the call", () =>
 		[
 			"Collection.listSearchIndexes()",
 			() => collection().listSearchIndexes(),
-			"Collection.listSearchIndexes() is not implemented by @surrealdb/mql: Atlas Search indexes are a MongoDB Atlas service, and there is no SurrealDB counterpart to define one against. Use createIndex() with a text index, which this driver defines as a SurrealDB full-text search index.",
+			"Collection.listSearchIndexes() is not implemented by @surrealdb/mql: an Atlas Search index is only queryable through the $search and $searchMeta stages, which are not implemented, so defining one would leave an index nothing in this API could read. Use createIndex() with a text index and query it with $text — that is SurrealDB's own full-text search, with a BM25-ranked index behind it.",
 		],
 	];
 
@@ -133,22 +133,22 @@ describe("a method MongoDB answers with a promise rejects", () => {
 		[
 			"Collection.createSearchIndex()",
 			() => collection().createSearchIndex({ definition: {} }),
-			"Collection.createSearchIndex() is not implemented by @surrealdb/mql: Atlas Search indexes are a MongoDB Atlas service, and there is no SurrealDB counterpart to define one against. Use createIndex() with a text index, which this driver defines as a SurrealDB full-text search index.",
+			"Collection.createSearchIndex() is not implemented by @surrealdb/mql: an Atlas Search index is only queryable through the $search and $searchMeta stages, which are not implemented, so defining one would leave an index nothing in this API could read. Use createIndex() with a text index and query it with $text — that is SurrealDB's own full-text search, with a BM25-ranked index behind it.",
 		],
 		[
 			"Collection.createSearchIndexes()",
 			() => collection().createSearchIndexes([{ definition: {} }]),
-			"Collection.createSearchIndexes() is not implemented by @surrealdb/mql: Atlas Search indexes are a MongoDB Atlas service, and there is no SurrealDB counterpart to define one against. Use createIndex() with a text index, which this driver defines as a SurrealDB full-text search index.",
+			"Collection.createSearchIndexes() is not implemented by @surrealdb/mql: an Atlas Search index is only queryable through the $search and $searchMeta stages, which are not implemented, so defining one would leave an index nothing in this API could read. Use createIndex() with a text index and query it with $text — that is SurrealDB's own full-text search, with a BM25-ranked index behind it.",
 		],
 		[
 			"Collection.dropSearchIndex()",
 			() => collection().dropSearchIndex("idx"),
-			"Collection.dropSearchIndex() is not implemented by @surrealdb/mql: Atlas Search indexes are a MongoDB Atlas service, and there is no SurrealDB counterpart to define one against. Use createIndex() with a text index, which this driver defines as a SurrealDB full-text search index.",
+			"Collection.dropSearchIndex() is not implemented by @surrealdb/mql: an Atlas Search index is only queryable through the $search and $searchMeta stages, which are not implemented, so defining one would leave an index nothing in this API could read. Use createIndex() with a text index and query it with $text — that is SurrealDB's own full-text search, with a BM25-ranked index behind it.",
 		],
 		[
 			"Collection.updateSearchIndex()",
 			() => collection().updateSearchIndex("idx", {}),
-			"Collection.updateSearchIndex() is not implemented by @surrealdb/mql: Atlas Search indexes are a MongoDB Atlas service, and there is no SurrealDB counterpart to define one against. Use createIndex() with a text index, which this driver defines as a SurrealDB full-text search index.",
+			"Collection.updateSearchIndex() is not implemented by @surrealdb/mql: an Atlas Search index is only queryable through the $search and $searchMeta stages, which are not implemented, so defining one would leave an index nothing in this API could read. Use createIndex() with a text index and query it with $text — that is SurrealDB's own full-text search, with a BM25-ranked index behind it.",
 		],
 	];
 

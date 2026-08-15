@@ -87,12 +87,22 @@ export const CHANGE_STREAMS: UnsupportedFeature = {
 		"Subscribe to a SurrealDB live query through the SurrealDB client this driver wraps.",
 };
 
-/** Atlas Search and Vector Search index management. */
+/**
+ * Atlas Search and Vector Search index management.
+ *
+ * The obstacle is not full-text search, which SurrealDB has and this driver
+ * already emits — `createIndex` with a text index becomes a `DEFINE ANALYZER`
+ * and a `SEARCH ANALYZER … BM25` index, and `$text` queries it. It is that an
+ * Atlas Search index is reachable only through the `$search` and `$searchMeta`
+ * stages, which are not implemented: defining one would produce an index nothing
+ * in this API could query, which is worse than refusing because it looks like it
+ * worked.
+ */
 export const SEARCH_INDEXES: UnsupportedFeature = {
 	because:
-		"Atlas Search indexes are a MongoDB Atlas service, and there is no SurrealDB counterpart to define one against",
+		"an Atlas Search index is only queryable through the $search and $searchMeta stages, which are not implemented, so defining one would leave an index nothing in this API could read",
 	instead:
-		"Use createIndex() with a text index, which this driver defines as a SurrealDB full-text search index.",
+		"Use createIndex() with a text index and query it with $text — that is SurrealDB's own full-text search, with a BM25-ranked index behind it.",
 };
 
 /** Renaming a collection. */
