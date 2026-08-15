@@ -2,7 +2,15 @@
 
 All notable changes to `@surrealdb/mql` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning follows the policy in [COMPATIBILITY.md](./COMPATIBILITY.md) — which is [Semantic Versioning](https://semver.org/spec/v2.0.0.html) over a surface that is partly this driver's own and partly MongoDB's.
 
-## [Unreleased]
+## [0.4.0] — 2026-08-15
+
+The rest of the aggregation pipeline: `$lookup`, `$graphLookup`, `$facet`, `$addFields`/`$set`, `$replaceRoot`/`$replaceWith` and `$sortByCount`. And `bulkWrite`, which was the last common method that did not work.
+
+**One answer changed.** `modifiedCount` counted every matched document as modified, so an update setting a field to the value it already held reported `1` where MongoDB reports `0`. That was wrong in `updateOne`, `updateMany` and `replaceOne` since they were written — not only in the `bulkWrite` that exposed it. If you branched on `modifiedCount` to decide whether anything really changed, that branch behaves differently now, and correctly. The entry under **Fixed** has the detail.
+
+This is the second release running to correct an answer this driver had already given, and both were found the same way: by asserting MongoDB's answer of the official driver against a real `mongod` and of this one, and watching them disagree. Neither was reachable by review or by tests written against this driver alone. The [compatibility policy](./COMPATIBILITY.md) puts such a correction in a minor release, and says why.
+
+Two of the additions are worth a note for what they say about the shape of the thing being built. `$lookup` is not the correlated subquery that would be the obvious translation, because that loses the index and turns a join into a full scan of the foreign collection per row. And `$graphLookup` exists at all only because a first assessment — that SurrealQL could not accumulate across iterations — was wrong; `array::reduce` does it, server-side, with the index intact.
 
 ### Added
 
@@ -127,7 +135,8 @@ The README documents these in full; they are named here so a reader of the chang
 - A sort an inclusion projection does not cover is refused rather than served, pending `surrealdb/surrealdb-private#900`.
 - Below SurrealDB 3.3.0 on the in-memory storage engine, two concurrent writes to one document can both report success with one write dropped. It is a storage-engine bug, not a driver one; prefer a persistent engine for concurrent writes to a hot document.
 
-[Unreleased]: https://github.com/surrealdb/mql.js/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/surrealdb/mql.js/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/surrealdb/mql.js/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/surrealdb/mql.js/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/surrealdb/mql.js/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/surrealdb/mql.js/releases/tag/v0.1.0
