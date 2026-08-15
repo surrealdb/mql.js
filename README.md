@@ -1154,6 +1154,7 @@ You do not have to think about that, except when reading a slow query. What is w
 | `$unwind` | Including `preserveNullAndEmptyArrays`. Not `includeArrayIndex` — SurrealDB's `SPLIT` does not report the position a value came from |
 | `$lookup` | The `localField`/`foreignField` form, including `foreignField: "_id"`. Not the `pipeline`/`let` form — see below |
 | `$facet` | Several sub-pipelines over the same input, answered as one document. `$facet`, `$out`, `$merge` and `$geoNear` are refused inside a branch, as MongoDB refuses them |
+| `$graphLookup` | Recursive traversal, with `maxDepth`, `depthField` and `restrictSearchWithMatch`. Depth is capped at 64 — see below |
 | `$addFields`, `$set` | Extra fields beside the existing ones. A field already present is replaced, as in MongoDB |
 | `$replaceRoot`, `$replaceWith` | Promote a value — a subdocument or a computed one — to the root |
 | `$sortByCount` | Group by an expression, count, order by the count descending |
@@ -1206,6 +1207,28 @@ What you pay instead is memory: every matching foreign document is held server-s
 The `pipeline`/`let` form is refused. It runs a sub-pipeline per joined document, and the two-phase plan cannot express that — the foreign rows are gathered before any per-row work could decide which of them are wanted. Use the `localField`/`foreignField` form and filter the joined array with a later `$match` or `$unwind`.
 
 A collection that does not exist joins as empty, matching MongoDB, rather than raising the way SurrealDB does when read directly.
+
+### How `$graphLookup` recurses
+
+The traversal is a fold, and it runs on the server in the same statement as everything around it:
+
+```sql
+array::reduce([{d: 0, seen: [], front: <seeds>}, 1, 2, …], |$a, $v| {
+  LET $next = (SELECT … FROM <table>
+                WHERE <connectTo> IN $a.front AND record::id(id) NOT IN $a.seen._id);
+  RETURN { d: $a.d + 1, seen: array::concat($a.seen, $next), front: $next.<connectFrom> };
+}).seen
+```
+
+`array::reduce`'s closure may run a subquery, and the accumulator it threads carries whatever the closure returns — so the fold is a breadth-first search and the accumulator is its state. Each input document seeds its own traversal, which is `$graphLookup`'s per-document contract.
+
+**It keeps the index.** `WHERE connectTo IN $a.front` plans as an `IndexScan` even though `$a.front` is only known at runtime — the correlation is in the seed, never in the predicate, which is what distinguishes it from the shape that forces `$lookup` into two phases.
+
+**Cycles terminate.** A document already found is excluded from every later step, so two records pointing at each other yield both once rather than repeating for the depth of the cap.
+
+**Depth is capped at 64**, and this is the one place the stage answers differently from MongoDB. MongoDB traverses until nothing new is found; a fold runs over a fixed-length array, so "unbounded" is a generous fixed number. A hierarchy deeper than 64 returns its first 64 levels. A `maxDepth` of 64 or more is refused rather than quietly truncated.
+
+SurrealDB's own recursive traversal — `field.{..}` — is not used and cannot be: it requires the reference to *be* a record id, and MongoDB references are the plain strings and object ids this driver stores.
 
 ### How `$facet` runs its branches
 
