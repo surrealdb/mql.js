@@ -64,6 +64,34 @@ export interface TranslatedPipeline {
  */
 const GROUP_KEY = "_id";
 
+/**
+ * Every stage `applyStage` routes, for the refusal message to name.
+ *
+ * Derived rather than written out. The hand-written list this replaced fell two
+ * stages behind what the switch actually handled — it told callers `$facet` and
+ * `$graphLookup` were unavailable after both had shipped — and a list that
+ * cannot drift is the only fix that stays fixed. `tests/unit` asserts the two
+ * agree.
+ */
+export const SUPPORTED_STAGES: readonly string[] = [
+	"$match",
+	"$sort",
+	"$limit",
+	"$skip",
+	"$count",
+	"$project",
+	"$addFields",
+	"$set",
+	"$replaceRoot",
+	"$replaceWith",
+	"$sortByCount",
+	"$group",
+	"$unwind",
+	"$lookup",
+	"$facet",
+	"$graphLookup",
+];
+
 export function translatePipeline(
 	pipeline: readonly Document[],
 	options: TranslatePipelineOptions,
@@ -180,7 +208,7 @@ function applyStage(
 			return;
 		default:
 			throw new MongoCompatibilityError(
-				`The aggregation stage ${name} is not implemented by @surrealdb/mql. Translating it partially would answer with documents that ignored it, so it is refused instead. $match, $sort, $limit, $skip, $count, $project, $group, $unwind, $lookup, $addFields/$set, $replaceRoot/$replaceWith and $sortByCount are supported.`,
+				`The aggregation stage ${name} is not implemented by @surrealdb/mql. Translating it partially would answer with documents that ignored it, so it is refused instead. These are supported: ${[...SUPPORTED_STAGES].join(", ")}.`,
 			);
 	}
 }

@@ -2,6 +2,18 @@
 
 All notable changes to `@surrealdb/mql` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning follows the policy in [COMPATIBILITY.md](./COMPATIBILITY.md) — which is [Semantic Versioning](https://semver.org/spec/v2.0.0.html) over a surface that is partly this driver's own and partly MongoDB's.
 
+## [0.5.0] — 2026-08-15
+
+### Added
+
+- **`$map`, `$filter`, `$mergeObjects` and `$regexMatch`.** `$map` and `$filter` bind a variable for the current element — `as: "item"`, read back as `$$item`, defaulting to `$$this` — which is the first time an expression here introduces a name of its own. The parameter it compiles to is generated rather than reusing the caller's, so a variable called `parent` cannot shadow anything this driver relies on, and they nest: a `$map` inside a `$map` sees both. `$filter`'s `limit` is honoured. `$regexMatch`'s flags are moved into the pattern as an inline group, which is the same engine's own way of spelling them; a flag outside `i`, `m`, `s` and `x` is refused rather than dropped.
+
+### Fixed
+
+- **The refusal for an unimplemented aggregation stage named the wrong set of supported ones.** It listed them by hand and had fallen two behind the code, so a caller who tried something unsupported was told `$facet` and `$graphLookup` were unavailable — after both had shipped in 0.4.0. The list is now derived, and a test compares it against the stages the translator actually routes, in the direction that drifted: a stage handled but unlisted fails the test. Asserting the message against the list would not have caught it, because the message is built from the list.
+
+- **The Atlas Search refusal gave a reason that was not true.** It said there was no SurrealDB counterpart to define a search index against. There is, and this driver already emits it: `createIndex` with a text index becomes a `DEFINE ANALYZER` and a `SEARCH ANALYZER … BM25` index, and `$text` queries it. The real obstacle is that an Atlas Search index is reachable only through `$search` and `$searchMeta`, which are not implemented — so defining one would leave an index nothing in this API could read. The message now says that, and points at the route that works.
+
 ## [0.4.0] — 2026-08-15
 
 The rest of the aggregation pipeline: `$lookup`, `$graphLookup`, `$facet`, `$addFields`/`$set`, `$replaceRoot`/`$replaceWith` and `$sortByCount`. And `bulkWrite`, which was the last common method that did not work.
@@ -135,7 +147,8 @@ The README documents these in full; they are named here so a reader of the chang
 - A sort an inclusion projection does not cover is refused rather than served, pending `surrealdb/surrealdb-private#900`.
 - Below SurrealDB 3.3.0 on the in-memory storage engine, two concurrent writes to one document can both report success with one write dropped. It is a storage-engine bug, not a driver one; prefer a persistent engine for concurrent writes to a hot document.
 
-[Unreleased]: https://github.com/surrealdb/mql.js/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/surrealdb/mql.js/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/surrealdb/mql.js/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/surrealdb/mql.js/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/surrealdb/mql.js/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/surrealdb/mql.js/compare/v0.1.0...v0.2.0

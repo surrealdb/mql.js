@@ -34,6 +34,30 @@ export interface ExpressionContext {
 	compile(expression: unknown): string;
 	/** True once a stage has reshaped the documents, making `_id` an ordinary field. */
 	readonly identityIsPlainField: boolean;
+	/**
+	 * The variables in scope, from the name the caller bound to the SurrealQL
+	 * parameter it became.
+	 *
+	 * `$map` and `$filter` name a variable for the current element — `as: "item"`,
+	 * read back as `$$item` — which is the only way an expression reaches it. The
+	 * parameter is generated rather than reusing the caller's name, so a variable
+	 * called `parent` or `a` cannot shadow something this driver relies on.
+	 */
+	readonly variables: ReadonlyMap<string, string>;
+	/**
+	 * Compile a closure body with `name` bound to a fresh SurrealQL parameter.
+	 *
+	 * `body` is handed the parameter to write into the closure header, and a
+	 * `compile` that knows about the binding — so the body sees the new variable
+	 * and everything outside it does not.
+	 */
+	withVariable(
+		name: string,
+		body: (
+			parameter: string,
+			compile: (expression: unknown) => string,
+		) => string,
+	): string;
 }
 
 /** One aggregation expression operator. */
@@ -238,11 +262,65 @@ const OPERATORS: readonly ExpressionOperator[] = [
 	},
 
 	// -- Array --------------------------------------------------------------
+	{
+		name: "$map",
+		// `{$map: {input, as, in}}`. `as` names the current element and defaults to
+		// `this`, which is why `$$this` works inside one without being declared.
+		compile(operand, ctx) {
+			const {
+				input,
+				as: alias,
+				in: body,
+			} = closureSpec("$map", operand, ["in"]);
+			return ctx.withVariable(
+				alias,
+				(parameter, compile) =>
+					`array::map(${ctx.compile(input)}, |$${parameter}| ${compile(body)})`,
+			);
+		},
+	},
+	{
+		name: "$filter",
+		// `{$filter: {input, as, cond, limit}}`. `limit` keeps the first n that
+		// match, which is a slice of the filtered array rather than a different
+		// filter.
+		compile(operand, ctx) {
+			const spec = closureSpec("$filter", operand, ["cond"]);
+			const { input, as: alias, cond } = spec;
+			const filtered = ctx.withVariable(
+				alias,
+				(parameter, compile) =>
+					`array::filter(${ctx.compile(input)}, |$${parameter}| ${compile(cond)})`,
+			);
+			const limit = (operand as Document).limit;
+			if (limit === undefined) return filtered;
+			return `array::slice(${filtered}, 0, ${ctx.compile(limit)})`;
+		},
+	},
 	call("$size", "array::len", 1),
 	call("$arrayElemAt", "array::at", 2),
 	call("$reverseArray", "array::reverse", 1),
 	call("$concatArrays", "array::concat"),
 	fixedArity("$in", 2, ([needle, haystack]) => `(${needle} IN ${haystack})`),
+
+	// -- Object -------------------------------------------------------------
+	{
+		name: "$mergeObjects",
+		// Later objects win, which is what `object::extend` does and what MongoDB
+		// documents. Folded because MongoDB takes any number and `object::extend`
+		// takes two.
+		compile(operand, ctx) {
+			const args = operands(operand, ctx);
+			if (args.length === 0) {
+				throw new MongoCompatibilityError(
+					"$mergeObjects takes at least one object.",
+				);
+			}
+			return args.reduce(
+				(merged, next) => `object::extend(${merged}, ${next})`,
+			);
+		},
+	},
 
 	// -- Type ---------------------------------------------------------------
 	// SurrealQL's cast syntax, which takes a parenthesised expression.
@@ -254,6 +332,45 @@ const OPERATORS: readonly ExpressionOperator[] = [
 	call("$toBool", "<bool>", 1),
 	call("$toInt", "<int>", 1),
 	call("$toDouble", "<float>", 1),
+
+	{
+		name: "$regexMatch",
+		// `{$regexMatch: {input, regex, options}}`. MongoDB's options are flag
+		// letters; SurrealDB's `string::matches` takes none, so they are moved into
+		// the pattern as an inline group, which is the same regex engine's own way
+		// of spelling them.
+		compile(operand, ctx) {
+			if (
+				typeof operand !== "object" ||
+				operand === null ||
+				Array.isArray(operand)
+			) {
+				throw new MongoCompatibilityError(
+					"$regexMatch takes a document with `input` and `regex`.",
+				);
+			}
+			const { input, regex, options } = operand as Document;
+			if (typeof regex !== "string") {
+				throw new MongoCompatibilityError(
+					"$regexMatch's `regex` must be a string here: a BSON regular expression carries its own flags, and this driver does not unpack them. Pass the pattern and `options` instead.",
+				);
+			}
+			if (options !== undefined && typeof options !== "string") {
+				throw new MongoCompatibilityError(
+					"$regexMatch's `options` must be a string of flag letters.",
+				);
+			}
+			for (const flag of options ?? "") {
+				if (!"imsx".includes(flag)) {
+					throw new MongoCompatibilityError(
+						`$regexMatch does not support the ${flag} flag; i, m, s and x are available.`,
+					);
+				}
+			}
+			const pattern = options ? `(?${options})${regex}` : regex;
+			return `string::matches(${ctx.compile(input)}, ${ctx.bind(pattern)})`;
+		},
+	},
 
 	// -- Date ---------------------------------------------------------------
 	call("$year", "time::year", 1),
@@ -277,6 +394,41 @@ const OPERATORS: readonly ExpressionOperator[] = [
 
 const REGISTRY = new Map(OPERATORS.map((op) => [op.name, op]));
 
+/**
+ * Read the `{input, as, …}` shape `$map` and `$filter` share.
+ *
+ * `as` defaults to `this`, which is what makes `$$this` mean the current element
+ * without the caller declaring it.
+ */
+function closureSpec(
+	name: string,
+	operand: unknown,
+	required: readonly string[],
+): { input: unknown; as: string; [key: string]: unknown } {
+	if (
+		typeof operand !== "object" ||
+		operand === null ||
+		Array.isArray(operand)
+	) {
+		throw new MongoCompatibilityError(
+			`${name} takes a specification document.`,
+		);
+	}
+	const spec = operand as Document;
+	if (spec.input === undefined) {
+		throw new MongoCompatibilityError(`${name} requires \`input\`.`);
+	}
+	for (const field of required) {
+		if (spec[field] === undefined) {
+			throw new MongoCompatibilityError(`${name} requires \`${field}\`.`);
+		}
+	}
+	if (spec.as !== undefined && typeof spec.as !== "string") {
+		throw new MongoCompatibilityError(`${name}'s \`as\` must be a string.`);
+	}
+	return { ...spec, input: spec.input, as: (spec.as as string) ?? "this" };
+}
+
 /** System variables with an exact SurrealQL counterpart. */
 const SYSTEM_VARIABLES: Readonly<Record<string, string>> = {
 	NOW: "time::now()",
@@ -293,11 +445,23 @@ export function compileExpression(
 	expression: unknown,
 	bind: (value: unknown) => string,
 	identityIsPlainField = false,
+	variables: ReadonlyMap<string, string> = new Map(),
 ): string {
 	const ctx: ExpressionContext = {
 		bind: (value) => `$${bind(value)}`,
-		compile: (nested) => compileExpression(nested, bind, identityIsPlainField),
+		compile: (nested) =>
+			compileExpression(nested, bind, identityIsPlainField, variables),
 		identityIsPlainField,
+		variables,
+		withVariable(name, body) {
+			// Numbered by how many are already bound, so a `$map` inside a `$map`
+			// binds two different parameters and the inner cannot hide the outer.
+			const parameter = `mql_v${variables.size}`;
+			const inner = new Map(variables).set(name, parameter);
+			return body(parameter, (nested) =>
+				compileExpression(nested, bind, identityIsPlainField, inner),
+			);
+		},
 	};
 	return compile(expression, ctx);
 }
@@ -338,6 +502,10 @@ function compile(expression: unknown, ctx: ExpressionContext): string {
 function compileReference(reference: string, ctx: ExpressionContext): string {
 	if (reference.startsWith("$$")) {
 		const name = reference.slice(2);
+		// A variable a `$map` or `$filter` bound wins over the system table, which
+		// is also MongoDB's rule: `$$this` means the current element inside one.
+		const bound = ctx.variables.get(name);
+		if (bound) return `$${bound}`;
 		const variable = SYSTEM_VARIABLES[name];
 		if (variable) return variable;
 		throw new MongoCompatibilityError(

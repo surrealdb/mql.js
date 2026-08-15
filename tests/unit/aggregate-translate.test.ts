@@ -12,7 +12,12 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { translatePipeline } from "../../src/translators/aggregate/index.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+	SUPPORTED_STAGES,
+	translatePipeline,
+} from "../../src/translators/aggregate/index.ts";
 import type { Document } from "../../src/types.ts";
 
 const compile = (pipeline: Document[]) =>
@@ -595,6 +600,66 @@ describe("$graphLookup", () => {
 		expect(() => sql([{ $graphLookup: { from: "a", as: "b" } }])).toThrow(
 			/requires a non-empty string `connectFromField`/,
 		);
+	});
+});
+
+describe("the refusal names what is actually supported", () => {
+	/**
+	 * The message drifted once already: it kept listing stages by hand and fell two
+	 * behind the switch, telling callers `$facet` and `$graphLookup` were
+	 * unavailable after both had shipped. These assert the list and the router
+	 * agree in both directions, which is the thing that stays true.
+	 */
+	test("every stage it names is one the translator accepts", () => {
+		for (const stage of SUPPORTED_STAGES) {
+			// A stage the router does not know raises "is not implemented"; every one
+			// listed must fail some *other* way, or not at all.
+			let message = "";
+			try {
+				sql([{ [stage]: {} } as Document]);
+			} catch (error) {
+				message = (error as Error).message;
+			}
+			expect(message).not.toContain("is not implemented");
+		}
+	});
+
+	test("it names every stage the router actually handles", () => {
+		// The direction that drifted: `$facet` and `$graphLookup` were routed and not
+		// listed, so callers were told they did not work. Asserting the list against
+		// the message would never have caught that — the message is built from the
+		// list. Only the router settles it.
+		const source = readFileSync(
+			join(
+				import.meta.dirname,
+				"..",
+				"..",
+				"src",
+				"translators",
+				"aggregate",
+				"index.ts",
+			),
+			"utf8",
+		);
+		const routed = [...source.matchAll(/^\t\tcase "(\$[a-zA-Z]+)":/gm)].map(
+			(match) => match[1],
+		);
+
+		expect(routed.length).toBeGreaterThan(10);
+		expect([...routed].sort()).toEqual([...SUPPORTED_STAGES].sort());
+	});
+
+	test("a stage it does not name is refused, and the message lists the rest", () => {
+		let message = "";
+		try {
+			sql([{ $bucket: {} }]);
+		} catch (error) {
+			message = (error as Error).message;
+		}
+		expect(message).toContain("$bucket is not implemented");
+		for (const stage of SUPPORTED_STAGES) {
+			expect(message).toContain(stage);
+		}
 	});
 });
 
