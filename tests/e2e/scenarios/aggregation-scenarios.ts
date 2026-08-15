@@ -758,6 +758,201 @@ export function registerAggregationScenarios(provider: DatabaseProvider): void {
 		});
 
 		// -----------------------------------------------------------------
+		// $graphLookup
+		// -----------------------------------------------------------------
+
+		describe("$graphLookup", () => {
+			const STAFF = "agg_staff";
+
+			/** Ada at the top; Bob and Eve under her; Cy under Bob; Dee under Cy. */
+			async function seedTree(): Promise<void> {
+				const staff = db.collection<MongoLikeDocument>(STAFF);
+				try {
+					await staff.deleteMany({});
+				} catch {
+					// Missing collection; ignore.
+				}
+				await staff.insertMany([
+					{ _id: "1", who: "Ada", mgr: null },
+					{ _id: "2", who: "Bob", mgr: "Ada" },
+					{ _id: "3", who: "Cy", mgr: "Bob" },
+					{ _id: "4", who: "Dee", mgr: "Cy" },
+					{ _id: "5", who: "Eve", mgr: "Ada" },
+				]);
+			}
+
+			const staff = () => db.collection<MongoLikeDocument>(STAFF);
+
+			const names = (rows: MongoLikeDocument[]): string[] =>
+				(rows[0]?.t as MongoLikeDocument[]).map((d) => d.who as string).sort();
+
+			test("walks the whole subtree, not just the first level", async () => {
+				await seedTree();
+				const out = await staff()
+					.aggregate([
+						{ $match: { who: "Ada" } },
+						{
+							$graphLookup: {
+								from: STAFF,
+								startWith: "$who",
+								connectFromField: "who",
+								connectToField: "mgr",
+								as: "t",
+							},
+						},
+					])
+					.toArray();
+				expect(names(out)).toEqual(["Bob", "Cy", "Dee", "Eve"]);
+			});
+
+			test("each input document gets its own reachable set", async () => {
+				await seedTree();
+				const out = await staff()
+					.aggregate([
+						{
+							$graphLookup: {
+								from: STAFF,
+								startWith: "$who",
+								connectFromField: "who",
+								connectToField: "mgr",
+								as: "t",
+							},
+						},
+						{ $project: { _id: 0, who: 1, n: { $size: "$t" } } },
+						{ $sort: { who: 1 } },
+					])
+					.toArray();
+				expect(out).toEqual([
+					{ who: "Ada", n: 4 },
+					{ who: "Bob", n: 2 },
+					{ who: "Cy", n: 1 },
+					{ who: "Dee", n: 0 },
+					{ who: "Eve", n: 0 },
+				]);
+			});
+
+			test("maxDepth: 0 takes only the first level", async () => {
+				await seedTree();
+				const out = await staff()
+					.aggregate([
+						{ $match: { who: "Ada" } },
+						{
+							$graphLookup: {
+								from: STAFF,
+								startWith: "$who",
+								connectFromField: "who",
+								connectToField: "mgr",
+								as: "t",
+								maxDepth: 0,
+							},
+						},
+					])
+					.toArray();
+				expect(names(out)).toEqual(["Bob", "Eve"]);
+			});
+
+			test("depthField counts the first level as zero", async () => {
+				// The numbering is a convention rather than a derivation, so it is
+				// asserted of mongod rather than assumed.
+				await seedTree();
+				const out = await staff()
+					.aggregate([
+						{ $match: { who: "Ada" } },
+						{
+							$graphLookup: {
+								from: STAFF,
+								startWith: "$who",
+								connectFromField: "who",
+								connectToField: "mgr",
+								as: "t",
+								depthField: "lvl",
+							},
+						},
+						{ $unwind: "$t" },
+						{ $project: { _id: 0, name: "$t.who", lvl: "$t.lvl" } },
+						{ $sort: { lvl: 1, name: 1 } },
+					])
+					.toArray();
+				expect(out).toEqual([
+					{ name: "Bob", lvl: 0 },
+					{ name: "Eve", lvl: 0 },
+					{ name: "Cy", lvl: 1 },
+					{ name: "Dee", lvl: 2 },
+				]);
+			});
+
+			test("restrictSearchWithMatch prunes the traversal", async () => {
+				await seedTree();
+				const out = await staff()
+					.aggregate([
+						{ $match: { who: "Ada" } },
+						{
+							$graphLookup: {
+								from: STAFF,
+								startWith: "$who",
+								connectFromField: "who",
+								connectToField: "mgr",
+								as: "t",
+								restrictSearchWithMatch: { who: { $ne: "Eve" } },
+							},
+						},
+					])
+					.toArray();
+				expect(names(out)).toEqual(["Bob", "Cy", "Dee"]);
+			});
+
+			test("a leaf reaches nothing and gets an empty array", async () => {
+				await seedTree();
+				const out = await staff()
+					.aggregate([
+						{ $match: { who: "Dee" } },
+						{
+							$graphLookup: {
+								from: STAFF,
+								startWith: "$who",
+								connectFromField: "who",
+								connectToField: "mgr",
+								as: "t",
+							},
+						},
+					])
+					.toArray();
+				expect(out[0]?.t).toEqual([]);
+			});
+
+			test("a cycle terminates rather than repeating", async () => {
+				// Two documents pointing at each other. Without the already-seen guard
+				// the fold would rediscover them for every step of the cap.
+				const staffed = staff();
+				try {
+					await staffed.deleteMany({});
+				} catch {
+					// Missing collection; ignore.
+				}
+				await staffed.insertMany([
+					{ _id: "x", who: "X", mgr: "Y" },
+					{ _id: "y", who: "Y", mgr: "X" },
+				]);
+
+				const out = await staffed
+					.aggregate([
+						{ $match: { who: "X" } },
+						{
+							$graphLookup: {
+								from: STAFF,
+								startWith: "$who",
+								connectFromField: "who",
+								connectToField: "mgr",
+								as: "t",
+							},
+						},
+					])
+					.toArray();
+				expect(names(out)).toEqual(["X", "Y"]);
+			});
+		});
+
+		// -----------------------------------------------------------------
 		// $facet
 		// -----------------------------------------------------------------
 

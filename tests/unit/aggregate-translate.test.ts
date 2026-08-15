@@ -512,10 +512,95 @@ describe("$facet", () => {
 	});
 });
 
+describe("$graphLookup", () => {
+	const walk = [
+		{
+			$graphLookup: {
+				from: "staff",
+				startWith: "$who",
+				connectFromField: "who",
+				connectToField: "mgr",
+				as: "tree",
+			},
+		},
+	];
+
+	test("folds a breadth-first search rather than repeating a join", () => {
+		const statement = sql(walk);
+		expect(statement).toContain("array::reduce([{ d: 0, seen: []");
+		expect(statement).toContain("array::concat($a.seen, $next)");
+	});
+
+	test("the predicate is uncorrelated, so it keeps the index", () => {
+		// The correlation is in the seed only. `WHERE mgr IN $a.front` plans as an
+		// IndexScan; the `$parent`-correlated predicate `$lookup` avoids does not.
+		const statement = sql(walk);
+		expect(statement).toContain("WHERE `mgr` IN $a.front");
+		expect(statement).not.toContain("`mgr` = $parent");
+	});
+
+	test("guards against revisiting, which is what ends a cycle", () => {
+		expect(sql(walk)).toContain("record::id(id) NOT IN $a.seen.`_id`");
+	});
+
+	test("flattens and dedupes both the seed and the frontier", () => {
+		const statement = sql(walk);
+		expect(statement).toContain("array::distinct(array::flatten([`who`]))");
+		expect(statement).toContain("array::distinct(array::flatten($next.`who`))");
+	});
+
+	test("maxDepth decides how many steps are emitted", () => {
+		// MongoDB counts the first level as depth 0, so maxDepth 0 is one step.
+		expect(
+			sql([
+				{ ...walk[0], $graphLookup: { ...walk[0].$graphLookup, maxDepth: 0 } },
+			]),
+		).toContain("}, 0], |$a, $v|");
+		expect(
+			sql([
+				{ ...walk[0], $graphLookup: { ...walk[0].$graphLookup, maxDepth: 2 } },
+			]),
+		).toContain("}, 0, 1, 2], |$a, $v|");
+	});
+
+	test("depthField is only selected when it was asked for", () => {
+		expect(sql(walk)).not.toContain("AS `lvl`");
+		expect(
+			sql([
+				{
+					...walk[0],
+					$graphLookup: { ...walk[0].$graphLookup, depthField: "lvl" },
+				},
+			]),
+		).toContain("$a.d AS `lvl`");
+	});
+
+	test("the traversed field does not make _id a plain field", () => {
+		// `SELECT *, … AS tree` keeps every column the rows had, `id` among them.
+		expect(sql([...walk, { $sort: { _id: 1 } }])).toContain("ORDER BY id ASC");
+	});
+
+	test("a maxDepth beyond the emitted cap is refused rather than truncated", () => {
+		expect(() =>
+			sql([
+				{
+					...walk[0],
+					$graphLookup: { ...walk[0].$graphLookup, maxDepth: 999 },
+				},
+			]),
+		).toThrow(/must be below 64/);
+	});
+
+	test("a missing field is refused by name", () => {
+		expect(() => sql([{ $graphLookup: { from: "a", as: "b" } }])).toThrow(
+			/requires a non-empty string `connectFromField`/,
+		);
+	});
+});
+
 describe("what is refused", () => {
 	test.each([
 		["$bucket", { $bucket: {} }],
-		["$graphLookup", { $graphLookup: {} }],
 		["$unionWith", { $unionWith: "other" }],
 		["$out", { $out: "other" }],
 		["$merge", { $merge: {} }],

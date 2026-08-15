@@ -12,10 +12,10 @@
  * The stages that are served:
  *
  *   `$match` `$sort` `$limit` `$skip` `$count` `$project` `$group` `$unwind`
- *   `$lookup` `$facet`
+ *   `$lookup` `$facet` `$graphLookup`
  *
- * `$bucket`, `$graphLookup`, `$unionWith`, `$out`, `$merge`,
- * `$setWindowFields` and the rest are refused.
+ * `$bucket`, `$unionWith`, `$out`, `$merge`, `$setWindowFields` and the rest are
+ * refused.
  */
 
 import { MongoCompatibilityError } from "../../errors.ts";
@@ -26,6 +26,7 @@ import { translateSort } from "../sort.ts";
 import { compileAccumulator } from "./accumulators.ts";
 import { SelectBuilder, Slot } from "./builder.ts";
 import { compileExpression, fieldPath } from "./expression.ts";
+import { compileGraphLookup, readGraphLookupSpec } from "./graph-lookup.ts";
 import { compileLookup, readLookupSpec } from "./lookup.ts";
 
 /** What the pipeline translator needs from the collection it runs against. */
@@ -162,6 +163,9 @@ function applyStage(
 			return;
 		case "$facet":
 			applyFacet(spec, index, builder, bind, options, bindings);
+			return;
+		case "$graphLookup":
+			applyGraphLookup(spec, index, builder, bind, options, bindings);
 			return;
 		case "$addFields":
 		case "$set":
@@ -444,6 +448,56 @@ function unwindPath(path: unknown): string {
 		);
 	}
 	return path.slice(1);
+}
+
+/**
+ * `$graphLookup` — recursive traversal, attached per input document.
+ *
+ * The traversal itself is in `graph-lookup.ts`, and it is one expression rather
+ * than a phase of its own — so this is a field added to the current statement,
+ * the same shape `$lookup`'s joined array takes. The rows keep every column they
+ * had, `id` among them, so the documents are not reshaped.
+ */
+function applyGraphLookup(
+	spec: unknown,
+	index: string,
+	builder: SelectBuilder,
+	bind: (value: unknown) => string,
+	options: TranslatePipelineOptions,
+	bindings: Record<string, unknown>,
+): void {
+	const graph = readGraphLookupSpec(spec);
+
+	const seeds = compileExpression(
+		graph.startWith,
+		bind,
+		builder.identityIsPlainField,
+	);
+
+	// `restrictSearchWithMatch` filters the documents the traversal will accept,
+	// and is an ordinary filter over the foreign collection — so it goes through
+	// the translator every other filter goes through.
+	let restrict = "";
+	if (graph.restrictSearchWithMatch !== undefined) {
+		const translated = translateFilter(graph.restrictSearchWithMatch, {
+			collection: graph.from,
+			dialect: options.dialect,
+			paramPrefix: `g${index}p`,
+		});
+		if (translated.nearDistance) {
+			throw new MongoCompatibilityError(
+				"$near and $nearSphere are not supported inside $graphLookup's restrictSearchWithMatch: they order a result set as well as filtering it, and a traversal has no ordering to carry that.",
+			);
+		}
+		Object.assign(bindings, translated.bindings);
+		restrict = translated.clause;
+	}
+
+	builder.claim(Slot.Fields);
+	builder.setFields(
+		`*, ${compileGraphLookup(graph, seeds, restrict)} AS ${escapeAlias(graph.as)}`,
+		false,
+	);
 }
 
 /**

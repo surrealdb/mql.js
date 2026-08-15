@@ -6,6 +6,14 @@ All notable changes to `@surrealdb/mql` are recorded here. The format follows [K
 
 ### Added
 
+- **`$graphLookup`.** Recursive traversal with `maxDepth`, `depthField` and `restrictSearchWithMatch`, running server-side in the same statement as the rest of the pipeline, and giving each input document its own reachable set as MongoDB does.
+
+  It is a fold rather than a join. `array::reduce`'s closure may run a subquery and its accumulator carries whatever the closure returns, so the accumulator is a breadth-first search's state — the frontier, the documents found, and the depth. `FOR` cannot do this: its `LET` is scoped to the block, so nothing survives an iteration, and that had looked like the end of it.
+
+  The traversal keeps the index: `WHERE connectTo IN $a.front` plans as an `IndexScan` even with `$a.front` known only at runtime, because the correlation is in the seed rather than the predicate — the distinction that forces `$lookup` into two phases and leaves this one alone. A document already found is excluded from later steps, so cycles terminate.
+
+  One divergence, documented rather than hidden: depth is capped at 64. MongoDB traverses until nothing new is found; a fold runs over a fixed-length array. A hierarchy deeper than that returns its first 64 levels, and a `maxDepth` of 64 or more is refused rather than truncated.
+
 - **`$facet`.** Several sub-pipelines over the same input, answered as MongoDB answers it: one document with an array per branch. The input is bound once and every branch reads it, so the pipeline before the `$facet` runs a single time however many branches there are, and the result is a one-row literal source rather than a terminus — a stage after a `$facet` goes on folding into the same statement. A branch may contain a `$lookup`, whose bound variables are emitted ahead of it. `$facet`, `$out`, `$merge` and `$geoNear` are refused inside a branch, as MongoDB refuses them.
 
   This became expressible only with the `LET` machinery `$lookup` introduced. Before it, running several pipelines over one input meant evaluating that input once per branch.
