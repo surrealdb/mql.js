@@ -1159,7 +1159,7 @@ You do not have to think about that, except when reading a slow query. What is w
 | `$replaceRoot`, `$replaceWith` | Promote a value — a subdocument or a computed one — to the root |
 | `$sortByCount` | Group by an expression, count, order by the count descending |
 
-Everything else — `$facet`, `$bucket`, `$bucketAuto`, `$graphLookup`, `$unionWith`, `$out`, `$merge`, `$setWindowFields`, `$sample` — raises `MongoCompatibilityError` naming the stage. A pipeline whose later stages were silently dropped would still return documents, so the caller would get a plausible wrong answer instead of an error.
+Everything else — `$bucket`, `$bucketAuto`, `$unionWith`, `$out`, `$merge`, `$setWindowFields`, `$sample` — raises `MongoCompatibilityError` naming the stage. A pipeline whose later stages were silently dropped would still return documents, so the caller would get a plausible wrong answer instead of an error.
 
 ### Expressions
 
@@ -1633,32 +1633,28 @@ Each refusal also fails in the shape the real method returns: a promise-returnin
 method rejects, and a method that returns a value synchronously throws
 synchronously.
 
-| Method | Raises | Instead |
+**Thirteen methods** raise `MongoCompatibilityError`, for five reasons. Three of those reasons are something SurrealDB does not have; two are "there is already a route for this".
+
+| Methods | Why | Instead |
 | --- | --- | --- |
-| `Db.aggregate()` | `MongoCompatibilityError` | `db.collection(name).aggregate(pipeline)`, which is implemented. A database-level pipeline reads from a source stage such as `$documents` or `$currentOp`, and none of those has a SurrealDB counterpart |
-| `Collection.initializeOrderedBulkOp()`, `initializeUnorderedBulkOp()` | `MongoCompatibilityError` | `bulkWrite()` with the models as an array, which is implemented |
-| `Collection.watch()`, `Db.watch()`, `MongoClient.watch()` | `MongoCompatibilityError` | A SurrealDB live query through the SurrealDB client this driver wraps |
-| `Collection.rename()`, `Db.renameCollection()` | `MongoCompatibilityError` | Create the new collection, copy the documents across, `dropCollection()` the old one |
-| `Collection.createSearchIndex()`, `createSearchIndexes()`, `dropSearchIndex()`, `updateSearchIndex()`, `listSearchIndexes()` | `MongoCompatibilityError` | `createIndex()` with a text index, which becomes a SurrealDB full-text search index |
+| `Collection.createSearchIndex()`, `createSearchIndexes()`, `dropSearchIndex()`, `updateSearchIndex()`, `listSearchIndexes()` | An Atlas Search index is reachable only through `$search` and `$searchMeta`, which are not implemented, so defining one would leave an index nothing in this API could read. The obstacle is not full-text search — SurrealDB has it and this driver already emits it | `createIndex()` with a text index, queried with `$text`. That *is* SurrealDB's full-text search, with a BM25-ranked index behind it |
+| `Collection.watch()`, `Db.watch()`, `MongoClient.watch()` | SurrealDB's live queries carry no resume token, so a `ChangeStream` built on them could not be resumed after a disconnect the way callers depend on. Somewhere to deliver the events is not the gap: `MongoClient` is already an emitter | A SurrealDB live query through the SurrealDB client this driver wraps |
+| `Collection.rename()`, `Db.renameCollection()` | SurrealDB has no statement that renames a table, and copying every record under a new name is not something a rename should do behind the caller's back | Create the new collection, copy the documents across, `dropCollection()` the old one |
+| `Collection.initializeOrderedBulkOp()`, `initializeUnorderedBulkOp()` | Not a missing capability. These are the same batch reached through a chained `.find().updateOne()` builder, and this driver implements the batch as a method | `bulkWrite()` with the models as an array |
+| `Db.aggregate()` | A database-level pipeline reads from a source stage such as `$documents` or `$currentOp`, and none of those has anything here to draw rows from | `db.collection(name).aggregate(pipeline)`, which is implemented |
+
+Two more surfaces raise the `MongoServerError` `59` a real mongod raises, because they address a *command* name rather than this driver's API:
+
+| Surface | Raises | Instead |
+| --- | --- | --- |
 | `Admin.serverStatus()`, `removeUser()`, `validateCollection()` | `MongoServerError` `59` | Each is a thin wrapper over the command of the same name, so it inherits the command surface's `CommandNotFound`. For users, `REMOVE USER` through the SurrealDB client |
 | `db.command({ <anything else> })` | `MongoServerError` `59` | See below |
 
-Why each is refused rather than approximated:
-
-- **The fluent bulk builders** — `initializeOrderedBulkOp().find().updateOne()`
-  accumulates through a chained API of its own. `bulkWrite()` is implemented and
-  reports the same `BulkWriteResult`, so this is a second spelling rather than a
-  second capability.
-- **Change streams** — SurrealDB's live queries carry a different event shape and
-  no resume token, so a `ChangeStream` built on them could not be resumed after a
-  disconnect the way callers depend on. The client *is* an event emitter (see
-  [Connection events](#connection-events)), so the remaining gap is the resume
-  contract rather than somewhere to deliver events.
-- **Atlas Search indexes** — an Atlas service, with no SurrealDB counterpart to
-  define one against.
-- **Renaming** — SurrealDB has no statement that renames a table, and copying
-  every record under a new name is not something a rename should do behind the
-  caller's back.
+The reasons are in the table above rather than repeated here. They were in both
+places until one of them went stale — the prose still called Atlas Search "an
+Atlas service with no SurrealDB counterpart" after the error message had been
+corrected to say what actually blocks it — and one copy cannot disagree with
+itself.
 
 ### Deliberate divergences
 
