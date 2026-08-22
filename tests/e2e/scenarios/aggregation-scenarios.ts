@@ -1214,6 +1214,186 @@ export function registerAggregationScenarios(provider: DatabaseProvider): void {
 		});
 
 		// -----------------------------------------------------------------
+		// $dateToString, $let, $bucket
+		// -----------------------------------------------------------------
+
+		describe("$dateToString", () => {
+			test("renders the specifiers MongoDB and SurrealDB agree on", async () => {
+				// Every specifier here is asserted of a real mongod, because the two
+				// engines' format vocabularies overlap without being the same set and
+				// the differences are not all loud.
+				await sales.insertOne({
+					cat: "a",
+					when: new Date("2026-03-04T05:06:07.123Z"),
+				});
+				expect(
+					await sales
+						.aggregate([
+							{
+								$project: {
+									_id: 0,
+									ymd: { $dateToString: { date: "$when", format: "%Y-%m-%d" } },
+									hms: { $dateToString: { date: "$when", format: "%H:%M:%S" } },
+									millis: { $dateToString: { date: "$when", format: "%L" } },
+									doy: { $dateToString: { date: "$when", format: "%j" } },
+									literal: {
+										$dateToString: { date: "$when", format: "100%% on %Y" },
+									},
+								},
+							},
+						])
+						.toArray(),
+				).toEqual([
+					{
+						ymd: "2026-03-04",
+						hms: "05:06:07",
+						millis: "123",
+						doy: "063",
+						literal: "100% on 2026",
+					},
+				]);
+			});
+		});
+
+		describe("$let", () => {
+			test("binds variables for the body to use", async () => {
+				await sales.insertOne({ cat: "a", price: 7, qty: 3 });
+				expect(
+					await sales
+						.aggregate([
+							{
+								$project: {
+									_id: 0,
+									total: {
+										$let: {
+											vars: { unit: "$price", count: "$qty" },
+											in: { $multiply: ["$$unit", "$$count"] },
+										},
+									},
+								},
+							},
+						])
+						.toArray(),
+				).toEqual([{ total: 21 }]);
+			});
+
+			test("a variable referenced twice gives the same value both times", async () => {
+				// This driver substitutes rather than binds, so the expression is
+				// evaluated once per reference. For pure expressions that cannot change
+				// the answer, and this is the assertion that says so.
+				await sales.insertOne({ cat: "a", price: 5 });
+				expect(
+					await sales
+						.aggregate([
+							{
+								$project: {
+									_id: 0,
+									squared: {
+										$let: {
+											vars: { p: { $add: ["$price", 1] } },
+											in: { $multiply: ["$$p", "$$p"] },
+										},
+									},
+								},
+							},
+						])
+						.toArray(),
+				).toEqual([{ squared: 36 }]);
+			});
+
+			test("nests inside a $map, and the names do not collide", async () => {
+				await sales.insertOne({ cat: "a", tags: [1, 2] });
+				expect(
+					await sales
+						.aggregate([
+							{
+								$project: {
+									_id: 0,
+									out: {
+										$map: {
+											input: "$tags",
+											as: "t",
+											in: {
+												$let: {
+													vars: { doubled: { $multiply: ["$$t", 2] } },
+													in: { $add: ["$$doubled", "$$t"] },
+												},
+											},
+										},
+									},
+								},
+							},
+						])
+						.toArray(),
+				).toEqual([{ out: [3, 6] }]);
+			});
+		});
+
+		describe("$bucket", () => {
+			test("groups by which range a value falls into", async () => {
+				await seed();
+				expect(
+					await sales
+						.aggregate([
+							{
+								$bucket: {
+									groupBy: "$price",
+									boundaries: [0, 25, 50],
+									default: "over",
+								},
+							},
+						])
+						.toArray(),
+				).toEqual([
+					{ _id: 0, count: 2 },
+					{ _id: 25, count: 2 },
+				]);
+			});
+
+			test("a value outside every boundary lands in default", async () => {
+				await seed();
+				await sales.insertOne({ cat: "z", price: 500 });
+				expect(
+					await sales
+						.aggregate([
+							{
+								$bucket: {
+									groupBy: "$price",
+									boundaries: [0, 25],
+									default: "over",
+								},
+							},
+						])
+						.toArray(),
+				).toEqual([
+					{ _id: 0, count: 2 },
+					{ _id: "over", count: 3 },
+				]);
+			});
+
+			test("honours a custom output", async () => {
+				await seed();
+				expect(
+					await sales
+						.aggregate([
+							{
+								$bucket: {
+									groupBy: "$price",
+									boundaries: [0, 25, 50],
+									default: "over",
+									output: { n: { $sum: 1 }, total: { $sum: "$price" } },
+								},
+							},
+						])
+						.toArray(),
+				).toEqual([
+					{ _id: 0, n: 2, total: 30 },
+					{ _id: 25, n: 2, total: 70 },
+				]);
+			});
+		});
+
+		// -----------------------------------------------------------------
 		// Paging and $count
 		// -----------------------------------------------------------------
 
