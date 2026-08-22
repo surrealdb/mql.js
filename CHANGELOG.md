@@ -2,6 +2,18 @@
 
 All notable changes to `@surrealdb/mql` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning follows the policy in [COMPATIBILITY.md](./COMPATIBILITY.md) — which is [Semantic Versioning](https://semver.org/spec/v2.0.0.html) over a surface that is partly this driver's own and partly MongoDB's.
 
+## [Unreleased]
+
+### Fixed
+
+- **The README claimed `$facet` and `$graphLookup` raise**, in the sentence directly under the table listing them as supported. The same drift 0.5.0 fixed in the error message was still in the documentation, two lines below rows saying those stages work.
+
+- **The README still gave the old reason for refusing Atlas Search** — "an Atlas service, with no SurrealDB counterpart to define one against" — after 0.5.0 corrected that in the error message. The reason had been written in two places, the table and a prose list beside it, and only one was updated. The prose list is gone: the table carries the reasons, and one copy cannot disagree with itself.
+
+- **The not-implemented table now says why**, per group of methods, rather than leaving the reasons to a separate list. Thirteen methods, five reasons — three of which are something SurrealDB does not have, two of which are "there is already a route for this".
+
+  All three of the above are what `tests/unit/readme-tables.test.ts` now prevents. It compares the README's stage table, expression-operator table and not-implemented table against the code that implements them, and each assertion was checked by reintroducing the drift it exists for and watching it fail. Reviewing a diff does not catch this class of bug, because nothing in the diff is wrong — the staleness is in a file the change did not touch.
+
 ## [0.5.0] — 2026-08-15
 
 ### Added
