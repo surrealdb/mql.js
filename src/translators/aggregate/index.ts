@@ -12,10 +12,10 @@
  * The stages that are served:
  *
  *   `$match` `$sort` `$limit` `$skip` `$count` `$project` `$group` `$unwind`
- *   `$lookup` `$facet` `$graphLookup`
+ *   `$lookup` `$facet` `$graphLookup` `$bucket`
  *
- * `$bucket`, `$unionWith`, `$out`, `$merge`, `$setWindowFields` and the rest are
- * refused.
+ * `$bucketAuto`, `$unionWith`, `$out`, `$merge`, `$setWindowFields` and the rest
+ * are refused.
  */
 
 import { MongoCompatibilityError } from "../../errors.ts";
@@ -90,6 +90,7 @@ export const SUPPORTED_STAGES: readonly string[] = [
 	"$lookup",
 	"$facet",
 	"$graphLookup",
+	"$bucket",
 ];
 
 export function translatePipeline(
@@ -194,6 +195,9 @@ function applyStage(
 			return;
 		case "$graphLookup":
 			applyGraphLookup(spec, index, builder, bind, options, bindings);
+			return;
+		case "$bucket":
+			applyBucket(spec, builder, bind);
 			return;
 		case "$addFields":
 		case "$set":
@@ -476,6 +480,85 @@ function unwindPath(path: unknown): string {
 		);
 	}
 	return path.slice(1);
+}
+
+/**
+ * `$bucket` — group by which of a set of ranges a value falls into.
+ *
+ * Not a new kind of statement. MongoDB's own definition is a `$group` whose `_id`
+ * is the bucket a document belongs to, and that is exactly what this builds: the
+ * boundaries become a `$switch`, and the whole thing is handed to `$group`. So
+ * everything already true of grouping — that a following `$sort` folds into the
+ * same statement, that `_id` becomes an ordinary field afterwards — stays true
+ * without being restated or re-tested.
+ *
+ * MongoDB sorts the buckets by their lower bound, which a `$group` does not
+ * promise, so the sort is applied rather than assumed.
+ */
+function applyBucket(
+	spec: unknown,
+	builder: SelectBuilder,
+	bind: (value: unknown) => string,
+): void {
+	if (typeof spec !== "object" || spec === null || Array.isArray(spec)) {
+		throw new MongoCompatibilityError(
+			"$bucket takes a specification document.",
+		);
+	}
+
+	const { groupBy, boundaries, default: fallback, output } = spec as Document;
+
+	if (groupBy === undefined) {
+		throw new MongoCompatibilityError("$bucket requires `groupBy`.");
+	}
+	if (!Array.isArray(boundaries) || boundaries.length < 2) {
+		throw new MongoCompatibilityError(
+			"$bucket requires `boundaries` as an array of at least two values, which is what makes at least one bucket.",
+		);
+	}
+	if (fallback === undefined) {
+		// MongoDB errors at run time on a document outside every bucket unless
+		// `default` is given. Refusing here is the same rule enforced earlier: a
+		// pipeline that would fail on the first out-of-range document is better
+		// stopped before it runs.
+		throw new MongoCompatibilityError(
+			"$bucket requires `default` here: MongoDB fails at run time on a document that falls outside every boundary, and this driver cannot raise that error mid-statement, so the bucket for those documents has to be named up front.",
+		);
+	}
+
+	// `boundaries[i] <= value < boundaries[i + 1]`, tried in order, so the first
+	// branch that matches is the narrowest one that can.
+	const branches = boundaries.slice(0, -1).map((lower, position) => ({
+		case: {
+			$and: [
+				{ $gte: ["$$mql_bucket_value", lower] },
+				{ $lt: ["$$mql_bucket_value", boundaries[position + 1]] },
+			],
+		},
+		// `then` is MongoDB's own key in a `$switch` branch rather than a thenable:
+		// this object is handed straight to the expression compiler and is never
+		// awaited, returned to a caller, or resolved.
+		// biome-ignore lint/suspicious/noThenProperty: MongoDB's $switch branch key
+		then: lower,
+	}));
+
+	applyGroup(
+		{
+			_id: {
+				$let: {
+					vars: { mql_bucket_value: groupBy },
+					in: { $switch: { branches, default: fallback } },
+				},
+			},
+			// MongoDB's default output, and the only one it applies when `output` is
+			// absent.
+			...((output as Document) ?? { count: { $sum: 1 } }),
+		},
+		builder,
+		bind,
+	);
+
+	applySort({ _id: 1 }, builder);
 }
 
 /**

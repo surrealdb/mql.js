@@ -652,20 +652,158 @@ describe("the refusal names what is actually supported", () => {
 	test("a stage it does not name is refused, and the message lists the rest", () => {
 		let message = "";
 		try {
-			sql([{ $bucket: {} }]);
+			sql([{ $bucketAuto: {} }]);
 		} catch (error) {
 			message = (error as Error).message;
 		}
-		expect(message).toContain("$bucket is not implemented");
+		expect(message).toContain("$bucketAuto is not implemented");
 		for (const stage of SUPPORTED_STAGES) {
 			expect(message).toContain(stage);
 		}
 	});
 });
 
+describe("$dateToString", () => {
+	const fmt = (format: string) =>
+		sql([{ $project: { d: { $dateToString: { date: "$when", format } } } }]);
+
+	test("maps MongoDB's milliseconds onto the spelling chrono takes", () => {
+		// `%L` is the one specifier SurrealDB rejects outright, so it has to be
+		// translated rather than passed through.
+		expect(
+			compile([
+				{ $project: { d: { $dateToString: { date: "$when", format: "%L" } } } },
+			]).bindings.a0,
+		).toBe("%3f");
+	});
+
+	test("passes through the specifiers that mean the same thing", () => {
+		expect(
+			compile([
+				{
+					$project: {
+						d: { $dateToString: { date: "$when", format: "%Y-%m-%d" } },
+					},
+				},
+			]).bindings.a0,
+		).toBe("%Y-%m-%d");
+	});
+
+	test("refuses %w, which would render a number wrong by one", () => {
+		expect(() => fmt("%w")).toThrow(/does not support %w/);
+	});
+
+	test("refuses an unknown specifier rather than emitting it", () => {
+		expect(() => fmt("%Q")).toThrow(/does not support %Q/);
+	});
+
+	test("refuses a trailing lone percent", () => {
+		expect(() => fmt("%Y%")).toThrow(/lone %/);
+	});
+
+	test("refuses timezone and onNull rather than ignoring them", () => {
+		expect(() =>
+			sql([
+				{
+					$project: {
+						d: { $dateToString: { date: "$w", format: "%Y", timezone: "UTC" } },
+					},
+				},
+			]),
+		).toThrow(/timezone` is not supported/);
+		expect(() =>
+			sql([
+				{
+					$project: {
+						d: { $dateToString: { date: "$w", format: "%Y", onNull: "-" } },
+					},
+				},
+			]),
+		).toThrow(/onNull` is not supported/);
+	});
+});
+
+describe("$let", () => {
+	test("substitutes the variable into the body", () => {
+		expect(
+			sql([
+				{
+					$project: {
+						x: { $let: { vars: { a: "$price" }, in: { $add: ["$$a", 1] } } },
+					},
+				},
+			]),
+		).toContain("((`price`) + $a0)");
+	});
+
+	test("one var cannot see another, as in MongoDB", () => {
+		// Each `vars` entry compiles in the scope outside the $let, so `$$a` inside
+		// `b` is not the `a` being defined beside it.
+		expect(() =>
+			sql([
+				{
+					$project: {
+						x: {
+							$let: {
+								vars: { a: "$price", b: { $add: ["$$a", 1] } },
+								in: "$$b",
+							},
+						},
+					},
+				},
+			]),
+		).toThrow(/system variable \$\$a is not implemented/);
+	});
+
+	test("requires vars and in", () => {
+		expect(() => sql([{ $project: { x: { $let: { vars: {} } } } }])).toThrow(
+			/requires `in`/,
+		);
+	});
+});
+
+describe("$bucket", () => {
+	const bucket = (extra: Document = {}) =>
+		sql([
+			{
+				$bucket: {
+					groupBy: "$price",
+					boundaries: [0, 10, 20],
+					default: "other",
+					...extra,
+				},
+			},
+		]);
+
+	test("is a group over a switch, and sorts by the lower bound", () => {
+		const statement = bucket();
+		expect(statement).toContain("GROUP BY `_id`");
+		expect(statement).toContain("IF ");
+		expect(statement).toEndWith("ORDER BY `_id` ASC");
+	});
+
+	test("counts by default, and honours a custom output", () => {
+		expect(bucket()).toContain("count() AS `count`");
+		expect(bucket({ output: { total: { $sum: "$price" } } })).toContain(
+			"math::sum(`price`) AS `total`",
+		);
+	});
+
+	test("refuses a missing default, which MongoDB fails on at run time", () => {
+		expect(() =>
+			sql([{ $bucket: { groupBy: "$price", boundaries: [0, 10] } }]),
+		).toThrow(/requires `default`/);
+	});
+
+	test("refuses fewer than two boundaries, which would make no bucket", () => {
+		expect(() =>
+			sql([{ $bucket: { groupBy: "$p", boundaries: [0], default: "x" } }]),
+		).toThrow(/at least two values/);
+	});
+});
+
 describe("what is refused", () => {
 	test.each([
-		["$bucket", { $bucket: {} }],
 		["$unionWith", { $unionWith: "other" }],
 		["$out", { $out: "other" }],
 		["$merge", { $merge: {} }],
@@ -677,8 +815,8 @@ describe("what is refused", () => {
 	});
 
 	test("an unimplemented expression operator raises naming it", () => {
-		expect(() => sql([{ $project: { x: { $dateToString: {} } } }])).toThrow(
-			/\$dateToString is not implemented/,
+		expect(() => sql([{ $project: { x: { $dateFromString: {} } } }])).toThrow(
+			/\$dateFromString is not implemented/,
 		);
 	});
 

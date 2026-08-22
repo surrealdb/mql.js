@@ -2,7 +2,15 @@
 
 All notable changes to `@surrealdb/mql` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versioning follows the policy in [COMPATIBILITY.md](./COMPATIBILITY.md) — which is [Semantic Versioning](https://semver.org/spec/v2.0.0.html) over a surface that is partly this driver's own and partly MongoDB's.
 
-## [Unreleased]
+## [0.6.0] — 2026-08-22
+
+### Added
+
+- **`$bucket`.** Group by which of a set of ranges a value falls into. Not a new kind of statement: MongoDB's own definition is a `$group` whose `_id` is the bucket a document belongs to, so the boundaries become a `$switch` and the whole thing is handed to `$group`. Everything already true of grouping stays true, including that a following `$sort` folds into the same statement. `default` is required rather than optional — MongoDB fails at run time on a document outside every boundary, and this driver cannot raise that error partway through a statement, so a pipeline that would fail on its first out-of-range document is stopped before it runs.
+
+- **`$dateToString`.** The format string is translated rather than passed through, because MongoDB's specifiers and SurrealDB's overlap without being the same set and the differences are not all loud. `%L` is rejected outright by SurrealDB, which is harmless; `%w` would *work* and be wrong, since MongoDB numbers the day of week from Sunday as 1 and SurrealDB from Sunday as 0. So every specifier is mapped to one that means the same thing or refused by name, and `%w`/`%u` are refused with a pointer to `$dayOfWeek`. `timezone` and `onNull` are refused rather than ignored — the first would silently render UTC, and the second is `$ifNull`, which already exists.
+
+- **`$let`.** Substituted rather than bound: SurrealQL has no `let` *expression*, only a statement, which cannot appear where an expression goes. That is sound because every operator in this registry is pure, so a variable referenced twice is evaluated twice rather than once — more work, same answer. There is a parity test asserting it.
 
 ### Fixed
 
@@ -159,7 +167,8 @@ The README documents these in full; they are named here so a reader of the chang
 - A sort an inclusion projection does not cover is refused rather than served, pending `surrealdb/surrealdb-private#900`.
 - Below SurrealDB 3.3.0 on the in-memory storage engine, two concurrent writes to one document can both report success with one write dropped. It is a storage-engine bug, not a driver one; prefer a persistent engine for concurrent writes to a hot document.
 
-[Unreleased]: https://github.com/surrealdb/mql.js/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/surrealdb/mql.js/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/surrealdb/mql.js/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/surrealdb/mql.js/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/surrealdb/mql.js/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/surrealdb/mql.js/compare/v0.2.0...v0.3.0

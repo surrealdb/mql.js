@@ -42,6 +42,9 @@ export interface ExpressionContext {
 	 * read back as `$$item` — which is the only way an expression reaches it. The
 	 * parameter is generated rather than reusing the caller's name, so a variable
 	 * called `parent` or `a` cannot shadow something this driver relies on.
+	 *
+	 * The value is the SurrealQL the name compiles to: a closure parameter for
+	 * `$map` and `$filter`, and the variable's own compiled expression for `$let`.
 	 */
 	readonly variables: ReadonlyMap<string, string>;
 	/**
@@ -57,6 +60,15 @@ export interface ExpressionContext {
 			parameter: string,
 			compile: (expression: unknown) => string,
 		) => string,
+	): string;
+	/**
+	 * Compile `body` with every entry of `bindings` in scope.
+	 *
+	 * For `$let`, whose variables are expressions rather than closure parameters.
+	 */
+	withVariables(
+		bindings: ReadonlyMap<string, string>,
+		body: (compile: (expression: unknown) => string) => string,
 	): string;
 }
 
@@ -372,6 +384,44 @@ const OPERATORS: readonly ExpressionOperator[] = [
 		},
 	},
 
+	{
+		name: "$let",
+		// `{$let: {vars, in}}`. The variables are substituted into the body rather
+		// than bound, because SurrealQL has no `let` *expression* — only a
+		// statement, which cannot appear here.
+		//
+		// Substitution is sound because every operator in this registry is pure: a
+		// variable referenced twice is evaluated twice rather than once, which costs
+		// more work and cannot change the answer. If an impure operator is ever
+		// added, this is the thing to revisit.
+		compile(operand, ctx) {
+			if (
+				typeof operand !== "object" ||
+				operand === null ||
+				Array.isArray(operand)
+			) {
+				throw new MongoCompatibilityError(
+					"$let takes a document with `vars` and `in`.",
+				);
+			}
+			const { vars, in: body } = operand as Document;
+			if (typeof vars !== "object" || vars === null || Array.isArray(vars)) {
+				throw new MongoCompatibilityError("$let's `vars` must be a document.");
+			}
+			if (body === undefined) {
+				throw new MongoCompatibilityError("$let requires `in`.");
+			}
+
+			// Each variable is compiled in the scope *outside* the `$let`, which is
+			// MongoDB's rule: one `vars` entry cannot refer to another.
+			const bindings = new Map<string, string>();
+			for (const [name, value] of Object.entries(vars as Document)) {
+				bindings.set(name, `(${ctx.compile(value)})`);
+			}
+			return ctx.withVariables(bindings, (compile) => compile(body));
+		},
+	},
+
 	// -- Date ---------------------------------------------------------------
 	call("$year", "time::year", 1),
 	call("$month", "time::month", 1),
@@ -380,6 +430,50 @@ const OPERATORS: readonly ExpressionOperator[] = [
 	call("$minute", "time::minute", 1),
 	call("$second", "time::second", 1),
 	call("$dayOfYear", "time::yday", 1),
+	{
+		name: "$dateToString",
+		// `{$dateToString: {date, format, timezone, onNull}}`.
+		//
+		// The format string is translated rather than passed through. MongoDB's
+		// specifiers and the ones SurrealDB's `time::format` takes overlap but are
+		// not the same set, and the differences are silent where they are not fatal:
+		// `%L` is rejected outright, but `%w` would *work* and be wrong, because
+		// MongoDB numbers the week from Sunday as 1 and this numbers it from 0. So
+		// every specifier is either mapped to one that means the same thing or
+		// refused by name.
+		compile(operand, ctx) {
+			if (
+				typeof operand !== "object" ||
+				operand === null ||
+				Array.isArray(operand)
+			) {
+				throw new MongoCompatibilityError(
+					"$dateToString takes a document with `date` and `format`.",
+				);
+			}
+			const { date, format, timezone, onNull } = operand as Document;
+			if (date === undefined) {
+				throw new MongoCompatibilityError("$dateToString requires `date`.");
+			}
+			if (typeof format !== "string") {
+				throw new MongoCompatibilityError(
+					"$dateToString requires `format` as a string. MongoDB defaults it to an ISO-8601 string when omitted; this driver asks for it rather than assuming, because the default is a format like any other.",
+				);
+			}
+			if (timezone !== undefined) {
+				throw new MongoCompatibilityError(
+					"$dateToString's `timezone` is not supported: SurrealDB's time::format renders in UTC and takes no zone, so a zoned format would silently be UTC. Convert before formatting, or format in UTC.",
+				);
+			}
+			if (onNull !== undefined) {
+				throw new MongoCompatibilityError(
+					"$dateToString's `onNull` is not supported. Wrap the whole expression in $ifNull instead, which is the same thing and is implemented.",
+				);
+			}
+
+			return `time::format(${ctx.compile(date)}, ${ctx.bind(translateDateFormat(format))})`;
+		},
+	},
 	{
 		name: "$dayOfWeek",
 		// `time::wday` is ISO — Monday is 1 and Sunday is 7. MongoDB's
@@ -457,8 +551,15 @@ export function compileExpression(
 			// Numbered by how many are already bound, so a `$map` inside a `$map`
 			// binds two different parameters and the inner cannot hide the outer.
 			const parameter = `mql_v${variables.size}`;
-			const inner = new Map(variables).set(name, parameter);
+			const inner = new Map(variables).set(name, `$${parameter}`);
 			return body(parameter, (nested) =>
+				compileExpression(nested, bind, identityIsPlainField, inner),
+			);
+		},
+		withVariables(bindings, body) {
+			const inner = new Map(variables);
+			for (const [name, sql] of bindings) inner.set(name, sql);
+			return body((nested) =>
 				compileExpression(nested, bind, identityIsPlainField, inner),
 			);
 		},
@@ -505,7 +606,7 @@ function compileReference(reference: string, ctx: ExpressionContext): string {
 		// A variable a `$map` or `$filter` bound wins over the system table, which
 		// is also MongoDB's rule: `$$this` means the current element inside one.
 		const bound = ctx.variables.get(name);
-		if (bound) return `$${bound}`;
+		if (bound) return bound;
 		const variable = SYSTEM_VARIABLES[name];
 		if (variable) return variable;
 		throw new MongoCompatibilityError(
@@ -534,4 +635,77 @@ function isPlainObject(value: unknown): value is Document {
 /** True when `name` is an expression operator this driver implements. */
 export function isExpressionOperator(name: string): boolean {
 	return REGISTRY.has(name);
+}
+
+/**
+ * MongoDB's `$dateToString` specifiers, mapped onto the ones `time::format` takes.
+ *
+ * Identical spellings are listed anyway, so the table is the whole of what is
+ * accepted and anything absent is refused rather than passed through by accident.
+ */
+const DATE_SPECIFIERS: Readonly<Record<string, string>> = {
+	Y: "%Y",
+	m: "%m",
+	d: "%d",
+	H: "%H",
+	M: "%M",
+	S: "%S",
+	j: "%j",
+	U: "%U",
+	G: "%G",
+	V: "%V",
+	z: "%z",
+	Z: "%Z",
+	// MongoDB's milliseconds; chrono spells three fractional digits this way.
+	L: "%3f",
+	"%": "%%",
+};
+
+/**
+ * Specifiers deliberately refused, with what makes each one wrong to translate.
+ *
+ * `%w` and `%u` are the dangerous pair: both would render a number, and both
+ * would be off by one against MongoDB, which numbers Sunday as 1. `%L` is not
+ * here because SurrealDB rejects it outright — a specifier that fails loudly
+ * needs no guard, only a mapping.
+ */
+const REFUSED_SPECIFIERS: Readonly<Record<string, string>> = {
+	w: "MongoDB numbers the day of week from Sunday as 1 and SurrealDB from Sunday as 0, so this would render a number wrong by one. Use $dayOfWeek, which applies the offset",
+	u: "MongoDB and SurrealDB disagree on where the ISO week starts counting, so this would render a number wrong by one",
+};
+
+/** Translate a MongoDB date format string, refusing what cannot be translated. */
+function translateDateFormat(format: string): string {
+	let out = "";
+	for (let i = 0; i < format.length; i++) {
+		if (format[i] !== "%") {
+			out += format[i];
+			continue;
+		}
+		const specifier = format[i + 1];
+		if (specifier === undefined) {
+			throw new MongoCompatibilityError(
+				"$dateToString's format ends with a lone %, which names no specifier.",
+			);
+		}
+		const refused = REFUSED_SPECIFIERS[specifier];
+		if (refused) {
+			throw new MongoCompatibilityError(
+				`$dateToString does not support %${specifier}: ${refused}.`,
+			);
+		}
+		const mapped = DATE_SPECIFIERS[specifier];
+		if (!mapped) {
+			throw new MongoCompatibilityError(
+				`$dateToString does not support %${specifier}. Supported: ${Object.keys(
+					DATE_SPECIFIERS,
+				)
+					.map((key) => `%${key}`)
+					.join(" ")}.`,
+			);
+		}
+		out += mapped;
+		i++;
+	}
+	return out;
 }

@@ -1158,8 +1158,9 @@ You do not have to think about that, except when reading a slow query. What is w
 | `$addFields`, `$set` | Extra fields beside the existing ones. A field already present is replaced, as in MongoDB |
 | `$replaceRoot`, `$replaceWith` | Promote a value — a subdocument or a computed one — to the root |
 | `$sortByCount` | Group by an expression, count, order by the count descending |
+| `$bucket` | Group by which of a set of ranges a value falls into. `default` is required — see below |
 
-Everything else — `$bucket`, `$bucketAuto`, `$unionWith`, `$out`, `$merge`, `$setWindowFields`, `$sample` — raises `MongoCompatibilityError` naming the stage. A pipeline whose later stages were silently dropped would still return documents, so the caller would get a plausible wrong answer instead of an error.
+Everything else — `$bucketAuto`, `$unionWith`, `$out`, `$merge`, `$setWindowFields`, `$sample` — raises `MongoCompatibilityError` naming the stage. A pipeline whose later stages were silently dropped would still return documents, so the caller would get a plausible wrong answer instead of an error.
 
 ### Expressions
 
@@ -1171,11 +1172,11 @@ Inside `$project` and inside accumulators:
 | String | `$concat` `$toUpper` `$toLower` `$strLenCP` `$split` `$trim` `$regexMatch` |
 | Comparison | `$eq` `$ne` `$gt` `$gte` `$lt` `$lte` |
 | Boolean | `$and` `$or` `$not` |
-| Conditional | `$cond` `$ifNull` `$switch` |
+| Conditional | `$cond` `$ifNull` `$switch` `$let` |
 | Array | `$size` `$arrayElemAt` `$in` `$reverseArray` `$concatArrays` `$map` `$filter` |
 | Object | `$mergeObjects` |
 | Type | `$toString` `$toInt` `$toDouble` `$toBool` |
-| Date | `$year` `$month` `$dayOfMonth` `$dayOfWeek` `$dayOfYear` `$hour` `$minute` `$second` |
+| Date | `$year` `$month` `$dayOfMonth` `$dayOfWeek` `$dayOfYear` `$hour` `$minute` `$second` `$dateToString` |
 | Other | `$literal`, and `$$NOW` |
 
 An operator not in that table raises rather than compiling to something approximate. Two are worth calling out because they look like they should be there:
@@ -1230,6 +1231,26 @@ array::reduce([{d: 0, seen: [], front: <seeds>}, 1, 2, …], |$a, $v| {
 **Depth is capped at 64**, and this is the one place the stage answers differently from MongoDB. MongoDB traverses until nothing new is found; a fold runs over a fixed-length array, so "unbounded" is a generous fixed number. A hierarchy deeper than 64 returns its first 64 levels. A `maxDepth` of 64 or more is refused rather than quietly truncated.
 
 SurrealDB's own recursive traversal — `field.{..}` — is not used and cannot be: it requires the reference to *be* a record id, and MongoDB references are the plain strings and object ids this driver stores.
+
+### `$dateToString`'s format string is translated, not passed through
+
+MongoDB's specifiers and the ones SurrealDB's `time::format` takes overlap without being the same set, and the differences are not all loud. `%L` is rejected outright by SurrealDB — a mistake that fails is harmless — but `%w` would *work* and be wrong, because MongoDB numbers the day of week from Sunday as 1 and SurrealDB from Sunday as 0.
+
+So every specifier is either mapped to one that means the same thing or refused by name. Supported: `%Y %m %d %H %M %S %j %U %G %V %z %Z %L %%`. Refused: `%w` and `%u`, both off by one — use `$dayOfWeek`, which applies the offset.
+
+`timezone` is refused rather than ignored, since `time::format` renders in UTC and a zoned format would silently be UTC. `onNull` is refused too: wrap the expression in `$ifNull`, which is the same thing and is implemented.
+
+### `$let` substitutes rather than binds
+
+SurrealQL has no `let` *expression* — only a statement, which cannot appear where an expression goes. So a `$let` variable is substituted into the body wherever it is referenced.
+
+That is sound because every operator in this driver's expression registry is pure: a variable referenced twice is evaluated twice rather than once, which costs more work and cannot change the answer. There is a parity test asserting exactly that.
+
+### `$bucket` requires a `default`
+
+MongoDB fails at run time on a document that falls outside every boundary unless `default` names a bucket for it. This driver cannot raise that error partway through a statement, so it asks for `default` up front and refuses the stage without one — a pipeline that would fail on its first out-of-range document is better stopped before it runs.
+
+Otherwise it is a `$group` whose `_id` is a `$switch` over the boundaries, which is MongoDB's own definition of it. Everything true of grouping stays true, including that a following `$sort` folds into the same statement. The buckets are ordered by their lower bound, which MongoDB promises and a bare `$group` does not, so the sort is applied rather than assumed.
 
 ### How `$facet` runs its branches
 
