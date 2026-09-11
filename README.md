@@ -1146,9 +1146,11 @@ You do not have to think about that, except when reading a slow query. What is w
 | Stage | Notes |
 | --- | --- |
 | `$match` | The same translator as a `find()` filter, so every filter operator works here — including `$text`, and `$elemMatch`. Not `$near`/`$nearSphere`: those order the whole result set as well as filtering it, and a stage has nowhere to put that ordering |
-| `$group` | `_id` may be a field path, an expression, a compound document or `null`. Accumulators: `$sum`, `$avg`, `$min`, `$max`, `$push`, `$addToSet`, `$first`, `$last`, `$count` |
-| `$project` | Inclusion and computed fields. `_id` may be excluded; excluding anything else is refused, because MongoDB forbids mixing inclusions and exclusions and serving half the form invites the other half to look supported |
+| `$group` | `_id` may be a field path, an expression, a compound document or `null`. Accumulators: `$sum`, `$avg`, `$min`, `$max`, `$push`, `$addToSet`, `$first`, `$last`, `$firstN`, `$lastN`, `$maxN`, `$minN`, `$stdDevSamp`, `$stdDevPop`, `$count` |
+| `$project` | Inclusion, exclusion and computed fields — both directions run server-side as an `OMIT`, not a client-side field strip. Mixing inclusion and exclusion in the same stage is refused, because MongoDB forbids it too and serving half the form invites the other half to look supported |
+| `$unset` | Exclusion by field name, or a list of them — the same exclusion `$project: {field: 0}` runs, spelled MongoDB's other way |
 | `$sort` | As a `find()` sort |
+| `$sample` | `{size}` documents drawn at random, via `ORDER BY rand() LIMIT size` |
 | `$skip`, `$limit` | In either order, meaning what MongoDB means by that order |
 | `$count` | One document of one field |
 | `$unwind` | Including `preserveNullAndEmptyArrays`. Not `includeArrayIndex` — SurrealDB's `SPLIT` does not report the position a value came from |
@@ -1159,8 +1161,10 @@ You do not have to think about that, except when reading a slow query. What is w
 | `$replaceRoot`, `$replaceWith` | Promote a value — a subdocument or a computed one — to the root |
 | `$sortByCount` | Group by an expression, count, order by the count descending |
 | `$bucket` | Group by which of a set of ranges a value falls into. `default` is required — see below |
+| `$out` | Materialises the pipeline so far and writes it to a named collection, replacing whatever was there. Must be the last stage — see below |
+| `$merge` | Materialises the pipeline so far and upserts it into a named collection by `_id`. Must be the last stage — see below |
 
-Everything else — `$bucketAuto`, `$unionWith`, `$out`, `$merge`, `$setWindowFields`, `$sample` — raises `MongoCompatibilityError` naming the stage. A pipeline whose later stages were silently dropped would still return documents, so the caller would get a plausible wrong answer instead of an error.
+Everything else — `$bucketAuto`, `$unionWith`, `$setWindowFields` — raises `MongoCompatibilityError` naming the stage. A pipeline whose later stages were silently dropped would still return documents, so the caller would get a plausible wrong answer instead of an error.
 
 ### Expressions
 
@@ -1169,20 +1173,23 @@ Inside `$project` and inside accumulators:
 | Group | Operators |
 | --- | --- |
 | Arithmetic | `$add` `$subtract` `$multiply` `$divide` `$mod` `$abs` `$ceil` `$floor` `$round` `$pow` `$sqrt` |
-| String | `$concat` `$toUpper` `$toLower` `$strLenCP` `$split` `$trim` `$regexMatch` |
+| String | `$concat` `$toUpper` `$toLower` `$strLenCP` `$split` `$trim` `$regexMatch` `$replaceAll` |
 | Comparison | `$eq` `$ne` `$gt` `$gte` `$lt` `$lte` |
 | Boolean | `$and` `$or` `$not` |
 | Conditional | `$cond` `$ifNull` `$switch` `$let` |
-| Array | `$size` `$arrayElemAt` `$in` `$reverseArray` `$concatArrays` `$map` `$filter` |
-| Object | `$mergeObjects` |
-| Type | `$toString` `$toInt` `$toDouble` `$toBool` |
-| Date | `$year` `$month` `$dayOfMonth` `$dayOfWeek` `$dayOfYear` `$hour` `$minute` `$second` `$dateToString` |
+| Array | `$size` `$arrayElemAt` `$in` `$reverseArray` `$concatArrays` `$map` `$filter` `$reduce` |
+| Set | `$setUnion` `$setIntersection` `$setDifference` `$setEquals` `$setIsSubset` |
+| Object | `$mergeObjects` `$objectToArray` `$arrayToObject` |
+| Type | `$toString` `$toInt` `$toDouble` `$toBool` `$convert` |
+| Date | `$year` `$month` `$dayOfMonth` `$dayOfWeek` `$dayOfYear` `$hour` `$minute` `$second` `$dateToString` `$dateAdd` `$dateDiff` `$dateTrunc` |
 | Other | `$literal`, and `$$NOW` |
 
-An operator not in that table raises rather than compiling to something approximate. Two are worth calling out because they look like they should be there:
+An operator not in that table raises rather than compiling to something approximate. A few are worth calling out because they look like they should be there:
 
 - **`$type`** is refused. It answers with a BSON type name, and SurrealDB's type names are its own — `float` where BSON says `double`, and no `objectId` at all — so any mapping would be invented rather than translated.
 - **`$round` with a decimal place** is refused. SurrealDB's `math::round` takes no precision, so the result would be rounded to a different place than the one asked for.
+- **`$dateAdd`, `$dateDiff` and `$dateTrunc`** only take `unit`s with a fixed length — `millisecond`, `second`, `minute`, `hour`, `day`, and `week` for `$dateAdd` alone. `month`, `quarter` and `year` have no fixed duration to construct, and `$dateDiff`/`$dateTrunc`'s `week` needs a `startOfWeek`-relative calendar boundary this driver has no equivalent for, so both refuse it — `$dateAdd` does not need one, since adding seven fixed days is unambiguous. `timezone` and `startOfWeek` are refused outright rather than ignored, for the same reason `$dateToString`'s `timezone` is: every value here is UTC.
+- **`$convert`** only takes `to: "string" | "bool" | "int" | "double"` — the same four casts `$toString`/`$toBool`/`$toInt`/`$toDouble` already provide under their own names. `onError` and `onNull` are refused: SurrealQL has no try/catch, so a failing cast cannot be caught and substituted, only allowed to raise.
 
 `$$ROOT` and `$$CURRENT` are not available: a whole-document value has nowhere to go in the statements this driver emits. `$map` and `$filter` bind their own variable — `as: "item"`, read back as `$$item`, defaulting to `$$this` — and nest, so a `$map` inside a `$map` sees both.
 

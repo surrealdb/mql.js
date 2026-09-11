@@ -173,6 +173,69 @@ describe("$group", () => {
 			{ _id: "b", revenue: 270 },
 		]);
 	});
+
+	test("$stdDevSamp and $stdDevPop", async () => {
+		// cat a: [10, 20], cat b: [30, 40] — same spread in both, so sample and
+		// population disagree by the same factor for each.
+		const docs = await sales
+			.aggregate([
+				{
+					$group: {
+						_id: "$cat",
+						samp: { $stdDevSamp: "$price" },
+						pop: { $stdDevPop: "$price" },
+					},
+				},
+				{ $sort: { _id: 1 } },
+			])
+			.toArray();
+		for (const doc of docs) {
+			expect(doc.samp).toBeCloseTo(Math.sqrt(50));
+			expect(doc.pop).toBeCloseTo(5);
+		}
+		expect(docs.map((d) => d._id)).toEqual(["a", "b"]);
+	});
+
+	test("$maxN and $minN take the largest and smallest, in either order", async () => {
+		expect(
+			await sales
+				.aggregate([
+					{
+						$group: {
+							_id: "$cat",
+							top: { $maxN: { input: "$price", n: 1 } },
+							bottom: { $minN: { input: "$price", n: 1 } },
+						},
+					},
+					{ $sort: { _id: 1 } },
+				])
+				.toArray(),
+		).toEqual([
+			{ _id: "a", top: [20], bottom: [10] },
+			{ _id: "b", top: [40], bottom: [30] },
+		]);
+	});
+
+	test("$firstN and $lastN follow document order, made deterministic by a $sort before $group", async () => {
+		expect(
+			await sales
+				.aggregate([
+					{ $sort: { price: 1 } },
+					{
+						$group: {
+							_id: "$cat",
+							firsts: { $firstN: { input: "$price", n: 1 } },
+							lasts: { $lastN: { input: "$price", n: 1 } },
+						},
+					},
+					{ $sort: { _id: 1 } },
+				])
+				.toArray(),
+		).toEqual([
+			{ _id: "a", firsts: [10], lasts: [20] },
+			{ _id: "b", firsts: [30], lasts: [40] },
+		]);
+	});
 });
 
 describe("$match", () => {
@@ -296,6 +359,43 @@ describe("$project", () => {
 		expect(withoutId).toEqual({ cat: "a" });
 	});
 
+	test("excludes a field other than _id, not just _id", async () => {
+		// The bug this replaces: exclusion only ever OMITted a column literally
+		// named `_id`, which does not exist on a stored row — so excluding
+		// anything else silently did nothing.
+		const [doc] = await sales
+			.aggregate([{ $match: { _id: "1" } }, { $project: { price: 0 } }])
+			.toArray();
+		expect(doc).toEqual({
+			_id: "1",
+			cat: "a",
+			sub: "x",
+			qty: 2,
+			tags: ["p", "q"],
+		});
+	});
+
+	test("$unset excludes a field by name, or a list of them", async () => {
+		const [oneField] = await sales
+			.aggregate([{ $match: { _id: "1" } }, { $unset: "price" }])
+			.toArray();
+		expect(oneField).toEqual({
+			_id: "1",
+			cat: "a",
+			sub: "x",
+			qty: 2,
+			tags: ["p", "q"],
+		});
+
+		const [severalFields] = await sales
+			.aggregate([
+				{ $match: { _id: "1" } },
+				{ $unset: ["price", "qty", "tags"] },
+			])
+			.toArray();
+		expect(severalFields).toEqual({ _id: "1", cat: "a", sub: "x" });
+	});
+
 	test("computes a field from an expression", async () => {
 		expect(
 			await sales
@@ -377,6 +477,268 @@ describe("paging", () => {
 				])
 				.toArray(),
 		).toEqual([{ price: 20 }]);
+	});
+});
+
+describe("$sample", () => {
+	test("returns the requested number of documents, drawn from the collection", async () => {
+		const docs = await sales.aggregate([{ $sample: { size: 2 } }]).toArray();
+		expect(docs.length).toBe(2);
+		for (const doc of docs) {
+			expect(["1", "2", "3", "4"]).toContain(doc._id as string);
+		}
+	});
+
+	test("returns at most as many documents as exist", async () => {
+		const docs = await sales.aggregate([{ $sample: { size: 100 } }]).toArray();
+		expect(docs.length).toBe(4);
+	});
+});
+
+describe("$out and $merge", () => {
+	test("$out replaces the target collection wholesale", async () => {
+		const out = db.collection<Sale & { total?: number }>("sales_out");
+		try {
+			await out.insertOne({ _id: "stale", cat: "z" });
+			await sales
+				.aggregate([
+					{ $group: { _id: "$cat", total: { $sum: "$price" } } },
+					{ $sort: { _id: 1 } },
+					{ $out: "sales_out" },
+				])
+				.toArray();
+			expect(await out.find({}).sort({ _id: 1 }).toArray()).toEqual([
+				{ _id: "a", total: 30 },
+				{ _id: "b", total: 70 },
+			]);
+		} finally {
+			await out.deleteMany({});
+		}
+	});
+
+	test("$merge upserts by _id, merging fields with the existing document by default", async () => {
+		const target = db.collection<Sale & { total?: number }>("sales_merge");
+		try {
+			await target.insertOne({ _id: "a", cat: "existing", price: 999 });
+			await sales
+				.aggregate([
+					{ $group: { _id: "$cat", total: { $sum: "$price" } } },
+					{ $match: { _id: "a" } },
+					{ $merge: { into: "sales_merge" } },
+				])
+				.toArray();
+			const [merged] = await target.find({ _id: "a" }).toArray();
+			expect(merged).toEqual({
+				_id: "a",
+				cat: "existing",
+				price: 999,
+				total: 30,
+			});
+		} finally {
+			await target.deleteMany({});
+		}
+	});
+
+	test("$merge with whenMatched: replace overwrites the whole document", async () => {
+		const target = db.collection<Sale & { total?: number }>(
+			"sales_merge_replace",
+		);
+		try {
+			await target.insertOne({ _id: "a", cat: "existing", price: 999 });
+			await sales
+				.aggregate([
+					{ $group: { _id: "$cat", total: { $sum: "$price" } } },
+					{ $match: { _id: "a" } },
+					{
+						$merge: { into: "sales_merge_replace", whenMatched: "replace" },
+					},
+				])
+				.toArray();
+			const [merged] = await target.find({ _id: "a" }).toArray();
+			expect(merged).toEqual({ _id: "a", total: 30 });
+		} finally {
+			await target.deleteMany({});
+		}
+	});
+
+	test("$merge inserts documents that have no existing match", async () => {
+		const target = db.collection<Sale & { total?: number }>(
+			"sales_merge_insert",
+		);
+		try {
+			await sales
+				.aggregate([
+					{ $group: { _id: "$cat", total: { $sum: "$price" } } },
+					{ $sort: { _id: 1 } },
+					{ $merge: { into: "sales_merge_insert" } },
+				])
+				.toArray();
+			expect(await target.find({}).sort({ _id: 1 }).toArray()).toEqual([
+				{ _id: "a", total: 30 },
+				{ _id: "b", total: 70 },
+			]);
+		} finally {
+			await target.deleteMany({});
+		}
+	});
+
+	test("$out and $merge must be the final stage", async () => {
+		await expect(
+			sales.aggregate([{ $out: "sales_out" }, { $match: {} }]).toArray(),
+		).rejects.toThrow(/\$out must be the final stage/);
+	});
+});
+
+describe("expression operators", () => {
+	test("$reduce folds an array with an initial value", async () => {
+		const [doc] = await sales
+			.aggregate([
+				{ $match: { _id: "1" } },
+				{
+					$project: {
+						_id: 0,
+						total: {
+							$reduce: {
+								input: "$tags",
+								initialValue: "",
+								in: { $concat: ["$$value", "$$this"] },
+							},
+						},
+					},
+				},
+			])
+			.toArray();
+		expect(doc).toEqual({ total: "pq" });
+	});
+
+	test("$objectToArray and $arrayToObject round-trip a document", async () => {
+		const [doc] = await sales
+			.aggregate([
+				{ $match: { _id: "1" } },
+				{
+					$project: {
+						_id: 0,
+						pairs: { $objectToArray: { c: "$cat", s: "$sub" } },
+					},
+				},
+				{
+					$project: {
+						_id: 0,
+						roundTripped: { $arrayToObject: "$pairs" },
+					},
+				},
+			])
+			.toArray();
+		expect(doc).toEqual({ roundTripped: { c: "a", s: "x" } });
+	});
+
+	test("the $set family treats arrays as sets", async () => {
+		const [doc] = await sales
+			.aggregate([
+				{ $match: { _id: "1" } },
+				{
+					$project: {
+						_id: 0,
+						union: {
+							$setUnion: [
+								["p", "q"],
+								["q", "r"],
+							],
+						},
+						intersection: {
+							$setIntersection: [
+								["p", "q"],
+								["q", "r"],
+							],
+						},
+						difference: {
+							$setDifference: [
+								["p", "q"],
+								["q", "r"],
+							],
+						},
+						equal: {
+							$setEquals: [
+								["p", "q"],
+								["q", "p", "p"],
+							],
+						},
+						subset: { $setIsSubset: [["q"], "$tags"] },
+					},
+				},
+			])
+			.toArray();
+		expect(doc).toEqual({
+			union: ["p", "q", "r"],
+			intersection: ["q"],
+			difference: ["p"],
+			equal: true,
+			subset: true,
+		});
+	});
+
+	test("$dateAdd, $dateDiff and $dateTrunc", async () => {
+		await sales.updateOne(
+			{ _id: "1" },
+			{ $set: { when: new Date("2024-01-01T00:00:00Z") } },
+		);
+		try {
+			const [doc] = await sales
+				.aggregate([
+					{ $match: { _id: "1" } },
+					{
+						$project: {
+							_id: 0,
+							later: {
+								$dateAdd: { startDate: "$when", unit: "day", amount: 5 },
+							},
+							earlier: {
+								$dateAdd: { startDate: "$when", unit: "day", amount: -5 },
+							},
+							diff: {
+								$dateDiff: {
+									startDate: "$when",
+									endDate: new Date("2024-01-03T12:00:00Z"),
+									unit: "hour",
+								},
+							},
+							trunc: {
+								$dateTrunc: {
+									date: new Date("2024-01-01T13:47:00Z"),
+									unit: "hour",
+								},
+							},
+						},
+					},
+				])
+				.toArray();
+			expect(doc).toEqual({
+				later: new Date("2024-01-06T00:00:00Z"),
+				earlier: new Date("2023-12-27T00:00:00Z"),
+				diff: 60,
+				trunc: new Date("2024-01-01T13:00:00Z"),
+			});
+		} finally {
+			await sales.updateOne({ _id: "1" }, { $unset: { when: "" } });
+		}
+	});
+
+	test("$replaceAll and $convert", async () => {
+		const [doc] = await sales
+			.aggregate([
+				{ $match: { _id: "1" } },
+				{
+					$project: {
+						_id: 0,
+						replaced: {
+							$replaceAll: { input: "$sub", find: "x", replacement: "y" },
+						},
+						converted: { $convert: { input: "$qty", to: "string" } },
+					},
+				},
+			])
+			.toArray();
+		expect(doc).toEqual({ replaced: "y", converted: "2" });
 	});
 });
 

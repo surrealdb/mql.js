@@ -186,9 +186,10 @@ describe("the ways to read those documents instead", () => {
 			.find({}, { projection: { k: 0, extra: 0, a: 0 }, sort: { k: 1 } })
 			.toArray();
 
-		// A `SELECT *` carries every idiom an `ORDER BY` could name, and the fields
-		// are removed from the documents afterwards — so an exclusion projection can
-		// order by anything, including what it excludes.
+		// A `SELECT *` carries every idiom an `ORDER BY` could name, and `OMIT`
+		// removes the excluded fields from the row itself rather than from a
+		// document already returned — so an exclusion projection can order by
+		// anything, including what it excludes.
 		expect(found).toEqual([
 			{ _id: 2, tag: "t2" },
 			{ _id: 3, tag: "t3" },

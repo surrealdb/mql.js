@@ -11,11 +11,19 @@
  *
  * The stages that are served:
  *
- *   `$match` `$sort` `$limit` `$skip` `$count` `$project` `$group` `$unwind`
- *   `$lookup` `$facet` `$graphLookup` `$bucket`
+ *   `$match` `$sort` `$limit` `$skip` `$count` `$sample` `$project` `$unset`
+ *   `$group` `$unwind` `$lookup` `$facet` `$graphLookup` `$bucket` `$out`
+ *   `$merge`
  *
- * `$bucketAuto`, `$unionWith`, `$out`, `$merge`, `$setWindowFields` and the rest
- * are refused.
+ * `$bucketAuto`, `$unionWith`, `$setWindowFields` and the rest are refused.
+ *
+ * `$out` and `$merge` are not stages the *translator* folds into SQL — they
+ * write, and this module never touches the executor. They are handled one
+ * layer up, in `src/collection/operations/aggregate.ts`, which strips a
+ * trailing `$out`/`$merge` before calling this module at all. Reaching the
+ * switch below means one was found somewhere *other* than last, which is the
+ * one thing this module can still usefully say about them: MongoDB requires
+ * both to be the final stage, and so does this driver.
  */
 
 import { MongoCompatibilityError } from "../../errors.ts";
@@ -52,6 +60,21 @@ export interface TranslatedPipeline {
 	 * ahead of the statement that reads them.
 	 */
 	readonly isBatch: boolean;
+	/**
+	 * True once a stage has replaced the document shape, so the rows the
+	 * statement answers with carry a literal `_id` field rather than SurrealDB's
+	 * `id` column.
+	 *
+	 * This is what decides how the executing operation decodes a row — through
+	 * `recordToDocument` (the row is still a stored record) or by walking every
+	 * `_id` key it finds (the row is a computed value). It used to be guessed
+	 * from which stage *names* appeared in the pipeline, which was wrong for an
+	 * exclusion `$project`: `{$project: {secret: 0}}` does not rename anything,
+	 * so the guess treated a row-preserving pipeline as reshaped and left its
+	 * identity undecoded. Reading the builder's own tracked state, which is
+	 * already correct for every stage, replaces the guess rather than patching it.
+	 */
+	readonly identityIsPlainField: boolean;
 }
 
 /**
@@ -79,7 +102,9 @@ export const SUPPORTED_STAGES: readonly string[] = [
 	"$limit",
 	"$skip",
 	"$count",
+	"$sample",
 	"$project",
+	"$unset",
 	"$addFields",
 	"$set",
 	"$replaceRoot",
@@ -91,6 +116,8 @@ export const SUPPORTED_STAGES: readonly string[] = [
 	"$facet",
 	"$graphLookup",
 	"$bucket",
+	"$out",
+	"$merge",
 ];
 
 export function translatePipeline(
@@ -114,7 +141,12 @@ export function translatePipeline(
 	const builder = new SelectBuilder(options.table);
 	runStages(pipeline, builder, bind, options, bindings, "");
 
-	return { sql: builder.renderBatch(), bindings, isBatch: builder.isBatch };
+	return {
+		sql: builder.renderBatch(),
+		bindings,
+		isBatch: builder.isBatch,
+		identityIsPlainField: builder.identityIsPlainField,
+	};
 }
 
 /**
@@ -178,8 +210,14 @@ function applyStage(
 		case "$count":
 			applyCount(spec, builder);
 			return;
+		case "$sample":
+			applySample(spec, builder);
+			return;
 		case "$project":
 			applyProject(spec, builder, bind);
+			return;
+		case "$unset":
+			applyUnset(spec, builder);
 			return;
 		case "$group":
 			applyGroup(spec, builder, bind);
@@ -210,6 +248,11 @@ function applyStage(
 		case "$sortByCount":
 			applySortByCount(spec, builder, bind);
 			return;
+		case "$out":
+		case "$merge":
+			throw new MongoCompatibilityError(
+				`${name} must be the final stage of the pipeline, and here it is not. MongoDB requires the same thing for the same reason: everything after it would run against a collection this stage is still writing to.`,
+			);
 		default:
 			throw new MongoCompatibilityError(
 				`The aggregation stage ${name} is not implemented by @surrealdb/mql. Translating it partially would answer with documents that ignored it, so it is refused instead. These are supported: ${[...SUPPORTED_STAGES].join(", ")}.`,
@@ -269,6 +312,33 @@ function applySort(spec: unknown, builder: SelectBuilder): void {
 
 	builder.claim(Slot.Order);
 	builder.setOrderBy(clause);
+}
+
+/**
+ * `$sample` — `size` random documents, `ORDER BY rand() LIMIT size`.
+ *
+ * MongoDB's own `$sample` promises nothing about which documents are chosen
+ * beyond "at random" (and, below a size threshold relative to the collection,
+ * that no document repeats) — an ordering by a fresh random value per row and
+ * a limit is exactly that, and needs no special casing beyond going through the
+ * same `Slot.Order`/`Slot.Limit` claims `$sort`/`$limit` already do.
+ */
+function applySample(spec: unknown, builder: SelectBuilder): void {
+	if (
+		typeof spec !== "object" ||
+		spec === null ||
+		Array.isArray(spec) ||
+		typeof (spec as Document).size !== "number"
+	) {
+		throw new MongoCompatibilityError(
+			"$sample takes a document with a numeric `size`.",
+		);
+	}
+
+	builder.claim(Slot.Order);
+	builder.setOrderBy("ORDER BY rand()");
+	builder.claim(Slot.Limit);
+	builder.setLimit(wholeNumber("$sample.size", (spec as Document).size));
 }
 
 function applyLimit(spec: unknown, builder: SelectBuilder): void {
@@ -338,41 +408,59 @@ function applyProject(
 		);
 	}
 
-	const plainId = builder.identityIsPlainField;
-	const fields: string[] = [];
-	let includeId = true;
-	let sawInclusion = false;
+	const idEntry = entries.find(([key]) => key === "_id");
+	const otherEntries = entries.filter(([key]) => key !== "_id");
+	const includeId = idEntry ? !isExcluded(idEntry[1]) : true;
 
-	for (const [key, value] of entries) {
-		if (key === "_id" && isExcluded(value)) {
-			includeId = false;
-			continue;
-		}
-
-		if (isExcluded(value)) {
-			throw new MongoCompatibilityError(
-				`$project cannot exclude ${key}: only _id may be excluded, and mixing exclusions with inclusions is rejected by MongoDB. Use an inclusion projection listing the fields you want.`,
+	if (otherEntries.length === 0) {
+		// `_id` is the only key, and its two values mean opposite things.
+		// `{_id: 1}` is inclusion naming one field, so the answer carries `_id`
+		// and nothing else — reading "no other field is excluded" as "nothing was
+		// projected, keep everything" would answer every field the caller had
+		// just declined to ask for. `{_id: 0}` names nothing to include, so
+		// everything but `_id` survives, which the exclusion path below already
+		// gives it.
+		if (includeId) {
+			const plainId = builder.identityIsPlainField;
+			builder.claim(Slot.Fields);
+			builder.setFields(
+				`${fieldPath("_id", plainId)} AS ${escapeAlias("_id")}`,
 			);
+			return;
 		}
+		projectByExclusion([], false, builder);
+		return;
+	}
 
-		sawInclusion = true;
+	const included = otherEntries.filter(([, v]) => !isExcluded(v));
+	const excluded = otherEntries.filter(([, v]) => isExcluded(v));
 
-		if (value === 1 || value === true) {
-			fields.push(`${fieldPath(key, plainId)} AS ${escapeAlias(key)}`);
-			continue;
-		}
-
-		fields.push(
-			`${compileExpression(value, bind, plainId)} AS ${escapeAlias(key)}`,
+	if (included.length > 0 && excluded.length > 0) {
+		// MongoDB's own rule, `_id` exempted either way: a `$project` is either
+		// wholly inclusion or wholly exclusion.
+		throw new MongoCompatibilityError(
+			`$project cannot exclude ${excluded[0][0]} in an inclusion projection: mixing inclusions and exclusions is rejected by MongoDB, and \`_id\` is the only field exempt from the rule. Use an exclusion projection listing every field to drop, or move ${excluded[0][0]} into a separate stage.`,
 		);
 	}
 
-	if (!sawInclusion) {
-		// `{$project: {_id: 0}}` alone: everything but the identity.
-		builder.claim(Slot.Fields);
-		builder.setFields(`* OMIT ${escapeAlias("_id")}`);
+	if (included.length === 0) {
+		// Pure exclusion — every named field is dropped, `_id` included unless it
+		// was one of them.
+		projectByExclusion(
+			otherEntries.map(([key]) => key),
+			includeId,
+			builder,
+		);
 		return;
 	}
+
+	const plainId = builder.identityIsPlainField;
+	const fields = included.map(([key, value]) => {
+		if (value === 1 || value === true) {
+			return `${fieldPath(key, plainId)} AS ${escapeAlias(key)}`;
+		}
+		return `${compileExpression(value, bind, plainId)} AS ${escapeAlias(key)}`;
+	});
 
 	// `_id` rides along unless suppressed, as it does in MongoDB.
 	if (includeId) {
@@ -381,6 +469,70 @@ function applyProject(
 
 	builder.claim(Slot.Fields);
 	builder.setFields(fields.join(", "));
+}
+
+/**
+ * `$unset` — the field-list form of a pure exclusion, and nothing else.
+ *
+ * MongoDB accepts a single field name or an array of them; there is no document
+ * form, because `$unset` only ever excludes. `_id` is an ordinary name here —
+ * `$unset` carries none of `$project`'s "only `_id` may be excluded on its own"
+ * restriction, since there is no inclusion side for it to conflict with.
+ */
+function applyUnset(spec: unknown, builder: SelectBuilder): void {
+	const fields = typeof spec === "string" ? [spec] : spec;
+	if (
+		!Array.isArray(fields) ||
+		fields.length === 0 ||
+		fields.some((field) => typeof field !== "string" || field.length === 0)
+	) {
+		throw new MongoCompatibilityError(
+			"$unset takes a non-empty field name, or a non-empty array of them.",
+		);
+	}
+
+	const includeId = !fields.includes("_id");
+	projectByExclusion(
+		fields.filter((field) => field !== "_id"),
+		includeId,
+		builder,
+	);
+}
+
+/**
+ * The shared shape behind an exclusion `$project` and `$unset`: keep every
+ * column the rows already have, `OMIT`ting only what was named.
+ *
+ * Marked `reshapes: false` — the one thing that makes this correct rather than
+ * a smaller version of the same bug `$lookup` and `$facet` avoid. Exclusion
+ * does not rename anything: the identity column keeps whatever name it already
+ * has, `id` for a still-stored row or a literal `_id` after an earlier `$group`
+ * or inclusion `$project` — this stage does not care which, it just hides
+ * fields from the one already there. Marking it reshaped regardless was the
+ * actual bug this replaces: `{$project: {_id: 0}}` on a fresh pipeline OMITted
+ * a column literally named `_id`, which does not exist on a stored row (the
+ * column is `id`), so the identity was not excluded at all — it reached the
+ * caller unconverted, under the wrong key, because the decoder was told the row
+ * had been reshaped when it had not.
+ */
+function projectByExclusion(
+	excludeFields: readonly string[],
+	includeId: boolean,
+	builder: SelectBuilder,
+): void {
+	const plainId = builder.identityIsPlainField;
+	const omitted = excludeFields.map((field) => fieldPath(field, plainId));
+	if (!includeId) omitted.push(fieldPath("_id", plainId));
+
+	builder.claim(Slot.Fields);
+	if (omitted.length === 0) {
+		// `$unset` never reaches this — it requires at least one field — but a
+		// `$project` naming only `_id: 1` inside an otherwise-empty exclusion does:
+		// nothing is actually excluded, so the row passes through untouched.
+		builder.setFields("*", false);
+		return;
+	}
+	builder.setFields(`* OMIT ${omitted.join(", ")}`, false);
 }
 
 /**

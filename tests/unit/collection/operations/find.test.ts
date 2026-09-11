@@ -36,17 +36,18 @@ describe("findOne", () => {
 		expect(await findOne(ctx, { _id: "missing" })).toBeNull();
 	});
 
-	test("applies exclusion projection in post-processing", async () => {
+	test("applies exclusion projection via a server-side OMIT", async () => {
 		const { ctx, executor } = makeContext();
-		executor.enqueue([
-			{ id: new RecordId("users", "a"), name: "Alice", secret: "x" },
-		]);
+		// The mocked row is what the server would actually return: `secret` is
+		// already gone, stripped by OMIT rather than by JS post-processing.
+		executor.enqueue([{ id: new RecordId("users", "a"), name: "Alice" }]);
 
 		const doc = await findOne(ctx, undefined, { projection: { secret: 0 } });
 
 		expect(doc).toEqual({ _id: "a", name: "Alice" });
-		// Inclusion path was NOT taken: SQL still selects *.
-		expect(executor.queries[0].sql).toContain("SELECT * FROM");
+		// Inclusion path was NOT taken: SQL still selects *, and OMIT does the
+		// excluding server-side.
+		expect(executor.queries[0].sql).toContain("SELECT * OMIT `secret` FROM");
 	});
 
 	test("respects explicit sort and uses ORDER BY", async () => {
@@ -158,11 +159,13 @@ describe("executeFind", () => {
 		expect(executor.queries[0].sql).toBe("SELECT name, age FROM `users`");
 	});
 
-	test("exclusion projection is applied in JS post-processing", async () => {
+	test("exclusion projection is applied via a server-side OMIT", async () => {
 		const { ctx, executor } = makeContext();
+		// `secret` is already absent from the mocked rows: OMIT strips it on the
+		// server, there is no JS-side field removal left to test here.
 		executor.enqueue([
-			{ id: new RecordId("users", "a"), name: "Alice", secret: "x" },
-			{ id: new RecordId("users", "b"), name: "Bob", secret: "y" },
+			{ id: new RecordId("users", "a"), name: "Alice" },
+			{ id: new RecordId("users", "b"), name: "Bob" },
 		]);
 		const docs = await executeFind(ctx, undefined, {
 			projectionExcludeFields: ["secret"],
@@ -171,17 +174,22 @@ describe("executeFind", () => {
 			{ _id: "a", name: "Alice" },
 			{ _id: "b", name: "Bob" },
 		]);
+		expect(executor.queries[0].sql).toContain("OMIT `secret`");
 	});
 
-	test("projectionIncludeId=false suppresses _id in the post-processed result", async () => {
+	test("projectionIncludeId=false suppresses _id", async () => {
 		const { ctx, executor } = makeContext();
-		executor.enqueue([{ id: new RecordId("users", "a"), name: "Alice" }]);
+		// `id` is already absent from the mocked row: an inclusion column list
+		// that doesn't name it just never selects it, no OMIT needed.
+		executor.enqueue([{ name: "Alice" }]);
 		const docs = await executeFind(ctx, undefined, {
 			projectionColumns: ["name"],
 			projectionIncludeId: false,
 		});
 		expect(docs[0]._id).toBeUndefined();
+		expect("_id" in docs[0]).toBe(false);
 		expect(docs[0].name).toBe("Alice");
+		expect(executor.queries[0].sql).toBe("SELECT name FROM `users`");
 	});
 
 	test("returns [] when the executor returns no rows", async () => {

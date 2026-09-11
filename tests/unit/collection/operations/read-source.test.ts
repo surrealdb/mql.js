@@ -196,7 +196,7 @@ describe("a sort the field list carries", () => {
 		});
 
 		expect(executor.queries[0].sql).toBe(
-			"SELECT * FROM `users` ORDER BY `k` ASC",
+			"SELECT * OMIT `k` FROM `users` ORDER BY `k` ASC",
 		);
 	});
 

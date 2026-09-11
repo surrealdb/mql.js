@@ -9,11 +9,13 @@
  *
  * SurrealQL:
  *   SELECT name, age FROM ...    (inclusion)
- *   SELECT * OMIT name FROM ...  (exclusion)  -- SurrealQL doesn't have OMIT yet
- *     → we fall back to post-processing for exclusion projections
+ *   SELECT * OMIT name FROM ...  (exclusion)
  *
- * For simplicity, this translator handles the inclusion case by returning a
- * field list. Exclusion is handled via a post-processing flag.
+ * This translator only decides *which* fields are included or excluded; the
+ * caller ("find.ts"'s `projectionOmit`) is what turns an exclusion into the
+ * `OMIT` clause, because the identity column's SurrealQL name depends on
+ * where the read sits — `id` for `find()`, possibly a reshaped `_id` for an
+ * aggregation `$project` — and this module has no view of that.
  */
 
 import { MongoInvalidArgumentError } from "../errors.ts";

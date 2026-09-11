@@ -192,6 +192,69 @@ export function registerAggregationScenarios(provider: DatabaseProvider): void {
 					{ _id: "b", revenue: 270 },
 				]);
 			});
+
+			test("$stdDevSamp and $stdDevPop agree with mongod's own statistics", async () => {
+				// The reasoned-about case: SurrealDB only has the sample statistic, so
+				// $stdDevPop is derived by scaling it — sqrt((n-1)/n) — rather than read
+				// off a population function. If that derivation is wrong, this is the
+				// leg that catches it, because the expectation is mongod's own answer,
+				// not a hand-computed one.
+				await sales.insertMany([
+					{ cat: "a", price: 10 },
+					{ cat: "a", price: 20 },
+					{ cat: "a", price: 30 },
+				]);
+				const [group] = await sales
+					.aggregate([
+						{
+							$group: {
+								_id: "$cat",
+								samp: { $stdDevSamp: "$price" },
+								pop: { $stdDevPop: "$price" },
+							},
+						},
+					])
+					.toArray();
+				expect(group?.samp).toBeCloseTo(10);
+				expect(group?.pop).toBeCloseTo(8.16496580927726);
+			});
+
+			test("$maxN and $minN take the n largest and smallest, descending and ascending", async () => {
+				await seed();
+				const [group] = await sales
+					.aggregate([
+						{
+							$group: {
+								_id: "$cat",
+								top: { $maxN: { input: "$price", n: 2 } },
+								bottom: { $minN: { input: "$price", n: 2 } },
+							},
+						},
+						{ $match: { _id: "b" } },
+					])
+					.toArray();
+				expect(group?.top).toEqual([40, 30]);
+				expect(group?.bottom).toEqual([30, 40]);
+			});
+
+			test("$firstN and $lastN follow document order, made deterministic by a $sort before $group", async () => {
+				await seed();
+				const [group] = await sales
+					.aggregate([
+						{ $sort: { price: 1 } },
+						{
+							$group: {
+								_id: "$cat",
+								firsts: { $firstN: { input: "$price", n: 1 } },
+								lasts: { $lastN: { input: "$price", n: 1 } },
+							},
+						},
+						{ $match: { _id: "b" } },
+					])
+					.toArray();
+				expect(group?.firsts).toEqual([30]);
+				expect(group?.lasts).toEqual([40]);
+			});
 		});
 
 		// -----------------------------------------------------------------
@@ -465,6 +528,31 @@ export function registerAggregationScenarios(provider: DatabaseProvider): void {
 						])
 						.toArray(),
 				).toEqual([{ y: 2026, mo: 3, d: 4, wd: 4, yd: 63, h: 5, mi: 6 }]);
+			});
+
+			test("excludes a field other than _id, not just _id", async () => {
+				// The bug this replaces: exclusion only ever OMITted a column literally
+				// named `_id`, which does not exist on a stored row — so excluding
+				// anything else silently did nothing and every field still came back.
+				await sales.insertOne({ cat: "a", sub: "x", price: 10, qty: 2 });
+				const [doc] = await sales
+					.aggregate([{ $project: { price: 0 } }])
+					.toArray();
+				const { _id, ...rest } = doc ?? {};
+				expect(_id).toBeDefined();
+				expect(rest).toEqual({ cat: "a", sub: "x", qty: 2 });
+			});
+
+			test("$unset excludes a field, or a list of them, the same way $project: {f: 0} does", async () => {
+				await sales.insertOne({ cat: "a", sub: "x", price: 10, qty: 2 });
+				expect(
+					withoutId(await sales.aggregate([{ $unset: "price" }]).toArray()),
+				).toEqual([{ cat: "a", sub: "x", qty: 2 }]);
+				expect(
+					withoutId(
+						await sales.aggregate([{ $unset: ["price", "qty"] }]).toArray(),
+					),
+				).toEqual([{ cat: "a", sub: "x" }]);
 			});
 		});
 
@@ -1390,6 +1478,321 @@ export function registerAggregationScenarios(provider: DatabaseProvider): void {
 					{ _id: 0, n: 2, total: 30 },
 					{ _id: 25, n: 2, total: 70 },
 				]);
+			});
+		});
+
+		// -----------------------------------------------------------------
+		// $sample
+		// -----------------------------------------------------------------
+
+		describe("$sample", () => {
+			// $sample draws at random on both sides, so the two engines cannot be
+			// expected to draw the *same* documents — only the property MongoDB
+			// documents: the right count, each one a genuine member of the
+			// collection. Same reasoning the empty-filter replace scenarios use.
+			test("returns the requested number of documents, each a real member of the collection", async () => {
+				await seed();
+				const docs = await sales
+					.aggregate([{ $sample: { size: 2 } }])
+					.toArray();
+				expect(docs.length).toBe(2);
+				const all = await sales.find({}).toArray();
+				const allIds = new Set(all.map((d) => JSON.stringify(d._id)));
+				for (const doc of docs) {
+					expect(allIds.has(JSON.stringify(doc._id))).toBe(true);
+				}
+			});
+
+			test("returns at most as many documents as exist", async () => {
+				await seed();
+				expect(
+					(await sales.aggregate([{ $sample: { size: 100 } }]).toArray())
+						.length,
+				).toBe(4);
+			});
+		});
+
+		// -----------------------------------------------------------------
+		// $out and $merge
+		// -----------------------------------------------------------------
+
+		describe("$out and $merge", () => {
+			test("$out replaces the target collection wholesale", async () => {
+				await seed();
+				const out = db.collection<SaleDoc>("agg_sales_out");
+				await out.deleteMany({});
+				try {
+					await out.insertOne({ cat: "stale" });
+					await sales
+						.aggregate([
+							{ $group: { _id: "$cat", total: { $sum: "$price" } } },
+							{ $sort: { _id: 1 } },
+							{ $out: "agg_sales_out" },
+						])
+						.toArray();
+					expect(
+						withoutId(await out.find({}).sort({ _id: 1 }).toArray()),
+					).toEqual([{ total: 30 }, { total: 70 }]);
+				} finally {
+					await out.deleteMany({});
+				}
+			});
+
+			test("$merge upserts by _id, merging fields with the existing document by default", async () => {
+				await seed();
+				const target = db.collection<SaleDoc>("agg_sales_merge");
+				await target.deleteMany({});
+				try {
+					await target.insertOne({ _id: "a", cat: "existing" });
+					await sales
+						.aggregate([
+							{ $group: { _id: "$cat", total: { $sum: "$price" } } },
+							{ $match: { _id: "a" } },
+							{ $merge: { into: "agg_sales_merge" } },
+						])
+						.toArray();
+					const [merged] = await target.find({ _id: "a" }).toArray();
+					expect(merged).toEqual({ _id: "a", cat: "existing", total: 30 });
+				} finally {
+					await target.deleteMany({});
+				}
+			});
+
+			test("$merge with whenMatched: replace overwrites the whole document", async () => {
+				await seed();
+				const target = db.collection<SaleDoc>("agg_sales_merge_replace");
+				await target.deleteMany({});
+				try {
+					await target.insertOne({ _id: "a", cat: "existing" });
+					await sales
+						.aggregate([
+							{ $group: { _id: "$cat", total: { $sum: "$price" } } },
+							{ $match: { _id: "a" } },
+							{
+								$merge: {
+									into: "agg_sales_merge_replace",
+									whenMatched: "replace",
+								},
+							},
+						])
+						.toArray();
+					const [merged] = await target.find({ _id: "a" }).toArray();
+					expect(merged).toEqual({ _id: "a", total: 30 });
+				} finally {
+					await target.deleteMany({});
+				}
+			});
+		});
+
+		// -----------------------------------------------------------------
+		// $reduce, $objectToArray/$arrayToObject, the $set family
+		// -----------------------------------------------------------------
+
+		describe("$reduce, object conversion and the $set family", () => {
+			test("$reduce folds an array with an initial value", async () => {
+				await sales.insertOne({ cat: "a", tags: ["p", "q", "r"] });
+				const [doc] = await sales
+					.aggregate([
+						{
+							$project: {
+								_id: 0,
+								total: {
+									$reduce: {
+										input: "$tags",
+										initialValue: "",
+										in: { $concat: ["$$value", "$$this"] },
+									},
+								},
+							},
+						},
+					])
+					.toArray();
+				expect(doc?.total).toBe("pqr");
+			});
+
+			test("$objectToArray and $arrayToObject round-trip a document", async () => {
+				await sales.insertOne({ cat: "a", sub: "x" });
+				const [doc] = await sales
+					.aggregate([
+						{
+							$project: {
+								_id: 0,
+								pairs: { $objectToArray: { c: "$cat", s: "$sub" } },
+							},
+						},
+						{
+							$project: { _id: 0, roundTripped: { $arrayToObject: "$pairs" } },
+						},
+					])
+					.toArray();
+				expect(doc?.roundTripped).toEqual({ c: "a", s: "x" });
+			});
+
+			test("the $set family treats arrays as sets: no duplicates, order does not matter", async () => {
+				await sales.insertOne({ cat: "a", tags: ["p", "q"] });
+				const [doc] = await sales
+					.aggregate([
+						{
+							$project: {
+								_id: 0,
+								union: {
+									$setUnion: [
+										["p", "q"],
+										["q", "r"],
+									],
+								},
+								intersection: {
+									$setIntersection: [
+										["p", "q"],
+										["q", "r"],
+									],
+								},
+								difference: {
+									$setDifference: [
+										["p", "q"],
+										["q", "r"],
+									],
+								},
+								equal: {
+									$setEquals: [
+										["p", "q"],
+										["q", "p", "p"],
+									],
+								},
+								subset: { $setIsSubset: [["q"], "$tags"] },
+							},
+						},
+					])
+					.toArray();
+				expect(new Set(doc?.union as string[])).toEqual(
+					new Set(["p", "q", "r"]),
+				);
+				expect(doc?.intersection).toEqual(["q"]);
+				expect(doc?.difference).toEqual(["p"]);
+				expect(doc?.equal).toBe(true);
+				expect(doc?.subset).toBe(true);
+			});
+		});
+
+		// -----------------------------------------------------------------
+		// $dateAdd, $dateDiff, $dateTrunc, $replaceAll, $convert
+		// -----------------------------------------------------------------
+
+		describe("$dateAdd, $dateDiff, $dateTrunc, $replaceAll and $convert", () => {
+			test("$dateAdd shifts forward and back, agreeing with mongod on both directions", async () => {
+				await sales.insertOne({
+					cat: "a",
+					when: new Date("2024-01-01T00:00:00Z"),
+				});
+				expect(
+					await sales
+						.aggregate([
+							{
+								$project: {
+									_id: 0,
+									later: {
+										$dateAdd: { startDate: "$when", unit: "day", amount: 5 },
+									},
+									earlier: {
+										$dateAdd: { startDate: "$when", unit: "day", amount: -5 },
+									},
+								},
+							},
+						])
+						.toArray(),
+				).toEqual([
+					{
+						later: new Date("2024-01-06T00:00:00Z"),
+						earlier: new Date("2023-12-27T00:00:00Z"),
+					},
+				]);
+			});
+
+			test("$dateDiff is signed, and agrees with mongod on the reverse direction", async () => {
+				await sales.insertOne({
+					cat: "a",
+					when: new Date("2024-01-01T00:00:00Z"),
+				});
+				expect(
+					await sales
+						.aggregate([
+							{
+								$project: {
+									_id: 0,
+									forward: {
+										$dateDiff: {
+											startDate: "$when",
+											endDate: new Date("2024-01-03T12:00:00Z"),
+											unit: "hour",
+										},
+									},
+									backward: {
+										$dateDiff: {
+											startDate: new Date("2024-01-03T12:00:00Z"),
+											endDate: "$when",
+											unit: "hour",
+										},
+									},
+								},
+							},
+						])
+						.toArray(),
+				).toEqual([{ forward: 60, backward: -60 }]);
+			});
+
+			test("$dateTrunc floors to the bin boundary rather than rounding to the nearest one", async () => {
+				await sales.insertOne({
+					cat: "a",
+					// Deliberately past the half-hour, where round() and floor() disagree.
+					when: new Date("2024-03-15T13:47:32.500Z"),
+				});
+				expect(
+					await sales
+						.aggregate([
+							{
+								$project: {
+									_id: 0,
+									hour: { $dateTrunc: { date: "$when", unit: "hour" } },
+									bin15: {
+										$dateTrunc: {
+											date: "$when",
+											unit: "minute",
+											binSize: 15,
+										},
+									},
+								},
+							},
+						])
+						.toArray(),
+				).toEqual([
+					{
+						hour: new Date("2024-03-15T13:00:00Z"),
+						bin15: new Date("2024-03-15T13:45:00Z"),
+					},
+				]);
+			});
+
+			test("$replaceAll and $convert", async () => {
+				await sales.insertOne({ cat: "a", sub: "a.b.c", qty: 2 });
+				expect(
+					await sales
+						.aggregate([
+							{
+								$project: {
+									_id: 0,
+									replaced: {
+										$replaceAll: {
+											input: "$sub",
+											find: ".",
+											replacement: "-",
+										},
+									},
+									converted: { $convert: { input: "$qty", to: "string" } },
+								},
+							},
+						])
+						.toArray(),
+				).toEqual([{ replaced: "a-b-c", converted: "2" }]);
 			});
 		});
 
