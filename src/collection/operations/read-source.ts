@@ -72,8 +72,9 @@
  */
 
 import { MongoCompatibilityError } from "../../errors.ts";
-import { escapeIdentifier } from "../../surreal/sql/escape.ts";
+import { escapeFieldPath, escapeIdentifier } from "../../surreal/sql/escape.ts";
 import { statement } from "../../surreal/sql/statement.ts";
+import { SURREAL_ID_FIELD } from "../../translators/filter/id-field.ts";
 import type { SortColumn } from "../../translators/sort.ts";
 
 /**
@@ -225,4 +226,25 @@ export function readProjection(
 ): string {
 	if (columns.length > 0) return columns.join(", ");
 	return omit ? `* OMIT ${omit}` : "*";
+}
+
+/**
+ * The `OMIT` idiom list for an exclusion projection, run server-side.
+ *
+ * A `find()` exclusion used to fetch every field and delete the excluded ones
+ * from the returned document in JavaScript — the field crossed the wire only
+ * to be thrown away. `OMIT` does the same exclusion inside the `SELECT`, which
+ * is also the shape `$lookup` and `$graphLookup` already use for their own
+ * projections; this is `find()` catching up to it rather than a new idea.
+ *
+ * `_id` is `id` here, unconditionally: a read never sees a reshaped pipeline,
+ * so the identity column is always the stored one.
+ */
+export function projectionOmit(
+	excludeFields: readonly string[],
+	includeId: boolean,
+): string {
+	const parts = excludeFields.map((field) => escapeFieldPath(field));
+	if (!includeId) parts.push(escapeIdentifier(SURREAL_ID_FIELD));
+	return parts.join(", ");
 }

@@ -143,6 +143,15 @@ export function recordToDocument<T extends Document = Document>(
 ): T {
 	const { id, ...rest } = record;
 
+	// `id` is absent when a caller excluded `_id` from the projection and the
+	// read omitted the column server-side (`SELECT * OMIT id`) rather than
+	// fetching it and discarding it. Spreading `_id: toMongoId(undefined)` in
+	// that case would leave a `_id: undefined` key sitting on the document —
+	// present to `Object.keys` and to `JSON.stringify`'s object walk, only
+	// invisible in `JSON.stringify`'s *output* — where MongoDB has no `_id` key
+	// at all.
+	if (!("id" in record)) return reviveBsonDocument(rest) as unknown as T;
+
 	return { _id: toMongoId(id), ...reviveBsonDocument(rest) } as unknown as T;
 }
 

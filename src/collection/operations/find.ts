@@ -11,15 +11,20 @@ import { translateFilter } from "../../translators/filter.ts";
 import { translateProjection } from "../../translators/projection.ts";
 import { sortColumns, translateSort } from "../../translators/sort.ts";
 import type { Document, Filter, FindOptions, Sort } from "../../types.ts";
-import { applyProjection, recordToDocument } from "../../utils/id.ts";
+import { recordToDocument } from "../../utils/id.ts";
 import { applyUndefinedPolicy } from "../../utils/undefined.ts";
 import {
 	filterOptionsFor,
 	type OperationContext,
 } from "../operation-context.ts";
 import { resolveOperationPlan } from "../operation-options.ts";
-import { readProjection, readSource } from "./read-source.ts";
+import { projectionOmit, readProjection, readSource } from "./read-source.ts";
 import { selectRows } from "./select-rows.ts";
+
+/** Combine a `$near` subquery's own omit with the caller's excluded fields. */
+function combineOmit(sourceOmit: string, projectionOmitClause: string): string {
+	return [sourceOmit, projectionOmitClause].filter(Boolean).join(", ");
+}
 
 export async function findOne<TSchema extends Document>(
 	ctx: OperationContext,
@@ -33,6 +38,7 @@ export async function findOne<TSchema extends Document>(
 		await filterOptionsFor(ctx, filter as Document),
 	);
 	const proj = translateProjection(options?.projection);
+	const omit = projectionOmit(proj.excludeFields, proj.includeId);
 	const source = readSource(ctx.escapedTable, clause, plan.indexHint, {
 		sortClause: translateSort(options?.sort),
 		sortFields: sortColumns(options?.sort),
@@ -43,7 +49,7 @@ export async function findOne<TSchema extends Document>(
 	});
 
 	const sql = statement(
-		`SELECT ${readProjection(proj.columns, source.omit)} FROM ${source.from}`,
+		`SELECT ${readProjection(proj.columns, combineOmit(source.omit, omit))} FROM ${source.from}`,
 		source.indexHint,
 		source.where && `WHERE ${source.where}`,
 		source.orderBy,
@@ -55,11 +61,7 @@ export async function findOne<TSchema extends Document>(
 
 	if (rows.length === 0) return null;
 
-	let doc = recordToDocument<TSchema>(rows[0]);
-	if (proj.isExclusion || !proj.includeId) {
-		doc = applyProjection(doc, proj.excludeFields, proj.includeId) as TSchema;
-	}
-	return doc;
+	return recordToDocument<TSchema>(rows[0]);
 }
 
 /** Options resolved by the cursor before delegating to `executeFind`. */
@@ -92,6 +94,10 @@ export async function executeFind<TSchema extends Document>(
 		await filterOptionsFor(ctx, filter),
 	);
 	const columns = state.projectionColumns ?? [];
+	const omit = projectionOmit(
+		state.projectionExcludeFields ?? [],
+		state.projectionIncludeId ?? true,
+	);
 	const source = readSource(ctx.escapedTable, clause, plan.indexHint, {
 		sortClause: translateSort(state.sort),
 		sortFields: sortColumns(state.sort),
@@ -102,7 +108,7 @@ export async function executeFind<TSchema extends Document>(
 	});
 
 	const sql = statement(
-		`SELECT ${readProjection(columns, source.omit)} FROM ${source.from}`,
+		`SELECT ${readProjection(columns, combineOmit(source.omit, omit))} FROM ${source.from}`,
 		source.indexHint,
 		source.where && `WHERE ${source.where}`,
 		source.orderBy,
@@ -113,23 +119,5 @@ export async function executeFind<TSchema extends Document>(
 
 	const rows = await selectRows(ctx, sql, bindings);
 
-	let docs = rows.map((r) => recordToDocument<TSchema>(r));
-
-	const needsPostProcess =
-		(state.projectionExcludeFields &&
-			state.projectionExcludeFields.length > 0) ||
-		state.projectionIncludeId === false;
-
-	if (needsPostProcess) {
-		docs = docs.map(
-			(d) =>
-				applyProjection(
-					d,
-					state.projectionExcludeFields ?? [],
-					state.projectionIncludeId ?? true,
-				) as TSchema,
-		);
-	}
-
-	return docs;
+	return rows.map((r) => recordToDocument<TSchema>(r));
 }

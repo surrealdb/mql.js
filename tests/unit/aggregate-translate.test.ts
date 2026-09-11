@@ -158,8 +158,70 @@ describe("$group", () => {
 
 	test("an unimplemented accumulator is refused by name", () => {
 		expect(() =>
-			sql([{ $group: { _id: null, d: { $stdDevPop: "$price" } } }]),
-		).toThrow(/\$stdDevPop is not implemented/);
+			sql([{ $group: { _id: null, d: { $mergeObjects: "$price" } } }]),
+		).toThrow(/\$mergeObjects is not implemented/);
+	});
+
+	test("$stdDevSamp is math::stddev, which is already the sample statistic", () => {
+		expect(
+			sql([{ $group: { _id: null, d: { $stdDevSamp: "$price" } } }]),
+		).toContain("math::stddev(`price`) AS `d`");
+	});
+
+	test("$stdDevPop scales math::stddev by sqrt((n-1)/n), since SurrealDB has no population variant", () => {
+		const statement = sql([
+			{ $group: { _id: null, d: { $stdDevPop: "$price" } } },
+		]);
+		expect(statement).toContain("math::stddev(`price`)");
+		expect(statement).toContain("<float>(count() - 1)");
+		expect(statement).toContain("<float>count()");
+	});
+
+	test("$firstN/$lastN/$maxN/$minN take {input, n}", () => {
+		expect(
+			sql([
+				{ $group: { _id: null, d: { $firstN: { input: "$price", n: 3 } } } },
+			]),
+		).toContain("array::slice(array::group(`price`), 0, 3) AS `d`");
+		expect(
+			sql([
+				{ $group: { _id: null, d: { $lastN: { input: "$price", n: 3 } } } },
+			]),
+		).toContain("array::slice(array::group(`price`), -3) AS `d`");
+		expect(
+			sql([{ $group: { _id: null, d: { $maxN: { input: "$price", n: 3 } } } }]),
+		).toContain(
+			"array::slice(array::reverse(array::sort(array::group(`price`))), 0, 3) AS `d`",
+		);
+		expect(
+			sql([{ $group: { _id: null, d: { $minN: { input: "$price", n: 3 } } } }]),
+		).toContain(
+			"array::slice(array::sort(array::group(`price`)), 0, 3) AS `d`",
+		);
+	});
+
+	test("$firstN refuses a spec that isn't {input, n}", () => {
+		expect(() =>
+			sql([{ $group: { _id: null, d: { $firstN: "$price" } } }]),
+		).toThrow(/takes a document of \{input, n\}/);
+	});
+
+	test("$firstN refuses a non-positive or fractional n", () => {
+		expect(() =>
+			sql([
+				{ $group: { _id: null, d: { $firstN: { input: "$price", n: 0 } } } },
+			]),
+		).toThrow(/n must be a positive whole number/);
+		expect(() =>
+			sql([
+				{
+					$group: {
+						_id: null,
+						d: { $firstN: { input: "$price", n: 1.5 } },
+					},
+				},
+			]),
+		).toThrow(/n must be a positive whole number/);
 	});
 
 	test("a non-accumulator field is refused", () => {
@@ -723,6 +785,265 @@ describe("$dateToString", () => {
 	});
 });
 
+describe("$reduce", () => {
+	test("prepends initialValue and folds with a two-parameter closure", () => {
+		const statement = sql([
+			{
+				$project: {
+					d: {
+						$reduce: {
+							input: "$arr",
+							initialValue: 0,
+							in: { $add: ["$$value", "$$this"] },
+						},
+					},
+				},
+			},
+		]);
+		expect(statement).toContain(
+			"array::reduce(array::concat([$a0], `arr`), |$mql_v0, $mql_v1| ($mql_v0 + $mql_v1))",
+		);
+	});
+
+	test("requires input, initialValue and in", () => {
+		expect(() =>
+			sql([{ $project: { d: { $reduce: { input: "$arr" } } } }]),
+		).toThrow(/requires `input`, `initialValue` and `in`/);
+	});
+});
+
+describe("$objectToArray and $arrayToObject", () => {
+	test("$objectToArray maps object::entries' pairs into {k, v} docs", () => {
+		expect(sql([{ $project: { d: { $objectToArray: "$obj" } } }])).toContain(
+			"array::map(object::entries(`obj`), |$mql_v0| { k: $mql_v0[0], v: $mql_v0[1] })",
+		);
+	});
+
+	test("$arrayToObject accepts either shape at runtime via type::is_array", () => {
+		expect(sql([{ $project: { d: { $arrayToObject: "$pairs" } } }])).toContain(
+			"object::from_entries(array::map(`pairs`, |$mql_v0| IF type::is_array($mql_v0) THEN $mql_v0 ELSE [$mql_v0.k, $mql_v0.v] END))",
+		);
+	});
+});
+
+describe("the $set family", () => {
+	test("$setUnion folds array::union, which already de-duplicates", () => {
+		expect(sql([{ $project: { d: { $setUnion: ["$a", "$b"] } } }])).toContain(
+			"array::union(`a`, `b`)",
+		);
+	});
+
+	test("$setUnion of one array is just array::distinct", () => {
+		expect(sql([{ $project: { d: { $setUnion: ["$a"] } } }])).toContain(
+			"array::distinct(`a`)",
+		);
+	});
+
+	test("$setIntersection folds array::intersect", () => {
+		expect(
+			sql([{ $project: { d: { $setIntersection: ["$a", "$b", "$c"] } } }]),
+		).toContain("array::intersect(array::intersect(`a`, `b`), `c`)");
+	});
+
+	test("$setDifference wraps array::complement in array::distinct", () => {
+		expect(
+			sql([{ $project: { d: { $setDifference: ["$a", "$b"] } } }]),
+		).toContain("array::distinct(array::complement(`a`, `b`))");
+	});
+
+	test("$setDifference takes exactly two arrays", () => {
+		expect(() =>
+			sql([{ $project: { d: { $setDifference: ["$a"] } } }]),
+		).toThrow(/exactly 2 arguments/);
+	});
+
+	test("$setEquals compares sorted, distinct elements", () => {
+		expect(sql([{ $project: { d: { $setEquals: ["$a", "$b"] } } }])).toContain(
+			"(array::sort(array::distinct(`a`)) = array::sort(array::distinct(`b`)))",
+		);
+	});
+
+	test("$setIsSubset reads as b CONTAINSALL a", () => {
+		expect(
+			sql([{ $project: { d: { $setIsSubset: ["$a", "$b"] } } }]),
+		).toContain("(`b` CONTAINSALL `a`)");
+	});
+});
+
+describe("$dateAdd, $dateDiff and $dateTrunc", () => {
+	test("$dateAdd branches on the sign, since durations are unsigned", () => {
+		const statement = sql([
+			{
+				$project: {
+					d: { $dateAdd: { startDate: "$when", unit: "hour", amount: 5 } },
+				},
+			},
+		]);
+		expect(statement).toContain("IF $a0 >= 0 THEN");
+		expect(statement).toContain("<duration>(<string>($a0)");
+		expect(statement).toContain("<duration>(<string>(math::abs($a0))");
+	});
+
+	test("$dateAdd refuses a calendar unit and names why", () => {
+		expect(() =>
+			sql([
+				{
+					$project: {
+						d: { $dateAdd: { startDate: "$when", unit: "month", amount: 1 } },
+					},
+				},
+			]),
+		).toThrow(/length in days varies/);
+	});
+
+	test("$dateAdd refuses timezone", () => {
+		expect(() =>
+			sql([
+				{
+					$project: {
+						d: {
+							$dateAdd: {
+								startDate: "$when",
+								unit: "hour",
+								amount: 1,
+								timezone: "UTC",
+							},
+						},
+					},
+				},
+			]),
+		).toThrow(/timezone` is not supported/);
+	});
+
+	test("$dateDiff branches on direction and negates duration::<unit> for the reverse", () => {
+		const statement = sql([
+			{
+				$project: {
+					d: {
+						$dateDiff: { startDate: "$a", endDate: "$b", unit: "hour" },
+					},
+				},
+			},
+		]);
+		expect(statement).toContain(
+			"(IF `b` >= `a` THEN duration::hours(`b` - `a`) ELSE -duration::hours(`a` - `b`) END) AS `d`",
+		);
+	});
+
+	test("$dateDiff refuses week, since it needs startOfWeek to mean anything", () => {
+		expect(() =>
+			sql([
+				{
+					$project: {
+						d: { $dateDiff: { startDate: "$a", endDate: "$b", unit: "week" } },
+					},
+				},
+			]),
+		).toThrow(/needs startOfWeek/);
+	});
+
+	test("$dateTrunc floors rather than rounds", () => {
+		expect(
+			sql([
+				{ $project: { d: { $dateTrunc: { date: "$when", unit: "hour" } } } },
+			]),
+		).toContain("time::floor(`when`, <duration>(<string>(1) + $a0))");
+	});
+
+	test("$dateTrunc's binSize multiplies the unit", () => {
+		expect(
+			sql([
+				{
+					$project: {
+						d: {
+							$dateTrunc: {
+								date: "$when",
+								unit: "minute",
+								binSize: 15,
+							},
+						},
+					},
+				},
+			]),
+		).toContain("<duration>(<string>($a0) + $a1)");
+	});
+
+	test("$dateTrunc refuses startOfWeek", () => {
+		expect(() =>
+			sql([
+				{
+					$project: {
+						d: {
+							$dateTrunc: {
+								date: "$when",
+								unit: "hour",
+								startOfWeek: "monday",
+							},
+						},
+					},
+				},
+			]),
+		).toThrow(/startOfWeek` is not supported/);
+	});
+});
+
+describe("$replaceAll", () => {
+	test("maps directly to string::replace", () => {
+		expect(
+			sql([
+				{
+					$project: {
+						d: {
+							$replaceAll: { input: "$s", find: ".", replacement: "-" },
+						},
+					},
+				},
+			]),
+		).toContain("string::replace(`s`, $a0, $a1)");
+	});
+
+	test("requires input, find and replacement", () => {
+		expect(() =>
+			sql([{ $project: { d: { $replaceAll: { input: "$s" } } } }]),
+		).toThrow(/requires `input`, `find` and `replacement`/);
+	});
+});
+
+describe("$convert", () => {
+	test("maps to string, bool, int and double the same casts $toString etc. use", () => {
+		expect(
+			sql([{ $project: { d: { $convert: { input: "$s", to: "int" } } } }]),
+		).toContain("<int>(`s`)");
+	});
+
+	test("refuses a target with no cast this driver implements", () => {
+		expect(() =>
+			sql([{ $project: { d: { $convert: { input: "$s", to: "objectId" } } } }]),
+		).toThrow(/has no SurrealQL cast this driver implements/);
+	});
+
+	test("refuses onError and onNull, since SurrealQL has no try/catch", () => {
+		expect(() =>
+			sql([
+				{
+					$project: {
+						d: { $convert: { input: "$s", to: "int", onError: 0 } },
+					},
+				},
+			]),
+		).toThrow(/onError` is not supported/);
+		expect(() =>
+			sql([
+				{
+					$project: {
+						d: { $convert: { input: "$s", to: "int", onNull: 0 } },
+					},
+				},
+			]),
+		).toThrow(/onNull` is not supported/);
+	});
+});
+
 describe("$let", () => {
 	test("substitutes the variable into the body", () => {
 		expect(
@@ -802,11 +1123,126 @@ describe("$bucket", () => {
 	});
 });
 
+describe("$project and $unset exclusion", () => {
+	test("excludes any number of fields, keeping _id", () => {
+		const statement = sql([{ $project: { secret: 0, extra: 0 } }]);
+		expect(statement).toBe("SELECT * OMIT `secret`, `extra` FROM `sales`");
+	});
+
+	test("excludes _id alongside other fields", () => {
+		expect(sql([{ $project: { secret: 0, _id: 0 } }])).toBe(
+			"SELECT * OMIT `secret`, id FROM `sales`",
+		);
+	});
+
+	test("{$project: {_id: 0}} alone omits only the identity", () => {
+		expect(sql([{ $project: { _id: 0 } }])).toBe(
+			"SELECT * OMIT id FROM `sales`",
+		);
+	});
+
+	test("{$project: {_id: 1}} alone is inclusion of _id only, not *", () => {
+		// The case the exclusion branch must not swallow: naming only `_id` with a
+		// truthy value means "the document is just `_id`", not "nothing was
+		// excluded, keep everything".
+		expect(sql([{ $project: { _id: 1 } }])).toBe(
+			"SELECT id AS `_id` FROM `sales`",
+		);
+	});
+
+	test("does not reshape: _id keeps meaning the record identity afterwards", () => {
+		// The bug this replaces: exclusion used to be marked reshaped
+		// unconditionally, so `{$project: {_id: 0}}` OMITted a column called
+		// `_id` — which does not exist on a stored row, the column is `id` — and
+		// excluded nothing at all.
+		const statement = sql([{ $project: { secret: 0 } }, { $sort: { _id: 1 } }]);
+		expect(statement).toContain("ORDER BY id ASC");
+	});
+
+	test("$unset takes a single field name", () => {
+		expect(sql([{ $unset: "secret" }])).toBe(
+			"SELECT * OMIT `secret` FROM `sales`",
+		);
+	});
+
+	test("$unset takes an array of field names, _id included", () => {
+		expect(sql([{ $unset: ["secret", "_id"] }])).toBe(
+			"SELECT * OMIT `secret`, id FROM `sales`",
+		);
+	});
+
+	test("$unset does not reshape either", () => {
+		expect(sql([{ $unset: "secret" }, { $sort: { _id: 1 } }])).toContain(
+			"ORDER BY id ASC",
+		);
+	});
+
+	test("an exclusion after $group omits the literal _id column, not id", () => {
+		const statement = sql([
+			{ $group: { _id: "$cat", n: { $sum: 1 } } },
+			{ $unset: "n" },
+		]);
+		expect(statement).toContain("OMIT `n`");
+	});
+
+	test("$project still refuses mixing inclusion and exclusion", () => {
+		expect(() => sql([{ $project: { name: 1, secret: 0 } }])).toThrow(
+			/cannot exclude secret in an inclusion projection/,
+		);
+	});
+
+	test("$unset refuses an empty array, and an empty string", () => {
+		expect(() => sql([{ $unset: [] }])).toThrow(/non-empty field name/);
+		expect(() => sql([{ $unset: [""] }])).toThrow(/non-empty field name/);
+	});
+});
+
+describe("$sample", () => {
+	test("orders by rand() and limits", () => {
+		expect(sql([{ $sample: { size: 5 } }])).toBe(
+			"SELECT * FROM `sales` ORDER BY rand() LIMIT 5",
+		);
+	});
+
+	test("refuses a non-numeric size", () => {
+		expect(() => sql([{ $sample: { size: "5" } }])).toThrow(
+			/document with a numeric `size`/,
+		);
+	});
+});
+
+describe("$out and $merge, at the translator", () => {
+	// $out/$merge write, and the translator never touches the executor — they are
+	// handled one layer up, in `executeAggregate`, which strips a *trailing*
+	// $out/$merge before the translator ever sees it. Calling the translator
+	// directly, as `sql()` does, therefore never reaches a case where either
+	// stage can succeed: from its own point of view every stage must be handled
+	// or refused, and there is no SQL a $out/$merge-terminated pipeline compiles
+	// to. What these tests pin is the one thing the translator can say about
+	// them: naming the stage and the position rule, which is real regardless of
+	// where the stage sits — see `tests/integration/aggregate.test.ts` for the
+	// stage actually working when it is last.
+	test("both are named in the supported list", () => {
+		expect(SUPPORTED_STAGES).toContain("$out");
+		expect(SUPPORTED_STAGES).toContain("$merge");
+	});
+
+	test("refuses $out before a later stage, naming the rule", () => {
+		expect(() => sql([{ $out: "copy" }, { $match: {} }])).toThrow(
+			/\$out must be the final stage/,
+		);
+	});
+
+	test("refuses $merge before a later stage", () => {
+		expect(() => sql([{ $merge: "copy" }, { $match: {} }])).toThrow(
+			/\$merge must be the final stage/,
+		);
+	});
+});
+
 describe("what is refused", () => {
 	test.each([
 		["$unionWith", { $unionWith: "other" }],
-		["$out", { $out: "other" }],
-		["$merge", { $merge: {} }],
 		["$setWindowFields", { $setWindowFields: {} }],
 	])("%s raises naming the stage", (name, stage) => {
 		expect(() => sql([stage as Document])).toThrow(
@@ -826,8 +1262,12 @@ describe("what is refused", () => {
 		);
 	});
 
-	test("$project cannot exclude a field other than _id", () => {
-		expect(() => sql([{ $project: { cat: 0 } }])).toThrow(/cannot exclude cat/);
+	test("$project mixing an inclusion and an exclusion is refused", () => {
+		// A pure exclusion is fine now — see the "$project and $unset exclusion"
+		// block below. What MongoDB actually forbids is mixing the two modes.
+		expect(() => sql([{ $project: { name: 1, cat: 0 } }])).toThrow(
+			/cannot exclude cat in an inclusion projection/,
+		);
 	});
 
 	test("a stage document naming two stages is refused", () => {
