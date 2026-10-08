@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { RecordId } from "surrealdb";
+import { DateTime, RecordId } from "surrealdb";
 import { MongoCompatibilityError } from "../../../src/errors.ts";
 import { ObjectId } from "../../../src/object-id.ts";
 import {
@@ -103,6 +103,70 @@ describe("encodeBsonValue", () => {
 		expect(encodeBsonValue(HEX)).toBe(HEX);
 		expect(encodeBsonValue(null)).toBe(null);
 		expect(encodeBsonValue(undefined)).toBe(undefined);
+	});
+});
+
+describe("encodeBsonValue – a Date", () => {
+	/**
+	 * `new Date(-1)` split with JavaScript's `%` is `[-1, -1000000]`: a negative
+	 * nanosecond count, which SurrealDB cannot decode — and the request then never
+	 * answers. The nanoseconds must be what is left after flooring the seconds.
+	 */
+	const tuple = (date: Date) => {
+		const encoded = encodeBsonValue(date);
+		expect(encoded).toBeInstanceOf(DateTime);
+		const [seconds, nanoseconds] = (encoded as DateTime).toCompact() as [
+			bigint,
+			bigint,
+		];
+		return [Number(seconds), Number(nanoseconds)];
+	};
+
+	test("a fractional second before the epoch has non-negative nanoseconds", () => {
+		expect(tuple(new Date(-1))).toEqual([-1, 999_000_000]);
+		expect(tuple(new Date(-1500))).toEqual([-2, 500_000_000]);
+		expect(tuple(new Date(-3_600_123))).toEqual([-3601, 877_000_000]);
+		expect(tuple(new Date("1960-06-15T12:30:45.123Z"))).toEqual([
+			-301_231_755, 123_000_000,
+		]);
+	});
+
+	test("the instant is preserved exactly", () => {
+		for (const ms of [-1, -999, -1001, -86_400_001, -62_135_596_799_999]) {
+			const encoded = encodeBsonValue(new Date(ms)) as DateTime;
+			expect(encoded.toDate().getTime()).toBe(ms);
+		}
+	});
+
+	test("an instant the SDK already encodes correctly is left to it", () => {
+		for (const ms of [0, 1, 1500, Date.now(), -1000, -86_400_000]) {
+			const date = new Date(ms);
+			expect(encodeBsonValue(date)).toBe(date);
+		}
+	});
+
+	test("the ends of SurrealDB's range are accepted, and one past either is refused", () => {
+		const min = Date.UTC(-262143, 0, 1);
+		const max = Date.UTC(262143, 0, 1) - 1;
+		expect(() => encodeBsonValue(new Date(min))).not.toThrow();
+		expect(() => encodeBsonValue(new Date(max))).not.toThrow();
+		expect(() => encodeBsonValue(new Date(min - 1))).toThrow(
+			MongoCompatibilityError,
+		);
+		expect(() => encodeBsonValue(new Date(max + 1))).toThrow(
+			MongoCompatibilityError,
+		);
+	});
+
+	test("the refusal says why, since the alternative was a request that never returned", () => {
+		expect(() => encodeBsonValue(new Date(8.64e15))).toThrow(
+			/outside the range SurrealDB can store/,
+		);
+	});
+
+	test("an invalid Date is left for the SDK to refuse", () => {
+		const invalid = new Date(Number.NaN);
+		expect(encodeBsonValue(invalid)).toBe(invalid);
 	});
 });
 

@@ -239,24 +239,37 @@ async function defineOneIndex(
 		? `${statement.sql}; ${readBack}`
 		: `BEGIN; ${statement.sql}; ${readBack}; COMMIT`;
 
-	try {
-		await ctx.executor.query(sql, statement.bindings);
-	} catch (err) {
-		if (!isRolledBackTransaction(err)) throw err;
+	// Per-statement outcomes rather than `query`, which throws one error for the
+	// whole block. Which error that is has changed: the SDK's `collect()` used to
+	// throw the first frame that failed, and a statement discarded by its
+	// neighbour's failure is that frame ("not executed"); since 2.1.0 it throws the
+	// *root cause*, which is the read-back's own parse failure — so the check below
+	// on the message stopped matching, and the caller got a raw conversion error in
+	// place of this refusal. The outcomes are the same on both.
+	const outcomes = await ctx.executor.queryEach(sql, statement.bindings);
+	const failed = outcomes.find((outcome) => !outcome.ok);
+	if (!failed) return;
 
-		// SurrealDB reports a rolled-back statement as "not executed" and attaches
-		// the real cause to a *later* frame, which the SDK does not surface, so this
-		// deliberately does not claim to know which of the two statements failed.
-		// The precise message for the names known to do it comes from
-		// `assertIndexableColumns`, before any of this runs.
-		const columns = definition.columns
-			.map((column) => `'${column}'`)
-			.join(", ");
-		throw new MongoCompatibilityError(
-			`An index on ${columns} could not be created: SurrealDB either rejected the definition or could not read it back. No index was created and the collection is unchanged.`,
-			{ cause: err },
-		);
-	}
+	// The first failure is the one that happened. When it is the rollback message
+	// the definition applied and a later statement then failed, so the definition
+	// was discarded with it; anything else — a taken index name, insufficient
+	// permissions — is the real answer and reaches the caller as itself.
+	if (!isRolledBackTransaction(failed.error)) throw failed.error;
+
+	// The real cause is on a *later* frame, the first one that is not itself a
+	// rollback. It is kept as `cause` rather than named in the message, because
+	// this deliberately does not claim to know which of the two statements failed.
+	// The precise message for the names known to do it comes from
+	// `assertIndexableColumns`, before any of this runs.
+	const root =
+		outcomes.find(
+			(outcome) => !outcome.ok && !isRolledBackTransaction(outcome.error),
+		)?.error ?? failed.error;
+	const columns = definition.columns.map((column) => `'${column}'`).join(", ");
+	throw new MongoCompatibilityError(
+		`An index on ${columns} could not be created: SurrealDB either rejected the definition or could not read it back. No index was created and the collection is unchanged.`,
+		{ cause: root },
+	);
 }
 
 /**

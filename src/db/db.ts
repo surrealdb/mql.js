@@ -23,6 +23,11 @@ import type { AggregationCursor } from "../cursor/aggregation-cursor.ts";
 import { ListCollectionsCursor } from "../cursor/list-collections-cursor.ts";
 import type { ClientSession } from "../session/client-session.ts";
 import { sessionExecutor } from "../session/client-session.ts";
+import {
+	abortable,
+	assertAbortSignal,
+	throwIfAborted,
+} from "../surreal/abortable.ts";
 import type { QueryExecutor } from "../surreal/query-executor.ts";
 import type {
 	AggregateOptions,
@@ -99,8 +104,11 @@ export class Db {
 		options?: ListCollectionsOptions,
 	): ListCollectionsCursor {
 		assertSupportedOptions(options);
-		return new ListCollectionsCursor(async () =>
-			listCollections(await this.executor(options), filter),
+		assertAbortSignal(options?.signal);
+		return new ListCollectionsCursor(
+			async () =>
+				listCollections(await this.abortableExecutor(options), filter),
+			options?.signal,
 		);
 	}
 
@@ -254,6 +262,9 @@ export class Db {
 		scope: CommandScope,
 	): Promise<Document> {
 		assertSupportedOptions(options);
+		// Before anything is routed: `ping` and others answer without a statement,
+		// so the executor would never be asked about this signal.
+		throwIfAborted(options?.signal);
 		return runCommand(this, command, options, scope);
 	}
 
@@ -264,9 +275,11 @@ export class Db {
 	 * session-aware executor the `Db` methods use.
 	 */
 	_commandExecutor(
-		options: { readonly session?: ClientSession } | undefined,
+		options:
+			| { readonly session?: ClientSession; readonly signal?: AbortSignal }
+			| undefined,
 	): Promise<QueryExecutor> {
-		return this.executor(options);
+		return this.abortableExecutor(options);
 	}
 
 	/**
@@ -304,6 +317,20 @@ export class Db {
 		options: { readonly session?: ClientSession } | undefined,
 	): Promise<QueryExecutor> {
 		return sessionExecutor(options?.session, this._client, this.databaseName);
+	}
+
+	/**
+	 * `executor`, scoped to the caller's `signal` where the operation takes one:
+	 * `command()` and `listCollections()`, as in MongoDB.
+	 */
+	private async abortableExecutor(
+		options:
+			| { readonly session?: ClientSession; readonly signal?: AbortSignal }
+			| undefined,
+	): Promise<QueryExecutor> {
+		const executor = await this.executor(options);
+		if (options?.signal === undefined) return executor;
+		return abortable(executor, options.signal, executor !== this._connection);
 	}
 }
 

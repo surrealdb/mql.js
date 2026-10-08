@@ -181,26 +181,22 @@ describe("$group", () => {
 		expect(statement).toContain("<float>count()");
 	});
 
-	test("$firstN/$lastN/$maxN/$minN take {input, n}", () => {
-		expect(
-			sql([
-				{ $group: { _id: null, d: { $firstN: { input: "$price", n: 3 } } } },
-			]),
-		).toContain("array::slice(array::group(`price`), 0, 3) AS `d`");
-		expect(
-			sql([
-				{ $group: { _id: null, d: { $lastN: { input: "$price", n: 3 } } } },
-			]),
-		).toContain("array::slice(array::group(`price`), -3) AS `d`");
-		expect(
-			sql([{ $group: { _id: null, d: { $maxN: { input: "$price", n: 3 } } } }]),
-		).toContain(
-			"array::slice(array::reverse(array::sort(array::group(`price`))), 0, 3) AS `d`",
+	test("$firstN/$lastN/$maxN/$minN take {input, n}, and derive from the collected list", () => {
+		const derived = (spec: Document) => {
+			const statement = sql([{ $group: { _id: null, d: spec } }]);
+			return statement.slice(0, statement.indexOf(" FROM (SELECT"));
+		};
+		expect(derived({ $firstN: { input: "$price", n: 3 } })).toContain(
+			"array::slice(`__mql_collected_0`, 0, 3) AS `d`",
 		);
-		expect(
-			sql([{ $group: { _id: null, d: { $minN: { input: "$price", n: 3 } } } }]),
-		).toContain(
-			"array::slice(array::sort(array::group(`price`)), 0, 3) AS `d`",
+		expect(derived({ $lastN: { input: "$price", n: 3 } })).toContain(
+			"array::slice(`__mql_collected_0`, -3) AS `d`",
+		);
+		expect(derived({ $maxN: { input: "$price", n: 3 } })).toContain(
+			"array::slice(array::reverse(array::sort(`__mql_collected_0`)), 0, 3) AS `d`",
+		);
+		expect(derived({ $minN: { input: "$price", n: 3 } })).toContain(
+			"array::slice(array::sort(`__mql_collected_0`), 0, 3) AS `d`",
 		);
 	});
 
@@ -238,6 +234,144 @@ describe("$group", () => {
 		expect(() => sql([{ $group: { n: { $sum: 1 } } }])).toThrow(
 			/requires an _id/,
 		);
+	});
+});
+
+describe("collecting accumulators", () => {
+	/**
+	 * SurrealDB 3.4 made `array::group` mean "the unique values", where it had
+	 * meant "every value, one per row". A `$push` built on it lost every repeat
+	 * and `$last` answered with the last *distinct* value, on `nightly` only —
+	 * which is how it was found. None of these may depend on it.
+	 */
+	test("none of them is built on array::group", () => {
+		for (const spec of [
+			{ $push: "$sub" },
+			{ $first: "$sub" },
+			{ $last: "$sub" },
+			{ $firstN: { input: "$sub", n: 2 } },
+			{ $lastN: { input: "$sub", n: 2 } },
+			{ $maxN: { input: "$price", n: 2 } },
+			{ $minN: { input: "$price", n: 2 } },
+		]) {
+			expect(sql([{ $group: { _id: "$cat", v: spec } }])).not.toContain(
+				"array::group",
+			);
+		}
+	});
+
+	test("$push is the bare projection, in the grouped statement itself", () => {
+		expect(
+			sql([
+				{ $group: { _id: "$cat", all: { $push: "$sub" }, n: { $sum: 1 } } },
+			]),
+		).toBe(
+			"SELECT `cat` AS `_id`, `sub` AS `all`, count() AS `n` FROM `sales` GROUP BY `_id`",
+		);
+	});
+
+	test("$last needs an enclosing statement, since a scalar function beside a bare projection runs per row", () => {
+		expect(
+			sql([
+				{ $group: { _id: "$cat", n: { $sum: 1 }, last: { $last: "$sub" } } },
+			]),
+		).toBe(
+			"SELECT `_id`, `n`, array::last(`__mql_collected_0`) AS `last` FROM (SELECT `cat` AS `_id`, count() AS `n`, `sub` AS `__mql_collected_0` FROM `sales` GROUP BY `_id`)",
+		);
+	});
+
+	test("stages after the $group fold into the enclosing statement, as they did into the grouped one", () => {
+		const statement = sql([
+			{ $group: { _id: "$cat", n: { $sum: 1 }, last: { $last: "$sub" } } },
+			{ $sort: { n: -1 } },
+			{ $limit: 3 },
+		]);
+		expect(
+			depth([
+				{ $group: { _id: "$cat", n: { $sum: 1 }, last: { $last: "$sub" } } },
+				{ $sort: { n: -1 } },
+				{ $limit: 3 },
+			]),
+		).toBe(2);
+		expect(statement).toEndWith("ORDER BY `n` DESC LIMIT 3");
+	});
+
+	test("a group of only aggregates and $push stays one statement", () => {
+		expect(
+			depth([
+				{
+					$group: {
+						_id: "$cat",
+						n: { $sum: 1 },
+						all: { $push: "$sub" },
+						uniq: { $addToSet: "$sub" },
+					},
+				},
+			]),
+		).toBe(1);
+	});
+
+	test("every collecting accumulator in one group shares the one enclosing statement", () => {
+		expect(
+			depth([
+				{
+					$group: {
+						_id: "$cat",
+						first: { $first: "$sub" },
+						last: { $last: "$sub" },
+						top: { $maxN: { input: "$price", n: 2 } },
+					},
+				},
+			]),
+		).toBe(2);
+	});
+
+	test("an operand the row cannot influence is repeated once per row", () => {
+		// SurrealDB 3.4 reports such a projection as its single value where earlier
+		// servers reported one per row, so a bare projection would answer `1` on one
+		// and `[1, 1, 1]` on the other.
+		const statement = sql([
+			{
+				$group: {
+					_id: "$cat",
+					ones: { $push: 1 },
+					now: { $push: "$$NOW" },
+					text: { $push: { $literal: "$notAField" } },
+				},
+			},
+		]);
+		expect(statement).toContain("array::repeat($a0, count()) AS `ones`");
+		expect(statement).toContain("array::repeat(time::now(), count()) AS `now`");
+		expect(statement).toContain("array::repeat($a1, count()) AS `text`");
+	});
+
+	test("an operand that reads a field anywhere inside it is projected bare", () => {
+		expect(
+			sql([
+				{
+					$group: {
+						_id: "$cat",
+						v: { $push: { $add: ["$price", 1] } },
+						w: { $push: { $cond: [{ $gt: ["$price", 5] }, "hi", "lo"] } },
+					},
+				},
+			]),
+		).not.toContain("array::repeat");
+	});
+
+	test("the collected list's name cannot collide with a field the caller named", () => {
+		const statement = sql([
+			{
+				$group: {
+					_id: "$cat",
+					__mql_collected_0: { $sum: 1 },
+					last: { $last: "$sub" },
+				},
+			},
+		]);
+		expect(statement).toContain("`sub` AS `___mql_collected_0`");
+		expect(statement).toContain("array::last(`___mql_collected_0`) AS `last`");
+		expect(statement).toContain("count() AS `__mql_collected_0`");
 	});
 });
 

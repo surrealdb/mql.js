@@ -60,12 +60,22 @@ export function scopeStatement(
 type Dispatch = (
 	sql: string,
 	bindings?: Record<string, unknown>,
+	signal?: AbortSignal,
 ) => Promise<readonly unknown[]>;
+
+/** Send a statement and stream the rows of the statement at `frame`. */
+type DispatchRows = (
+	sql: string,
+	bindings: Record<string, unknown> | undefined,
+	frame: number,
+	signal?: AbortSignal,
+) => AsyncIterableIterator<unknown>;
 
 /** Send a statement and return what each of its statements did. */
 type DispatchEach = (
 	sql: string,
 	bindings?: Record<string, unknown>,
+	signal?: AbortSignal,
 ) => Promise<readonly StatementOutcome[]>;
 
 /**
@@ -79,18 +89,28 @@ export abstract class ScopedExecutor implements QueryExecutor {
 	/** The database statements are addressed at; `undefined` for the connected one. */
 	protected readonly database: string | undefined;
 
-	constructor(database: string | undefined) {
+	/** The signal that stops every statement this executor sends, if it has one. */
+	protected readonly signal: AbortSignal | undefined;
+
+	constructor(database: string | undefined, signal?: AbortSignal) {
 		this.database = database;
+		this.signal = signal;
 	}
 
 	abstract get serverVersion(): string | undefined;
 
 	abstract close(): Promise<void>;
 
-	/** Send `sql` as given, returning one entry per statement in it. */
+	/**
+	 * Send `sql` as given, returning one entry per statement in it.
+	 *
+	 * `signal` stops it: the reply never comes and the promise rejects with the
+	 * signal's reason.
+	 */
 	protected abstract dispatch(
 		sql: string,
 		bindings?: Record<string, unknown>,
+		signal?: AbortSignal,
 	): Promise<readonly unknown[]>;
 
 	/**
@@ -100,15 +120,43 @@ export abstract class ScopedExecutor implements QueryExecutor {
 	protected abstract dispatchEach(
 		sql: string,
 		bindings?: Record<string, unknown>,
+		signal?: AbortSignal,
 	): Promise<readonly StatementOutcome[]>;
+
+	/**
+	 * Send `sql` as given and stream the rows of the statement at `frame`.
+	 *
+	 * Handed the frame rather than left to guess it, for the reason `query` reads
+	 * one frame and not the first: a database prefix is a statement of its own, and
+	 * a streamed reply labels every row with the statement it came from.
+	 */
+	protected abstract dispatchRows(
+		sql: string,
+		bindings: Record<string, unknown> | undefined,
+		frame: number,
+		signal?: AbortSignal,
+	): AsyncIterableIterator<unknown>;
 
 	async query<T = unknown>(
 		sql: string,
 		bindings?: Record<string, unknown>,
 	): Promise<T> {
 		const scoped = scopeStatement(sql, this.database);
-		const frames = await this.dispatch(scoped.sql, bindings);
+		const frames = await this.dispatch(scoped.sql, bindings, this.signal);
 		return frames[scoped.frame] as T;
+	}
+
+	queryRows<T = unknown>(
+		sql: string,
+		bindings?: Record<string, unknown>,
+	): AsyncIterableIterator<T> {
+		const scoped = scopeStatement(sql, this.database);
+		return this.dispatchRows(
+			scoped.sql,
+			bindings,
+			scoped.frame,
+			this.signal,
+		) as AsyncIterableIterator<T>;
 	}
 
 	async queryLast<T = unknown>(
@@ -122,7 +170,7 @@ export abstract class ScopedExecutor implements QueryExecutor {
 		// and the statement that reads it answers with empty joins — which is what
 		// MongoDB answers for a collection it has never seen. A failure that the last
 		// statement cannot absorb reaches it, and is thrown below.
-		const outcomes = await this.dispatchEach(scoped.sql, bindings);
+		const outcomes = await this.dispatchEach(scoped.sql, bindings, this.signal);
 		// The prefix only ever goes in front, so the caller's last statement is the
 		// last frame however the statement was scoped.
 		const last = outcomes[outcomes.length - 1];
@@ -135,7 +183,7 @@ export abstract class ScopedExecutor implements QueryExecutor {
 		bindings?: Record<string, unknown>,
 	): Promise<readonly StatementOutcome[]> {
 		const scoped = scopeStatement(sql, this.database);
-		const outcomes = await this.dispatchEach(scoped.sql, bindings);
+		const outcomes = await this.dispatchEach(scoped.sql, bindings, this.signal);
 		// The prefix's own outcome belongs to this class, not to the caller — the
 		// same reason `query` reads one frame rather than the first.
 		return outcomes.slice(scoped.frame);
@@ -151,11 +199,27 @@ export abstract class ScopedExecutor implements QueryExecutor {
 	 */
 	forDatabase(database: string | undefined): QueryExecutor {
 		if (database === this.database) return this;
+		return this.view(database, this.signal);
+	}
+
+	withSignal(signal: AbortSignal): QueryExecutor {
+		if (signal === this.signal) return this;
+		return this.view(this.database, signal);
+	}
+
+	/** This executor's connection, addressing `database` and stopped by `signal`. */
+	private view(
+		database: string | undefined,
+		signal: AbortSignal | undefined,
+	): QueryExecutor {
 		return new ScopedView(
 			this,
-			(sql, bindings) => this.dispatch(sql, bindings),
-			(sql, bindings) => this.dispatchEach(sql, bindings),
+			(sql, bindings, stop) => this.dispatch(sql, bindings, stop),
+			(sql, bindings, stop) => this.dispatchEach(sql, bindings, stop),
+			(sql, bindings, frame, stop) =>
+				this.dispatchRows(sql, bindings, frame, stop),
 			database,
+			signal,
 		);
 	}
 }
@@ -173,17 +237,21 @@ class ScopedView extends ScopedExecutor {
 	private readonly root: QueryExecutor;
 	private readonly send: Dispatch;
 	private readonly sendEach: DispatchEach;
+	private readonly sendRows: DispatchRows;
 
 	constructor(
 		root: QueryExecutor,
 		send: Dispatch,
 		sendEach: DispatchEach,
+		sendRows: DispatchRows,
 		database: string | undefined,
+		signal: AbortSignal | undefined,
 	) {
-		super(database);
+		super(database, signal);
 		this.root = root;
 		this.send = send;
 		this.sendEach = sendEach;
+		this.sendRows = sendRows;
 	}
 
 	get serverVersion(): string | undefined {
@@ -195,15 +263,26 @@ class ScopedView extends ScopedExecutor {
 	protected dispatch(
 		sql: string,
 		bindings?: Record<string, unknown>,
+		signal?: AbortSignal,
 	): Promise<readonly unknown[]> {
-		return this.send(sql, bindings);
+		return this.send(sql, bindings, signal);
 	}
 
 	protected dispatchEach(
 		sql: string,
 		bindings?: Record<string, unknown>,
+		signal?: AbortSignal,
 	): Promise<readonly StatementOutcome[]> {
-		return this.sendEach(sql, bindings);
+		return this.sendEach(sql, bindings, signal);
+	}
+
+	protected dispatchRows(
+		sql: string,
+		bindings: Record<string, unknown> | undefined,
+		frame: number,
+		signal?: AbortSignal,
+	): AsyncIterableIterator<unknown> {
+		return this.sendRows(sql, bindings, frame, signal);
 	}
 
 	async close(): Promise<void> {

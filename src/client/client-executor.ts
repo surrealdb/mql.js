@@ -14,6 +14,7 @@ import type {
 	QueryExecutor,
 	StatementOutcome,
 } from "../surreal/query-executor.ts";
+import { deferredRows } from "../surreal/row-stream.ts";
 
 /** What the executor needs from the client that owns it. */
 export interface ConnectionGate {
@@ -27,7 +28,12 @@ export class ClientExecutor implements QueryExecutor {
 	constructor(
 		private readonly inner: QueryExecutor,
 		private readonly gate: ConnectionGate,
+		private readonly signal: AbortSignal | undefined = undefined,
 	) {}
+
+	withSignal(signal: AbortSignal): QueryExecutor {
+		return new ClientExecutor(this.inner.withSignal(signal), this.gate, signal);
+	}
 
 	get serverVersion(): string | undefined {
 		return this.inner.serverVersion;
@@ -57,8 +63,23 @@ export class ClientExecutor implements QueryExecutor {
 		return this.inner.queryEach(sql, bindings);
 	}
 
+	queryRows<T = unknown>(
+		sql: string,
+		bindings?: Record<string, unknown>,
+	): AsyncIterableIterator<T> {
+		// The precondition is asynchronous and the iterator is not, so it is
+		// checked on the first read — which is also when a query would be sent.
+		return deferredRows(async () => {
+			await this.assertUsable();
+			return this.inner.queryRows<T>(sql, bindings);
+		});
+	}
+
 	/** The precondition both ways in are subject to. */
 	private async assertUsable(): Promise<void> {
+		// Before anything is looked at, and before a connection is made for it: an
+		// operation whose signal has already aborted does nothing at all.
+		this.signal?.throwIfAborted();
 		if (this.gate.isClosed()) {
 			throw new MongoNotConnectedError(
 				"Client must be connected before running operations",

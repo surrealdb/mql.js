@@ -55,6 +55,25 @@ import { parseRecordIdString } from "../utils/id.ts";
 import { objectIdFromPrintedForm } from "./bson-codec.ts";
 import { unescapeSurrealString } from "./sql/escape.ts";
 
+/**
+ * Whether `err` is a server turning a stream away because the connection already
+ * has as many open as it allows (32 by default, from SurrealDB 3.3.0).
+ *
+ * Matched on the message, because that is all that tells it from the other
+ * validation failures: the server gives it the same kind as any other bad
+ * parameter. It is refused outright, before anything runs — the server's own
+ * test pins that one frame comes back and it is this error — which is what makes
+ * it safe to answer the request some other way. Nothing else is read from the
+ * message, and a reworded one degrades to a cursor that fails at the cap rather
+ * than to one that runs a query twice.
+ */
+export function isStreamCapRefusal(err: unknown): boolean {
+	return (
+		err instanceof ValidationError &&
+		err.message.includes("Too many concurrent streaming queries")
+	);
+}
+
 /** Normalise an unknown thrown value to a string message. */
 function messageOf(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);

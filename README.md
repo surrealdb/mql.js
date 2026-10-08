@@ -62,12 +62,18 @@ npm install @surrealdb/mql
 ### Requirements
 
 **SurrealDB 3.0.0 or newer.** Every supported minor is tested in CI against its
-latest patch release (currently 3.0.5, 3.1.5 and 3.2.4), plus SurrealDB
+latest patch release (currently 3.0.5, 3.1.6, 3.2.5 and 3.3.2), plus SurrealDB
 `nightly` as an early-warning signal.
 
 **Node 20.19.0 or newer**, matching the MongoDB driver whose API this tracks. CI
 packs the tarball and consumes it from Node 20.19.0, 22 and 24, in both an ESM
 and a CommonJS project.
+
+Connecting over `ws://` or `wss://` — the default — needs a global `WebSocket`,
+which Node has from **22**; on 20.10 and later it is behind
+`node --experimental-websocket`. On a Node that has neither, `connect()` refuses
+by name and says so, rather than failing obscurely. `http://` and `https://` need
+none, but have no sessions, no transactions and no query streaming.
 
 **TypeScript 5.3 or newer**, if you use the types. The public API includes
 `await using session = client.startSession()`, so the declarations reference
@@ -480,6 +486,7 @@ no effect, or rejected with a reason. Nothing is accepted and silently dropped.
 | Option | Behaviour | Notes |
 | --- | --- | --- |
 | `maxTimeMS`, `timeoutMS` | honoured | becomes a SurrealQL `TIMEOUT`; the tightest of the two and the client's `timeoutMS` binds. `0` means no limit, and a value above MongoDB's 32-bit ceiling is refused as MongoDB refuses it. Not available on index operations — SurrealDB's DDL takes no `TIMEOUT` clause |
+| `signal` | honoured | on `find`, `findOne`, `countDocuments`, `aggregate`, `Db.command` and `listCollections` — the operations MongoDB's driver takes one on — and the cursors three of them return. See [Aborting an operation](#aborting-an-operation). Refused inside a transaction |
 | `hint` | honoured | becomes `WITH INDEX <name>`, or `WITH NOINDEX` for `{$natural: …}`. Validated against the collection's real indexes first: SurrealDB *silently ignores* a `WITH INDEX` naming an index that does not exist, so an unmatched hint raises `2` (`BadValue`) as MongoDB does rather than scanning unnoticed |
 | `sort` | honoured | on a `find`/`findOne` it becomes the statement's `ORDER BY`; on a `findOneAnd*`/`replaceOne` it orders the subquery that names the record being written to, which is what decides *which* document is modified. An inclusion `projection` must name every field the sort orders by — see [Sorting by a field an inclusion projection omits](#sorting-by-a-field-an-inclusion-projection-omits) |
 | `projection` | honoured | a field list in the `SELECT` for `find`/`findOne`, applied to the returned document for the `findOneAnd*` methods. `_id` is included unless the projection suppresses it. An inclusion projection combined with a `sort` on a field it does not name is refused — see [Sorting by a field an inclusion projection omits](#sorting-by-a-field-an-inclusion-projection-omits) |
@@ -488,7 +495,7 @@ no effect, or rejected with a reason. Nothing is accepted and silently dropped.
 | `comment` | accepted, no effect | SurrealDB has no query-level comment mechanism, and a comment cannot change the answer |
 | `readPreference`, `readConcern` of `local`/`majority`/`available` | accepted, no effect | reading the only node is at least what they ask for |
 | `writeConcern`, other than `w: 0` and `w > 1` | accepted, no effect | every write waits for SurrealDB to acknowledge |
-| `batchSize`, `maxAwaitTimeMS`, `noCursorTimeout`, `allowDiskUse`, `allowPartialResults`, `oplogReplay` | accepted, no effect | server-cursor and sharding mechanics; results are materialised in one round trip |
+| `batchSize`, `maxAwaitTimeMS`, `noCursorTimeout`, `allowDiskUse`, `allowPartialResults`, `oplogReplay` | accepted, no effect | server-cursor and sharding mechanics. There is no batch size to honour: `toArray()` is one response, and a cursor read a document at a time is [streamed](#streaming-and-leaving-early) in frames the server sizes itself |
 | `ordered` | honoured | decides what an `insertMany` keeps when part of the batch is refused — see [A batch insert that partly fails](#a-batch-insert-that-partly-fails) |
 | `session` | honoured | while the session has a transaction in progress, the operation's statements run inside it and are committed or rolled back with it — see [Sessions and transactions](#sessions-and-transactions) |
 | `readConcern` of `snapshot` | accepted, no effect | asks that every read come from one consistent point in time, which is what a SurrealDB transaction is: a statement is a transaction, and a read inside an open one does not observe a commit another connection made after it began |
@@ -712,6 +719,11 @@ SurrealDB's `datetime` is nanosecond-precise, and a `Date` is not: a datetime
 written by SurrealDB itself — or by any other client — with sub-millisecond
 digits arrives here **rounded to the millisecond**. That is the deliberate trade
 for handing back a real `Date`, which is the only date type MongoDB has.
+
+A `Date` before 1970 is stored exactly, milliseconds included. The range is
+narrower than JavaScript's: a datetime spans the years **−262143 to 262142**,
+where a `Date` reaches ±275760, and a `Date` outside it is refused with a
+`MongoCompatibilityError` naming the range.
 
 ### The ObjectId class
 
@@ -1145,7 +1157,7 @@ const byCategory = await orders.aggregate([
 
 The pipeline becomes as few `SELECT`s as its stages allow. SurrealQL is not a sequence of steps — it is one statement with clause slots evaluated in a fixed order — so consecutive stages are folded into one statement while each lands in a slot the statement has not passed, and a subquery opens when one does not. The example above is two: the `$match` after the `$group` is a `HAVING`, and everything else rides in the inner statement.
 
-You do not have to think about that, except when reading a slow query. What is worth knowing is that `$group` → `$sort` → `$limit` is a single statement, which is the shape most pipelines end in.
+You do not have to think about that, except when reading a slow query. What is worth knowing is that `$group` → `$sort` → `$limit` is a single statement, which is the shape most pipelines end in. The exception is a `$group` using `$first`, `$last`, `$firstN`, `$lastN`, `$maxN` or `$minN`: those need the group's values as a list before they can pick from it, so the grouped statement is wrapped in a second one that does the picking, and whatever follows folds into the wrapper — two statements instead of one, with nothing else about the pipeline changing. `$push` and the aggregate accumulators stay in the grouped statement.
 
 ### Stages
 
@@ -1292,7 +1304,7 @@ So `$unwind` filters first, keeping exactly what MongoDB keeps: a non-empty arra
 
 ## Cursors
 
-The `find()` method returns a `FindCursor` that is lazy -- no query is executed until results are consumed.
+The `find()` method returns a `FindCursor` that is lazy -- no query is executed until results are consumed. `aggregate()` returns an `AggregationCursor` that behaves the same way.
 
 ### Chaining
 
@@ -1334,6 +1346,48 @@ const names = await cursor
   .map((doc) => ({ fullName: doc.name }))
   .toArray();
 ```
+
+### Aborting an operation
+
+The six operations MongoDB's driver takes an `AbortSignal` on — `find`, `findOne`, `countDocuments`, `aggregate`, `Db.command` and `listCollections` — take one here, and behave as MongoDB's do:
+
+```typescript
+const controller = new AbortController();
+const cursor = users.find({}, { signal: controller.signal });
+
+await cursor.next();
+controller.abort(new Error("enough"));
+await cursor.next(); // rejects with that Error — the signal's own reason, untouched
+```
+
+- A signal that has **already aborted** sends nothing and rejects with its reason; one that aborts **mid-operation** rejects with it too. The reason is the signal's own, so an `AbortSignal.timeout(ms)` reads as its `TimeoutError` and a bare `controller.abort()` as the platform's `AbortError`.
+- A **cursor closes the moment its signal aborts**, with nobody reading, so what it holds is released. Every read after that rejects with the signal's reason rather than "cursor exhausted", which is how a caller can tell their own abort ended it. A `for await` is told as soon as the body returns, not handed the next document.
+- What the server does about it depends on the server. From SurrealDB 3.3.0 over a WebSocket the query is cancelled there too and its later statements do not run, though a statement already running is not undone. Anywhere else — an older server, or HTTP — the caller stops waiting and the statement **runs to its end**. Either way the connection is left usable.
+- A signal that is not an `AbortSignal` is refused with `MongoInvalidArgumentError`, at the call.
+- **A signal inside a transaction is refused** with `MongoCompatibilityError`. A statement already sent to a transaction cannot be taken back, so the caller would be told the operation was aborted while it went on to run and be committed. Abort the transaction instead.
+- Writes take no signal in MongoDB's types, and ignore one here.
+
+### Streaming, and leaving early
+
+`toArray()` reads the whole result in one response, which is the cheapest way to get all of it. `next()`, `hasNext()`, `forEach()` and `for await` read a document at a time, and for those the rows are **streamed**: from SurrealDB 3.3.0 the server sends them as it finds them, so the first document is in hand before the last has been found, and a `for await` over a large collection never holds the whole of it. On an older server, or over HTTP, the same calls answer in one piece, and what you can observe — the documents, their order, the errors — is identical.
+
+What streaming changes is leaving. A consumer that stops early stops the server producing the rest:
+
+```typescript
+for await (const doc of users.find({})) {
+  if (doc.name === "Ada") break; // the server is told to stop; the connection stays usable
+}
+
+await users.find({}).forEach((doc) => doc.age < 30); // returning false leaves too
+```
+
+`break`, an exception out of the loop, `forEach` returning `false` and `close()` all release the stream. A cursor you drop without any of those holds its stream until the server has produced everything, and the rows it has not yet read are held in memory meanwhile — there is no way to pause the server over a WebSocket — so close a cursor you are not going to finish.
+
+Three things to know:
+
+- **A failure can follow documents you already have.** A statement that times out or fails partway through a scan is thrown from the read that reaches it, after the rows before it were handed over, as a MongoDB `getMore` can fail after earlier batches. `toArray()` has no such case, because it answers all or nothing.
+- **There is no limit on open cursors**, as in MongoDB, although the server allows 32 open streams per connection. A cursor beyond that is read whole instead of being refused — it works, it just isn't streamed.
+- **Inside a transaction a cursor is read whole**, from memory, through the transaction's own queue. A half-read stream would hold everything behind it, including the commit, so it never streams. A pipeline that ends in `$out` or `$merge`, or one containing `$lookup` or `$facet`, is also read whole: those bind their intermediate rows to variables ahead of the statement that reads them, and the frames before the last are working, not results.
 
 ### Lifecycle
 

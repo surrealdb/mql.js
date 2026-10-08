@@ -20,10 +20,11 @@
  *     lifecycle mistake, so the spent handle is never dialled again.
  */
 
-import { MongoTransactionError } from "../errors.ts";
+import { MongoCompatibilityError, MongoTransactionError } from "../errors.ts";
 import { ScopedExecutor } from "./database-scope.ts";
 import { mapQueryError } from "./error-mapper.ts";
 import type { QueryExecutor, StatementOutcome } from "./query-executor.ts";
+import { bufferedRows } from "./row-stream.ts";
 import { responseOutcomes } from "./surrealdb-executor.ts";
 
 /**
@@ -121,6 +122,42 @@ export class TransactionExecutor
 			} catch (err) {
 				throw mapQueryError(err);
 			}
+		});
+	}
+
+	/**
+	 * A transaction's statements cannot be stopped by a signal, so it is refused.
+	 *
+	 * The caller would stop waiting and the statement would carry on inside the
+	 * transaction — still queued ahead of the commit, still applying — leaving
+	 * them with an abort error and a transaction in a state they have no way to
+	 * read. MongoDB's own answer to an abandoned operation in a transaction is to
+	 * abort the transaction, which is the caller's to do.
+	 */
+	withSignal(_signal: AbortSignal): QueryExecutor {
+		throw new MongoCompatibilityError(
+			"The 'signal' option is not supported inside a transaction: a statement already sent to a transaction cannot be stopped, so the caller would be told it was aborted while it went on to run. Abort the transaction instead.",
+		);
+	}
+
+	/**
+	 * Read the rows whole, through the same serialised queue as everything else,
+	 * and hand them out from memory.
+	 *
+	 * A streamed read would be the one operation that could hold the queue open: a
+	 * cursor nobody finishes would stall the commit behind it, and a commit that
+	 * lands mid-stream commits only the part of the query that had run. Reading it
+	 * through `dispatch` means a transaction's cursor sees exactly what an
+	 * ordinary read in it would.
+	 */
+	protected dispatchRows(
+		sql: string,
+		bindings: Record<string, unknown> | undefined,
+		frame: number,
+	): AsyncIterableIterator<unknown> {
+		return bufferedRows(async () => {
+			const frames = await this.dispatch(sql, bindings);
+			return (frames[frame] as unknown[] | undefined) ?? [];
 		});
 	}
 

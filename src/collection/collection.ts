@@ -9,13 +9,19 @@
  */
 
 import { AggregationCursor } from "../cursor/aggregation-cursor.ts";
-import type { FindCursorState, FindRunner } from "../cursor/find-cursor.ts";
+import type {
+	FindCursorState,
+	FindRunner,
+	FindStreamer,
+} from "../cursor/find-cursor.ts";
 import { FindCursor } from "../cursor/find-cursor.ts";
 import { ListIndexesCursor } from "../cursor/list-indexes-cursor.ts";
 import { listTableNames } from "../db/database-operations.ts";
 import type { Db } from "../db/db.ts";
 import { MongoAPIError } from "../errors.ts";
 import { sessionExecutor } from "../session/client-session.ts";
+import { abortable, assertAbortSignal } from "../surreal/abortable.ts";
+import { deferredRows } from "../surreal/row-stream.ts";
 import { escapeIdentifier } from "../surreal/sql/escape.ts";
 import {
 	resolveDialect,
@@ -78,7 +84,7 @@ import { IndexRegistry } from "./index-registry.ts";
 import type { OperationContext } from "./operation-context.ts";
 import type { AnyOperationOptions } from "./operation-options.ts";
 import { assertSupportedOptions } from "./operation-options.ts";
-import { executeAggregate } from "./operations/aggregate.ts";
+import { executeAggregate, streamAggregate } from "./operations/aggregate.ts";
 import { bulkWrite as bulkWriteOp } from "./operations/bulk-write.ts";
 import {
 	countDocuments as countDocumentsOp,
@@ -92,6 +98,7 @@ import { distinct as distinctOp } from "./operations/distinct.ts";
 import {
 	executeFind as executeFindOp,
 	findOne as findOneOp,
+	streamFind as streamFindOp,
 } from "./operations/find.ts";
 import {
 	findOneAndDelete as findOneAndDeleteOp,
@@ -182,6 +189,25 @@ export class Collection<TSchema extends Document = Document> {
 		};
 	}
 
+	/**
+	 * `context`, for an operation that takes MongoDB's `signal`: the same context
+	 * with its executor scoped to the caller's signal.
+	 *
+	 * Only `find`, `findOne`, `countDocuments` and `aggregate` use it, because
+	 * those are the ones whose MongoDB options carry a `signal`. Every other
+	 * operation goes through `context` and ignores one, as it did.
+	 */
+	private async abortableContext(
+		options: (AnyOperationOptions & { signal?: AbortSignal }) | undefined,
+	): Promise<OperationContext> {
+		const ctx = await this.context(options);
+		if (options?.signal === undefined) return ctx;
+		return {
+			...ctx,
+			executor: abortable(ctx.executor, options.signal, ctx.inTransaction),
+		};
+	}
+
 	private resolveDialect(): SurrealDialect {
 		return resolveDialect(this._db._client.serverVersion);
 	}
@@ -209,6 +235,7 @@ export class Collection<TSchema extends Document = Document> {
 	// -----------------------------------------------------------------------
 
 	find(filter?: Filter<TSchema>, options?: FindOptions): FindCursor<TSchema> {
+		assertAbortSignal(options?.signal);
 		// The cursor owns `sort`/`limit`/`skip`/`projection`, since its chaining
 		// methods can still change them; everything else the caller passed is
 		// captured here and reaches the query untouched.
@@ -219,7 +246,7 @@ export class Collection<TSchema extends Document = Document> {
 		// also what lets a rewound cursor re-read the transaction's current view.
 		const runner: FindRunner<TSchema> = async (state: FindCursorState) =>
 			executeFindOp<TSchema>(
-				await this.context(options),
+				await this.abortableContext(options),
 				state.filter,
 				{
 					sort: state.sort,
@@ -231,10 +258,30 @@ export class Collection<TSchema extends Document = Document> {
 				},
 				options,
 			);
+		// Read a document at a time, the same query, resolved the same way — and just
+		// as lazily, so nothing is looked up until the first document is asked for.
+		const streamer: FindStreamer<TSchema> = (state: FindCursorState) =>
+			deferredRows(async () =>
+				streamFindOp<TSchema>(
+					await this.abortableContext(options),
+					state.filter,
+					{
+						sort: state.sort,
+						limit: state.limit,
+						skip: state.skip,
+						projectionColumns: state.projectionColumns,
+						projectionExcludeFields: state.projectionExcludeFields,
+						projectionIncludeId: state.projectionIncludeId,
+					},
+					options,
+				),
+			);
 		return new FindCursor<TSchema>(
 			runner as FindRunner<Document>,
 			filter as Document,
 			options,
+			undefined,
+			streamer as FindStreamer<Document>,
 		);
 	}
 
@@ -242,7 +289,11 @@ export class Collection<TSchema extends Document = Document> {
 		filter?: Filter<TSchema>,
 		options?: FindOptions,
 	): Promise<TSchema | null> {
-		return findOneOp<TSchema>(await this.context(options), filter, options);
+		return findOneOp<TSchema>(
+			await this.abortableContext(options),
+			filter,
+			options,
+		);
 	}
 
 	// -----------------------------------------------------------------------
@@ -308,7 +359,11 @@ export class Collection<TSchema extends Document = Document> {
 		filter?: Filter<TSchema>,
 		options?: CountDocumentsOptions,
 	): Promise<number> {
-		return countDocumentsOp(await this.context(options), filter, options);
+		return countDocumentsOp(
+			await this.abortableContext(options),
+			filter,
+			options,
+		);
 	}
 
 	async estimatedDocumentCount(
@@ -582,8 +637,23 @@ export class Collection<TSchema extends Document = Document> {
 		options?: AggregateOptions,
 	): AggregationCursor<T> {
 		assertSupportedOptions(options);
-		return new AggregationCursor<T>(async () =>
-			executeAggregate<T>(await this.context(options), pipeline, options),
+		assertAbortSignal(options?.signal);
+		return new AggregationCursor<T>(
+			async () =>
+				executeAggregate<T>(
+					await this.abortableContext(options),
+					pipeline,
+					options,
+				),
+			() =>
+				deferredRows(async () =>
+					streamAggregate<T>(
+						await this.abortableContext(options),
+						pipeline,
+						options,
+					),
+				),
+			options?.signal,
 		);
 	}
 

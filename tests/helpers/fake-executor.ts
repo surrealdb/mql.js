@@ -10,6 +10,7 @@ import type {
 	QueryExecutor,
 	StatementOutcome,
 } from "../../src/surreal/query-executor.ts";
+import { bufferedRows } from "../../src/surreal/row-stream.ts";
 
 export interface RecordedQuery {
 	sql: string;
@@ -20,6 +21,8 @@ export class FakeQueryExecutor implements QueryExecutor {
 	serverVersion: string | undefined = undefined;
 
 	readonly queries: RecordedQuery[] = [];
+	/** Every signal an operation scoped this executor to, in order. */
+	readonly signals: AbortSignal[] = [];
 	closed = false;
 
 	/** Queued responses returned in order from `query()`. */
@@ -63,6 +66,16 @@ export class FakeQueryExecutor implements QueryExecutor {
 		);
 	}
 
+	/**
+	 * Records the signal and answers as this same executor, so a test sees both
+	 * that an operation scoped itself to its caller's signal and what it then
+	 * sent. Stopping a statement is the SDK adapter's job, and is tested there.
+	 */
+	withSignal(signal: AbortSignal): this {
+		this.signals.push(signal);
+		return this;
+	}
+
 	/** Configure a hook that fires for every `query()` call. */
 	onQuery(fn: (q: RecordedQuery) => void): this {
 		this.queryHook = fn;
@@ -92,6 +105,20 @@ export class FakeQueryExecutor implements QueryExecutor {
 			return undefined as T;
 		}
 		return this.responses.shift() as T;
+	}
+
+	/**
+	 * The next queued response, as rows. Recorded as a query when it is first read,
+	 * not when it is built, because that is when a real executor would send it.
+	 */
+	queryRows<T = unknown>(
+		sql: string,
+		bindings?: Record<string, unknown>,
+	): AsyncIterableIterator<T> {
+		return bufferedRows<T>(async () => {
+			const rows = await this.query<T[] | undefined>(sql, bindings);
+			return rows ?? [];
+		});
 	}
 
 	async queryEach(
