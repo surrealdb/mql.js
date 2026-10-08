@@ -767,6 +767,485 @@ export function registerCrudScenarios(provider: DatabaseProvider): void {
 		});
 
 		// -----------------------------------------------------------------
+		// ORDERING OPERATORS IN $pull AND arrayFilters
+		// -----------------------------------------------------------------
+
+		describe("ordering operators in $pull and arrayFilters", () => {
+			// A `$pull` condition and an `arrayFilters` entry are query predicates
+			// applied to an array element, so they match within one BSON type as a
+			// filter's do, and an element that is itself an array matches when any of
+			// its own elements does. As a bare `>` they removed the string "x" for
+			// `{$pull: {v: {$gt: 5}}}`, because SurrealQL ranks every string above every
+			// number. Every expectation is what a real `mongod` leaves in the array.
+
+			interface ArrayDoc {
+				[key: string]: unknown;
+				_id?: unknown;
+				k: string;
+				v?: unknown;
+			}
+
+			let docs: MongoLikeCollection<ArrayDoc>;
+
+			beforeEach(async () => {
+				docs = db.collection<ArrayDoc>("array_ranges");
+				try {
+					await docs.deleteMany({});
+				} catch {
+					// Some engines throw on missing tables; ignore.
+				}
+			});
+
+			const afterUpdate = async (
+				v: unknown,
+				update: MongoLikeFilter,
+				options?: { arrayFilters?: MongoLikeFilter[] },
+			) => {
+				await docs.deleteMany({});
+				await docs.insertOne({ k: "a", v });
+				await docs.updateOne({ k: "a" }, update, options);
+				return (await docs.findOne({ k: "a" }))?.v;
+			};
+
+			const pulled = (v: unknown, condition: MongoLikeFilter) =>
+				afterUpdate(v, { $pull: { v: condition } });
+
+			describe("$pull of an element", () => {
+				const MIXED = [
+					1,
+					10,
+					"x",
+					null,
+					true,
+					20,
+					7.5,
+					new Date(5000),
+					[7, 8],
+					{ a: 9 },
+				];
+				const CASES: [string, MongoLikeFilter, unknown[]][] = [
+					["$gt 5", { $gt: 5 }, [1, "x", null, true, new Date(5000), { a: 9 }]],
+					[
+						"$gte 10",
+						{ $gte: 10 },
+						[1, "x", null, true, 7.5, new Date(5000), [7, 8], { a: 9 }],
+					],
+					[
+						"$lt 5",
+						{ $lt: 5 },
+						[10, "x", null, true, 20, 7.5, new Date(5000), [7, 8], { a: 9 }],
+					],
+					[
+						"$lte 1",
+						{ $lte: 1 },
+						[10, "x", null, true, 20, 7.5, new Date(5000), [7, 8], { a: 9 }],
+					],
+					[
+						'$gt "a"',
+						{ $gt: "a" },
+						[1, 10, null, true, 20, 7.5, new Date(5000), [7, 8], { a: 9 }],
+					],
+					[
+						'$lt "z"',
+						{ $lt: "z" },
+						[1, 10, null, true, 20, 7.5, new Date(5000), [7, 8], { a: 9 }],
+					],
+					[
+						"$gte true",
+						{ $gte: true },
+						[1, 10, "x", null, 20, 7.5, new Date(5000), [7, 8], { a: 9 }],
+					],
+					[
+						"$lte true",
+						{ $lte: true },
+						[1, 10, "x", null, 20, 7.5, new Date(5000), [7, 8], { a: 9 }],
+					],
+					[
+						"$gt Date(1)",
+						{ $gt: new Date(1) },
+						[1, 10, "x", null, true, 20, 7.5, [7, 8], { a: 9 }],
+					],
+					[
+						"$lt Date(9999)",
+						{ $lt: new Date(9999) },
+						[1, 10, "x", null, true, 20, 7.5, [7, 8], { a: 9 }],
+					],
+					[
+						"$gt null",
+						{ $gt: null },
+						[1, 10, "x", null, true, 20, 7.5, new Date(5000), [7, 8], { a: 9 }],
+					],
+					[
+						"$gte null",
+						{ $gte: null },
+						[1, 10, "x", true, 20, 7.5, new Date(5000), [7, 8], { a: 9 }],
+					],
+					[
+						"$lt null",
+						{ $lt: null },
+						[1, 10, "x", null, true, 20, 7.5, new Date(5000), [7, 8], { a: 9 }],
+					],
+					[
+						"$lte null",
+						{ $lte: null },
+						[1, 10, "x", true, 20, 7.5, new Date(5000), [7, 8], { a: 9 }],
+					],
+					[
+						"$gt 5 $lt 15",
+						{ $gt: 5, $lt: 15 },
+						[1, "x", null, true, 20, new Date(5000), { a: 9 }],
+					],
+				];
+
+				for (const [label, condition, expected] of CASES) {
+					test(label, async () => {
+						expect(await pulled(MIXED, condition)).toEqual(expected);
+					});
+				}
+
+				test("an element that is an array matches when any of its elements does", async () => {
+					expect(await pulled([[7, 8], [1], 6], { $gt: 5 })).toEqual([[1]]);
+					expect(await pulled([[7, 8], [1], 6], { $lt: 5 })).toEqual([
+						[7, 8],
+						6,
+					]);
+				});
+
+				test("a NaN element is in no range, and equals a NaN operand", async () => {
+					const withNaN = () => [1, Number.NaN, 7, "x"];
+					expect(await pulled(withNaN(), { $gte: Number.NaN })).toEqual([
+						1,
+						7,
+						"x",
+					]);
+					expect(await pulled(withNaN(), { $gt: 5 })).toEqual([
+						1,
+						Number.NaN,
+						"x",
+					]);
+					expect(await pulled(withNaN(), { $lt: 5 })).toEqual([
+						Number.NaN,
+						7,
+						"x",
+					]);
+				});
+
+				test("an ObjectId is its own bracket", async () => {
+					const oid = (hex: string) => new ObjectId(hex);
+					const v = [
+						oid("000000000000000000000001"),
+						oid("000000000000000000000005"),
+						"000000000000000000000009",
+						5,
+					];
+					const hexes = (list: unknown) =>
+						(list as unknown[]).map((item) =>
+							item instanceof Object && "toHexString" in item
+								? (item as ObjectId).toHexString()
+								: item,
+						);
+					expect(
+						hexes(await pulled(v, { $gt: oid("000000000000000000000001") })),
+					).toEqual([
+						"000000000000000000000001",
+						"000000000000000000000009",
+						5,
+					]);
+					expect(
+						hexes(await pulled(v, { $lte: oid("000000000000000000000005") })),
+					).toEqual(["000000000000000000000009", 5]);
+				});
+			});
+
+			describe("$pull of a sub-document by a condition on one of its fields", () => {
+				const DOCS = [
+					{ p: 1 },
+					{ p: 9 },
+					{ p: "9" },
+					{ p: [1, 9] },
+					{ p: [1, 2] },
+					{ q: 1 },
+					{ p: null },
+					{ p: true },
+				];
+				const CASES: [string, MongoLikeFilter, unknown[]][] = [
+					[
+						"p $gt 5",
+						{ p: { $gt: 5 } },
+						[
+							{ p: 1 },
+							{ p: "9" },
+							{ p: [1, 2] },
+							{ q: 1 },
+							{ p: null },
+							{ p: true },
+						],
+					],
+					[
+						"p $lt 5",
+						{ p: { $lt: 5 } },
+						[{ p: 9 }, { p: "9" }, { q: 1 }, { p: null }, { p: true }],
+					],
+					[
+						'p $gt "5"',
+						{ p: { $gt: "5" } },
+						[
+							{ p: 1 },
+							{ p: 9 },
+							{ p: [1, 9] },
+							{ p: [1, 2] },
+							{ q: 1 },
+							{ p: null },
+							{ p: true },
+						],
+					],
+					[
+						"p $gte null",
+						{ p: { $gte: null } },
+						[
+							{ p: 1 },
+							{ p: 9 },
+							{ p: "9" },
+							{ p: [1, 9] },
+							{ p: [1, 2] },
+							{ p: true },
+						],
+					],
+					[
+						"p $lte 1",
+						{ p: { $lte: 1 } },
+						[{ p: 9 }, { p: "9" }, { q: 1 }, { p: null }, { p: true }],
+					],
+					[
+						"p $gt 0 $lt 3",
+						{ p: { $gt: 0, $lt: 3 } },
+						[{ p: 9 }, { p: "9" }, { q: 1 }, { p: null }, { p: true }],
+					],
+				];
+
+				for (const [label, condition, expected] of CASES) {
+					test(label, async () => {
+						expect(await pulled(DOCS, condition)).toEqual(expected);
+					});
+				}
+			});
+
+			describe("arrayFilters on a field of the element", () => {
+				const SCORES = [
+					{ score: 95 },
+					{ score: 50 },
+					{ score: "90" },
+					{ score: null },
+					{ x: 1 },
+					{ score: [95, 10] },
+					{ score: [5, 6] },
+					{ score: true },
+					{ score: new Date(5000) },
+				];
+				const CASES: [string, MongoLikeFilter, unknown[]][] = [
+					[
+						"$gte 90",
+						{ $gte: 90 },
+						[
+							{ flag: true, score: 95 },
+							{ score: 50 },
+							{ score: "90" },
+							{ score: null },
+							{ x: 1 },
+							{ flag: true, score: [95, 10] },
+							{ score: [5, 6] },
+							{ score: true },
+							{ score: new Date(5000) },
+						],
+					],
+					[
+						"$gt 5",
+						{ $gt: 5 },
+						[
+							{ flag: true, score: 95 },
+							{ flag: true, score: 50 },
+							{ score: "90" },
+							{ score: null },
+							{ x: 1 },
+							{ flag: true, score: [95, 10] },
+							{ flag: true, score: [5, 6] },
+							{ score: true },
+							{ score: new Date(5000) },
+						],
+					],
+					[
+						"$lt 60",
+						{ $lt: 60 },
+						[
+							{ score: 95 },
+							{ flag: true, score: 50 },
+							{ score: "90" },
+							{ score: null },
+							{ x: 1 },
+							{ flag: true, score: [95, 10] },
+							{ flag: true, score: [5, 6] },
+							{ score: true },
+							{ score: new Date(5000) },
+						],
+					],
+					[
+						"$lte 5",
+						{ $lte: 5 },
+						[
+							{ score: 95 },
+							{ score: 50 },
+							{ score: "90" },
+							{ score: null },
+							{ x: 1 },
+							{ score: [95, 10] },
+							{ flag: true, score: [5, 6] },
+							{ score: true },
+							{ score: new Date(5000) },
+						],
+					],
+					[
+						'$gt "8"',
+						{ $gt: "8" },
+						[
+							{ score: 95 },
+							{ score: 50 },
+							{ flag: true, score: "90" },
+							{ score: null },
+							{ x: 1 },
+							{ score: [95, 10] },
+							{ score: [5, 6] },
+							{ score: true },
+							{ score: new Date(5000) },
+						],
+					],
+					[
+						"$gte true",
+						{ $gte: true },
+						[
+							{ score: 95 },
+							{ score: 50 },
+							{ score: "90" },
+							{ score: null },
+							{ x: 1 },
+							{ score: [95, 10] },
+							{ score: [5, 6] },
+							{ flag: true, score: true },
+							{ score: new Date(5000) },
+						],
+					],
+					[
+						"$gt Date(1)",
+						{ $gt: new Date(1) },
+						[
+							{ score: 95 },
+							{ score: 50 },
+							{ score: "90" },
+							{ score: null },
+							{ x: 1 },
+							{ score: [95, 10] },
+							{ score: [5, 6] },
+							{ score: true },
+							{ flag: true, score: new Date(5000) },
+						],
+					],
+					[
+						"$gte null",
+						{ $gte: null },
+						[
+							{ score: 95 },
+							{ score: 50 },
+							{ score: "90" },
+							{ flag: true, score: null },
+							{ flag: true, x: 1 },
+							{ score: [95, 10] },
+							{ score: [5, 6] },
+							{ score: true },
+							{ score: new Date(5000) },
+						],
+					],
+					[
+						"$lte null",
+						{ $lte: null },
+						[
+							{ score: 95 },
+							{ score: 50 },
+							{ score: "90" },
+							{ flag: true, score: null },
+							{ flag: true, x: 1 },
+							{ score: [95, 10] },
+							{ score: [5, 6] },
+							{ score: true },
+							{ score: new Date(5000) },
+						],
+					],
+					[
+						"$gt null",
+						{ $gt: null },
+						[
+							{ score: 95 },
+							{ score: 50 },
+							{ score: "90" },
+							{ score: null },
+							{ x: 1 },
+							{ score: [95, 10] },
+							{ score: [5, 6] },
+							{ score: true },
+							{ score: new Date(5000) },
+						],
+					],
+					[
+						"$gte 50 $lt 96",
+						{ $gte: 50, $lt: 96 },
+						[
+							{ flag: true, score: 95 },
+							{ flag: true, score: 50 },
+							{ score: "90" },
+							{ score: null },
+							{ x: 1 },
+							{ flag: true, score: [95, 10] },
+							{ score: [5, 6] },
+							{ score: true },
+							{ score: new Date(5000) },
+						],
+					],
+				];
+
+				for (const [label, condition, expected] of CASES) {
+					test(`flags the elements whose score is ${label}`, async () => {
+						expect(
+							await afterUpdate(
+								SCORES,
+								{ $set: { "v.$[e].flag": true } },
+								{ arrayFilters: [{ "e.score": condition }] },
+							),
+						).toEqual(expected);
+					});
+				}
+
+				test("a nested path on the element, one of which is a scalar", async () => {
+					const v = [
+						{ a: { b: 1 } },
+						{ a: { b: 9 } },
+						{ a: { b: "1" } },
+						{ a: 1 },
+					];
+					expect(
+						await afterUpdate(
+							v,
+							{ $set: { "v.$[e].flag": true } },
+							{ arrayFilters: [{ "e.a.b": { $lt: 5 } }] },
+						),
+					).toEqual([
+						{ a: { b: 1 }, flag: true },
+						{ a: { b: 9 } },
+						{ a: { b: "1" } },
+						{ a: 1 },
+					]);
+				});
+			});
+		});
+
+		// -----------------------------------------------------------------
 		// UPDATE
 		// -----------------------------------------------------------------
 

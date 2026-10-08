@@ -86,15 +86,20 @@ import { OBJECT_ID_TAG } from "../../../surreal/bson-codec.ts";
 import { escapeIdentifier } from "../../../surreal/sql/escape.ts";
 import { SURREAL_ID_FIELD } from "../id-field.ts";
 import type { FilterOperator } from "../operator-registry.ts";
-import type { TranslateContext } from "../translate-context.ts";
 import {
 	arrayTypeCheckFn,
 	ELEMENT_FIELD,
 	equalityPredicate,
 	nullEqualityPredicate,
+	type PredicateContext,
 } from "./comparison.ts";
 
-type RangeOperator = "$gt" | "$gte" | "$lt" | "$lte";
+export type RangeOperator = "$gt" | "$gte" | "$lt" | "$lte";
+
+/** True for the four ordering operators this module translates. */
+export function isRangeOperator(name: string): name is RangeOperator {
+	return Object.hasOwn(SQL_OPERATORS, name);
+}
 
 /**
  * The closure parameter each array element is tested under: the convention, and
@@ -120,7 +125,7 @@ const FALLBACK_TYPE_CHECKS = {
 
 type CheckedType = keyof typeof FALLBACK_TYPE_CHECKS;
 
-function typeCheckFn(type: CheckedType, ctx: TranslateContext): string {
+function typeCheckFn(type: CheckedType, ctx: PredicateContext): string {
 	return ctx.dialect.typeCheckFn(type) ?? FALLBACK_TYPE_CHECKS[type];
 }
 
@@ -138,7 +143,7 @@ interface Bracket {
 	readonly belowArrays: boolean;
 }
 
-function typeBracket(type: CheckedType, ctx: TranslateContext): Bracket {
+function typeBracket(type: CheckedType, ctx: PredicateContext): Bracket {
 	const check = typeCheckFn(type, ctx);
 	return { holds: (expr) => `${check}(${expr})`, belowArrays: true };
 }
@@ -153,7 +158,7 @@ function typeBracket(type: CheckedType, ctx: TranslateContext): Bracket {
  * if it ranked below everything, the comparison against the operand would
  * already reject it for `$gt`, and the bound would for `$lt`.
  */
-function numberBracket(ctx: TranslateContext): Bracket {
+function numberBracket(ctx: PredicateContext): Bracket {
 	const check = typeCheckFn("number", ctx);
 	return {
 		holds: (expr, above) =>
@@ -168,7 +173,7 @@ function numberBracket(ctx: TranslateContext): Bracket {
  * way the twelve bytes do. The check is the codec's own recognition rule, minus
  * the hex pattern: exactly one field, named for the tag, holding a string.
  */
-function objectIdBracket(ctx: TranslateContext): Bracket {
+function objectIdBracket(ctx: PredicateContext): Bracket {
 	const isObject = typeCheckFn("object", ctx);
 	const isString = typeCheckFn("string", ctx);
 	const tag = escapeIdentifier(OBJECT_ID_TAG);
@@ -183,7 +188,7 @@ function objectIdBracket(ctx: TranslateContext): Bracket {
 function bracketFor(
 	operator: RangeOperator,
 	value: unknown,
-	ctx: TranslateContext,
+	ctx: PredicateContext,
 ): Bracket {
 	if (typeof value === "number" || typeof value === "bigint") {
 		return numberBracket(ctx);
@@ -244,11 +249,56 @@ function leadingRange(
 	return above ? own : `(${own} OR ${field} >= [])`;
 }
 
-function rangePredicate(
+/** What `rangePredicate` can be asked to leave out. */
+export interface RangePredicateOptions {
+	/**
+	 * Whether to lead with the range the query planner can scan (see "The
+	 * redundant leading range"). On by default; a caller whose predicate is not
+	 * a `WHERE` over a table, such as the condition of a filtered array path, has
+	 * no planner to serve and leaves it out.
+	 */
+	readonly leadingRange?: boolean;
+}
+
+/**
+ * The predicate for an operand that orders against nothing, or `undefined` when
+ * `value` is an ordinary operand.
+ *
+ * Nothing is greater or less than null, and NaN orders against nothing; the
+ * inclusive operators are equality, which each of them does have.
+ */
+function unorderedOperand(
 	field: string,
 	operator: RangeOperator,
 	value: unknown,
-	ctx: TranslateContext,
+	ctx: PredicateContext,
+): string | undefined {
+	const inclusive = operator === "$gte" || operator === "$lte";
+
+	if (value === null || value === undefined) {
+		return inclusive ? nullEqualityPredicate(field, ctx) : "false";
+	}
+
+	if (typeof value === "number" && Number.isNaN(value)) {
+		if (!inclusive) return "false";
+		if (field === ELEMENT_FIELD) return `${field} = $${ctx.bind(value)}`;
+		return equalityPredicate(field, value, ctx);
+	}
+
+	return undefined;
+}
+
+/**
+ * The predicate for `field <operator> value`, in MongoDB's terms: see the top of
+ * the file. Exported for the update translator, whose `$pull` and `arrayFilters`
+ * conditions are this same comparison applied to an element of an array.
+ */
+export function rangePredicate(
+	field: string,
+	operator: RangeOperator,
+	value: unknown,
+	ctx: PredicateContext,
+	options: RangePredicateOptions = {},
 ): string {
 	const sqlOp = SQL_OPERATORS[operator];
 
@@ -257,20 +307,10 @@ function rangePredicate(
 		return `${field} ${sqlOp} $${p}`;
 	}
 
-	const inclusive = operator === "$gte" || operator === "$lte";
+	const unordered = unorderedOperand(field, operator, value, ctx);
+	if (unordered !== undefined) return unordered;
+
 	const above = operator === "$gt" || operator === "$gte";
-
-	// Nothing is greater or less than null, and NaN orders against nothing; the
-	// inclusive operators are equality, which each of them does have.
-	if (value === null || value === undefined) {
-		return inclusive ? nullEqualityPredicate(field, ctx) : "false";
-	}
-	if (typeof value === "number" && Number.isNaN(value)) {
-		if (!inclusive) return "false";
-		if (field === ELEMENT_FIELD) return `${field} = $${ctx.bind(value)}`;
-		return equalityPredicate(field, value, ctx);
-	}
-
 	const bracket = bracketFor(operator, value, ctx);
 	const p = ctx.bind(value);
 
@@ -284,7 +324,7 @@ function rangePredicate(
 	const elements = `(${arrayTypeCheckFn(ctx)}(${field}) AND array::any(${field}, |${ELEMENT}| (${compare(ELEMENT)})))`;
 	const exact = `(${scalar} OR ${elements})`;
 
-	if (!bracket.belowArrays) return exact;
+	if (!bracket.belowArrays || options.leadingRange === false) return exact;
 	return `(${leadingRange(field, sqlOp, p, above)} AND ${exact})`;
 }
 

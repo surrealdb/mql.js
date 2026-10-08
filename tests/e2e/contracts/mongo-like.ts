@@ -98,7 +98,7 @@ export interface MongoLikeCollection<
 	updateOne(
 		filter: MongoLikeFilter,
 		update: MongoLikeUpdate,
-		options?: { upsert?: boolean },
+		options?: { upsert?: boolean; arrayFilters?: MongoLikeFilter[] },
 	): Promise<MongoLikeUpdateResult>;
 	updateMany(
 		filter: MongoLikeFilter,

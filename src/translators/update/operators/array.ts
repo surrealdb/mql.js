@@ -4,6 +4,11 @@
 
 import { MongoInvalidArgumentError } from "../../../errors.ts";
 import { escapeFieldPath } from "../../../surreal/sql/escape.ts";
+import { ELEMENT_FIELD } from "../../filter/operators/comparison.ts";
+import {
+	isRangeOperator,
+	rangePredicate,
+} from "../../filter/operators/range.ts";
 import type { UpdateOperator } from "../operator-registry.ts";
 import type { UpdateContext } from "../update-context.ts";
 
@@ -89,7 +94,9 @@ export const pushOperator: UpdateOperator = {
 /**
  * Comparison operators accepted inside a `$pull` condition, mapped to their
  * SurrealQL equivalents. Deliberately the same set the arrayFilters translator
- * supports, so `$pull` and `$[identifier]` accept the same vocabulary.
+ * supports, so `$pull` and `$[identifier]` accept the same vocabulary. The four
+ * ordering operators are listed for that reason alone: they are not translated
+ * from this table but by `rangePredicate`, which brackets them by type.
  */
 const PULL_COMPARISON_OPS: Record<string, string> = {
 	$eq: "=",
@@ -101,6 +108,22 @@ const PULL_COMPARISON_OPS: Record<string, string> = {
 	$in: "IN",
 	$nin: "NOT IN",
 };
+
+/**
+ * How a `$pull` condition names the element it is testing, when the condition
+ * is about the element itself (`{$pull: {n: {$gt: 3}}}`).
+ *
+ * MongoDB applies a `$pull` condition to each element "as if it were a document
+ * in a collection": the element is the *value of a field*, so an element that is
+ * itself an array matches when any of its elements does — `{$pull: {v: {$gt: 5}}}`
+ * over `[[7, 8], [1], 6]` leaves `[[1]]`. That is a field's reading, and not an
+ * `$elemMatch`'s, where `{$elemMatch: {$gt: 5}}` compares each element as a plain
+ * value. The filter translator keys the second reading on the field being
+ * `ELEMENT_FIELD` (`$this`), so the element is named here by the same variable
+ * under a spelling that is not that string: a parenthesised expression, which
+ * SurrealQL treats as the value it wraps.
+ */
+const PULLED_ELEMENT = `(${ELEMENT_FIELD})`;
 
 /** True for `{$gte: 3}` — an object whose every key is an operator. */
 function isOperatorSpec(value: unknown): value is Record<string, unknown> {
@@ -121,6 +144,24 @@ function pullOperatorConditions(
 ): string[] {
 	const conditions: string[] = [];
 	for (const [op, operand] of Object.entries(spec)) {
+		// The ordering operators are MongoDB's type-bracketed comparison, which is
+		// what the filter translator builds for a field: a bare `>` here would match
+		// across types, and remove a string for `{$gt: 5}`.
+		if (isRangeOperator(op)) {
+			conditions.push(
+				rangePredicate(
+					target === ELEMENT_FIELD ? PULLED_ELEMENT : target,
+					op,
+					operand,
+					ctx,
+					// A filtered array path is not a table scan, so there is no
+					// planner for the leading range to serve.
+					{ leadingRange: false },
+				),
+			);
+			continue;
+		}
+
 		const sqlOp = PULL_COMPARISON_OPS[op];
 		if (!sqlOp) {
 			throw new MongoInvalidArgumentError(
@@ -158,7 +199,7 @@ function pullConditions(value: unknown, ctx: UpdateContext): string[] | null {
 
 	const operators = keys.filter((k) => k.startsWith("$"));
 	if (operators.length === keys.length) {
-		return pullOperatorConditions("$this", value, ctx);
+		return pullOperatorConditions(ELEMENT_FIELD, value, ctx);
 	}
 	if (operators.length > 0) {
 		throw new MongoInvalidArgumentError(
@@ -170,7 +211,7 @@ function pullConditions(value: unknown, ctx: UpdateContext): string[] | null {
 	for (const [key, sub] of Object.entries(value)) {
 		// The key is a path *within* each element, so it needs escaping like any
 		// other caller-supplied field path.
-		const target = `$this.${escapeFieldPath(key)}`;
+		const target = `${ELEMENT_FIELD}.${escapeFieldPath(key)}`;
 		if (isOperatorSpec(sub)) {
 			conditions.push(...pullOperatorConditions(target, sub, ctx));
 		} else {

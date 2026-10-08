@@ -166,6 +166,7 @@ export async function insertUpserted(
 
 	const { clause, bindings } = translateUpdate(withSeed(update, fields), 0, {
 		arrayFilters: options?.arrayFilters,
+		dialect: ctx.dialect,
 		// The statement inserts by definition, so `$setOnInsert` applies.
 		upsert: true,
 	});

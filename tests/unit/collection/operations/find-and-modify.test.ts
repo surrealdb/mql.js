@@ -102,7 +102,9 @@ describe("findOneAndUpdate", () => {
 			{ $set: { "grades.$[g].adjusted": true } },
 			{ arrayFilters: [{ "g.score": { $gte: 90 } }] },
 		);
-		expect(executor.queries[0].sql).toContain("`grades`[WHERE `score` >= $p1]");
+		expect(executor.queries[0].sql).toContain(
+			"`grades`[WHERE ((type::is_number(`score`) AND `score` <= math::inf AND `score` >= $p1)",
+		);
 	});
 
 	test("sort decides which document is modified, by ordering the subquery that names it", async () => {

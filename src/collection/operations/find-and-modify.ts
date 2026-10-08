@@ -130,7 +130,7 @@ export async function findOneAndUpdate<TSchema extends Document>(
 	const { clause: setClause, bindings: updateBindings } = translateUpdate(
 		document,
 		Object.keys(filterBindings).length,
-		{ arrayFilters: options?.arrayFilters },
+		{ arrayFilters: options?.arrayFilters, dialect: ctx.dialect },
 	);
 
 	const rows = await writeOneRecord(

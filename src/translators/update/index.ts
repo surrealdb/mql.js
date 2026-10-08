@@ -8,6 +8,7 @@
  */
 
 import type { Document } from "../../types.ts";
+import { resolveDialect, type SurrealDialect } from "../dialect/index.ts";
 import { DEFAULT_UPDATE_REGISTRY } from "./default-registry.ts";
 import type { UpdateOperatorRegistry } from "./operator-registry.ts";
 import { resolveField } from "./positional.ts";
@@ -32,6 +33,12 @@ export interface TranslateUpdateOptions {
 	 * applies that operator solely on the inserting path.
 	 */
 	upsert?: boolean;
+	/**
+	 * Dialect the clause will run against; the latest known one when omitted, as
+	 * for `translateFilter`. Callers resolve it once at connect time and pass it
+	 * through every translation.
+	 */
+	dialect?: SurrealDialect;
 	/** Override the operator registry (advanced). */
 	registry?: UpdateOperatorRegistry;
 }
@@ -56,6 +63,7 @@ export function translateUpdate(
 		bindings,
 		parts,
 		arrayFilters: options?.arrayFilters,
+		dialect: options?.dialect ?? resolveDialect(undefined),
 		upsert: options?.upsert === true,
 		nextParam: () => `p${counter++}`,
 		bind(value) {

@@ -128,7 +128,7 @@ async function updateOneMatch(
 	const { clause, bindings } = translateUpdate(
 		update,
 		Object.keys(filterBindings).length,
-		{ arrayFilters: options?.arrayFilters },
+		{ arrayFilters: options?.arrayFilters, dialect: ctx.dialect },
 	);
 
 	return writeOneRecord(
@@ -157,7 +157,7 @@ async function updateWhere(
 	const { clause, bindings } = translateUpdate(
 		update,
 		Object.keys(filterBindings).length,
-		{ arrayFilters: options?.arrayFilters },
+		{ arrayFilters: options?.arrayFilters, dialect: ctx.dialect },
 	);
 
 	const sql = statement(

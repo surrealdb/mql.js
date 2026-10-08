@@ -10,6 +10,7 @@
 
 import { MongoInvalidArgumentError } from "../../errors.ts";
 import { escapeFieldPath } from "../../surreal/sql/escape.ts";
+import { isRangeOperator, rangePredicate } from "../filter/operators/range.ts";
 import type { UpdateContext } from "./update-context.ts";
 
 const COMPARISON_OPS: Record<string, string> = {
@@ -46,6 +47,18 @@ function translateArrayFilterEntry(
 		for (const [op, opVal] of Object.entries(
 			value as Record<string, unknown>,
 		)) {
+			// The ordering operators are the type-bracketed comparison the filter
+			// translator builds for a field, array-valued ones included: an
+			// arrayFilters entry is a query on each element, so `{"e.score":
+			// {$gte: 90}}` matches an element whose `score` is `[95, 10]`, and not
+			// one whose `score` is the string "90" or is missing.
+			if (isRangeOperator(op)) {
+				conditions.push(
+					rangePredicate(escaped, op, opVal, ctx, { leadingRange: false }),
+				);
+				continue;
+			}
+
 			const sqlOp = COMPARISON_OPS[op];
 			if (!sqlOp)
 				throw new MongoInvalidArgumentError(
