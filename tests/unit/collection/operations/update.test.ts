@@ -142,7 +142,7 @@ describe("updateMany", () => {
 		// `items`: the value is `$p0`, the refusal for an element that is not a
 		// document `$p1`, and the filter's operand `$p2`.
 		expect(executor.queries[0].sql).toContain(
-			"array::map(`items`, |$__mql_item0| IF $__mql_item0.`status` = $p2 THEN",
+			"array::map(`items`, |$__mql_item0| IF ($__mql_item0.`status` = $p2 OR (type::is_array($__mql_item0.`status`) AND $__mql_item0.`status` CONTAINS $p2)) THEN",
 		);
 	});
 });

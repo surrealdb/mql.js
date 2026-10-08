@@ -32,6 +32,14 @@ const range = (
 const rewrite = (array: string, body: string) =>
 	`SET ${array} = IF type::is_array(${array}) THEN array::map(${array}, |$__mql_item0| ${body}) ELSE ${array} END`;
 
+/**
+ * MongoDB equality against `target`: the value itself, or, when `target` is an
+ * array, one of its elements. A `$pull` condition or an `arrayFilters` entry is
+ * a query on an element, so it reads equality as a filter does.
+ */
+const eq = (target: string, param: string) =>
+	`(${target} = $${param} OR (type::is_array(${target}) AND ${target} CONTAINS $${param}))`;
+
 /** The message a path that goes inside an element is refused with when it is not one. */
 const notADocument = (path: string) =>
 	`Cannot create a field in an array element that is not a document, for the path '${path}'`;
@@ -178,7 +186,9 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$pull: { n: { $in: [1, 2] } },
 		});
-		expect(clause).toBe("SET `n` = `n`[WHERE !($this IN $p0)]");
+		expect(clause).toBe(
+			"SET `n` = `n`[WHERE !((($this) IN $p0 OR (type::is_array(($this)) AND ($this) ANYINSIDE $p0)))]",
+		);
 		expect(bindings).toEqual({ p0: [1, 2] });
 	});
 
@@ -186,7 +196,9 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$pull: { items: { status: "old" } },
 		});
-		expect(clause).toBe("SET `items` = `items`[WHERE !($this.`status` = $p0)]");
+		expect(clause).toBe(
+			`SET \`items\` = \`items\`[WHERE !(${eq("$this.`status`", "p0")})]`,
+		);
 		expect(bindings).toEqual({ p0: "old" });
 	});
 
@@ -195,7 +207,7 @@ describe("translateUpdate", () => {
 			$pull: { results: { score: { $gte: 8 }, item: "B" } },
 		});
 		expect(clause).toBe(
-			`SET \`results\` = \`results\`[WHERE !(${range("$this.`score`", ">=", "p0")} AND $this.\`item\` = $p1)]`,
+			`SET \`results\` = \`results\`[WHERE !(${range("$this.`score`", ">=", "p0")} AND ${eq("$this.`item`", "p1")})]`,
 		);
 		expect(bindings).toEqual({ p0: 8, p1: "B" });
 	});
@@ -205,7 +217,7 @@ describe("translateUpdate", () => {
 			$pull: { items: { "a-b.c": 1 } },
 		});
 		expect(clause).toBe(
-			"SET `items` = `items`[WHERE !($this.`a-b`.`c` = $p0)]",
+			`SET \`items\` = \`items\`[WHERE !(${eq("$this.`a-b`.`c`", "p0")})]`,
 		);
 	});
 
@@ -581,7 +593,7 @@ describe("translateUpdate", () => {
 		expect(clause).toBe(
 			rewrite(
 				"`grades`",
-				"IF $__mql_item0.`grade` = $p2 THEN IF type::is_object($__mql_item0) THEN object::extend($__mql_item0, {`score`: $p0}) ELSE { THROW $p1 } END ELSE $__mql_item0 END",
+				`IF ${eq("$__mql_item0.`grade`", "p2")} THEN IF type::is_object($__mql_item0) THEN object::extend($__mql_item0, {\`score\`: $p0}) ELSE { THROW $p1 } END ELSE $__mql_item0 END`,
 			),
 		);
 		expect(bindings).toEqual({
@@ -621,7 +633,7 @@ describe("translateUpdate", () => {
 		expect(clause).toBe(
 			rewrite(
 				"`items`",
-				`IF $__mql_item0.\`status\` = $p2 AND ${range("$__mql_item0.`qty`", "<", "p3")} THEN IF type::is_object($__mql_item0) THEN object::extend($__mql_item0, {\`qty\`: IF $__mql_item0.\`qty\` IS NONE THEN $p0 ELSE $__mql_item0.\`qty\` + $p0 END}) ELSE { THROW $p1 } END ELSE $__mql_item0 END`,
+				`IF ${eq("$__mql_item0.`status`", "p2")} AND ${range("$__mql_item0.`qty`", "<", "p3")} THEN IF type::is_object($__mql_item0) THEN object::extend($__mql_item0, {\`qty\`: IF $__mql_item0.\`qty\` IS NONE THEN $p0 ELSE $__mql_item0.\`qty\` + $p0 END}) ELSE { THROW $p1 } END ELSE $__mql_item0 END`,
 			),
 		);
 		expect(bindings).toEqual({
