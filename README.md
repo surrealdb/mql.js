@@ -62,7 +62,7 @@ npm install @surrealdb/mql
 ### Requirements
 
 **SurrealDB 3.0.0 or newer.** Every supported minor is tested in CI against its
-latest patch release (currently 3.0.5, 3.1.5 and 3.2.4), plus SurrealDB
+latest patch release (currently 3.0.5, 3.1.6, 3.2.5 and 3.3.2), plus SurrealDB
 `nightly` as an early-warning signal.
 
 **Node 20.19.0 or newer**, matching the MongoDB driver whose API this tracks. CI

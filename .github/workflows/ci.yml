@@ -197,9 +197,12 @@ jobs:
       fail-fast: false
       matrix:
         surrealdb:
-          - name: "3.2.4"
-            tag: v3.2.4
-            target: 3.2.4
+          - name: "3.2.5"
+            tag: v3.2.5
+            target: 3.2.5
+          - name: "3.3.2"
+            tag: v3.3.2
+            target: 3.3.2
           - name: nightly
             tag: nightly
             target: latest
@@ -278,12 +281,15 @@ jobs:
           - name: "3.0.5"
             tag: v3.0.5
             target: 3.0.5
-          - name: "3.1.5"
-            tag: v3.1.5
-            target: 3.1.5
-          - name: "3.2.4"
-            tag: v3.2.4
-            target: 3.2.4
+          - name: "3.1.6"
+            tag: v3.1.6
+            target: 3.1.6
+          - name: "3.2.5"
+            tag: v3.2.5
+            target: 3.2.5
+          - name: "3.3.2"
+            tag: v3.3.2
+            target: 3.3.2
           - name: nightly
             tag: nightly
             target: ""
@@ -316,7 +322,7 @@ jobs:
             # The version must carry its "v" prefix: the installer builds
             # download.surrealdb.com/<ver>/surreal-<ver>.<arch>.tgz, and only the
             # v-prefixed path exists (an unprefixed one 403s). `latest.txt`
-            # likewise reports e.g. "v3.2.4".
+            # likewise reports e.g. "v3.3.2".
             curl --proto '=https' --tlsv1.2 -sSf https://install.surrealdb.com | sh -s -- --version "${{ matrix.surrealdb.tag }}"
           fi
           surreal version
@@ -382,12 +388,15 @@ jobs:
           - name: "3.0.5"
             tag: v3.0.5
             target: 3.0.5
-          - name: "3.1.5"
-            tag: v3.1.5
-            target: 3.1.5
-          - name: "3.2.4"
-            tag: v3.2.4
-            target: 3.2.4
+          - name: "3.1.6"
+            tag: v3.1.6
+            target: 3.1.6
+          - name: "3.2.5"
+            tag: v3.2.5
+            target: 3.2.5
+          - name: "3.3.2"
+            tag: v3.3.2
+            target: 3.3.2
           - name: nightly
             tag: nightly
             target: ""

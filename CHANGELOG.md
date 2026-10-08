@@ -4,6 +4,12 @@ All notable changes to `@surrealdb/mql` are recorded here. The format follows [K
 
 ## [Unreleased]
 
+### Changed
+
+- **Requires `surrealdb` 2.1.0 or newer** (was 2.0.3). The SDK's 2.1.0 is the release that adds query streaming, abort signals and client-side timeouts, batched and stateless atomic queries, and per-request credentials; this entry is the upgrade itself, and each of those arrives separately where this driver can honour it exactly. Nothing else changes for callers: all 1312 unit, 663 integration and 350 parity tests pass unchanged on 2.1.0. The lockfile also now records the `mongoose` peer dependency `package.json` already declared.
+
+- **CI tests SurrealDB 3.3, and every minor at its true latest patch.** The integration and parity matrices ran 3.1.5 and 3.2.4 after 3.1.6 and 3.2.5 had shipped, and had no 3.3 at all — which matters now, because the SDK's query streaming is a 3.3.0 server feature that cannot be exercised against anything older. The matrices are 3.0.5, 3.1.6, 3.2.5, 3.3.2 and `nightly`; the Node-transport job runs the newest two minors and `nightly`. `test:integration:3.3` is added beside the other per-minor scripts, and the parity suite's default image moves to 3.3.2.
+
 ### Added
 
 - **`$sample`, `$out` and `$merge`.** `$sample` is `ORDER BY rand() LIMIT size`. `$out`/`$merge` are handled a layer above the translator: the pipeline up to but not including the terminal stage is run and materialised into `Document[]` in JavaScript, then written with this driver's own `deleteMany`/`insertMany` (`$out`) or a `replaceOne`/`updateOne` per row (`$merge`) — the same identity-conversion code every other write already uses, rather than a second `_id → RecordId` translation attempted in SurrealQL. That second path was tried first and rejected: `INSERT INTO dest (SELECT n AS \`_id\` FROM src)` generates a random new id instead of preserving the one computed upstream, for exactly the reshaped rows `$out`/`$merge` most need to write correctly. Both stages are refused unless they are the pipeline's last stage, matching MongoDB. `$merge`'s `on` is restricted to `_id` — matching by another field safely would need an index this driver does not verify exists — and `whenMatched` to `"merge"` (the real MongoDB default, mapped to `updateOne`'s `$set`) and `"replace"` (`replaceOne`); `whenNotMatched` to `"insert"`. Everything outside that — `"keepExisting"`, `"fail"`, the pipeline form of `whenMatched`, `whenNotMatched: "discard"` — is refused by name.

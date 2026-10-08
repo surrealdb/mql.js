@@ -34,7 +34,7 @@ export interface SurrealDbDockerProviderOptions {
  * supported 3.x minor plus `nightly`).
  */
 const DEFAULT_IMAGE =
-	process.env.MQL_SURREALDB_IMAGE ?? "surrealdb/surrealdb:v3.2.4";
+	process.env.MQL_SURREALDB_IMAGE ?? "surrealdb/surrealdb:v3.3.2";
 const DEFAULT_DATABASE = "e2e_parity";
 const SURREALDB_INTERNAL_PORT = 8000;
 
