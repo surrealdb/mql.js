@@ -59,7 +59,7 @@
  * on the way out, for the reason `encodeBsonValue` explains.
  */
 
-import { type CodecOptions, Geometry } from "surrealdb";
+import { type CodecOptions, DateTime, Geometry } from "surrealdb";
 import { MongoCompatibilityError } from "../errors.ts";
 import { isObjectId, ObjectId } from "../object-id.ts";
 import { encodeGeoJson, toGeoJson } from "./geometry-codec.ts";
@@ -136,7 +136,7 @@ export function objectIdFromPrintedForm(text: string): ObjectId | undefined {
  * mongoose must be queryable with an id from this driver, and vice versa.
  *
  * Everything else is returned untouched, including the SDK's own value classes
- * and `Date`, which the codec handles itself — except a BSON value of a type
+ * — except a `Date`, which is normalised (see `encodeDate`), and a BSON value of a type
  * this driver cannot represent, which is refused rather than written. Nothing
  * would stop it being encoded: it is an object, so it would be stored as
  * whatever its internal fields happen to be and read back as a plain object of
@@ -145,6 +145,8 @@ export function objectIdFromPrintedForm(text: string): ObjectId | undefined {
  */
 export function encodeBsonValue(value: unknown): unknown {
 	if (isObjectId(value)) return toTaggedObjectId(value);
+
+	if (value instanceof Date) return encodeDate(value);
 
 	// GeoJSON is checked before the class-instance rules below because it is the
 	// one *plain object* this driver rewrites: `geometry-codec.ts` states the
@@ -168,6 +170,56 @@ export function encodeBsonValue(value: unknown): unknown {
 	}
 
 	return value;
+}
+
+/**
+ * The earliest and latest instants a SurrealDB datetime holds: years −262143 to
+ * 262142, which is `chrono`'s range and narrower than a JS `Date`'s ±275760.
+ * Measured against a live server: the instant at each end round-trips exactly,
+ * and the one past either end is not refused — the request never answers.
+ */
+const MIN_DATE_MS = Date.UTC(-262143, 0, 1);
+const MAX_DATE_MS = Date.UTC(262143, 0, 1) - 1;
+
+/**
+ * A `Date` as the datetime SurrealDB will accept, or a refusal.
+ *
+ * The SDK splits a `Date` into whole seconds and nanoseconds with JavaScript's
+ * `%`, which keeps the sign of the dividend, so an instant before the epoch with
+ * a fractional second — `new Date(-1)` is the smallest — comes out as
+ * `[-1, -1000000]`: a *negative* nanosecond count, which SurrealDB's datetime
+ * does not have. The server cannot decode the request and says nothing back, so
+ * the operation never settles. Whole-second dates before 1970 are fine, which is
+ * why this went unseen: a birthday has no milliseconds, a timestamp does. Present
+ * in `surrealdb` 2.0.x and still in 2.1.0, with or without going through
+ * `DateTime`.
+ *
+ * For exactly those instants the seconds are therefore floored and the nanoseconds
+ * taken from what is left, which is always in `[0, 10⁹)`. An instant the server cannot hold at all hangs
+ * the same way, so it is refused here by name instead.
+ *
+ * An invalid `Date` is left for the SDK, which refuses it with a message of its
+ * own ("The provided date is invalid").
+ */
+function encodeDate(value: Date): Date | DateTime {
+	const milliseconds = value.getTime();
+	if (Number.isNaN(milliseconds)) return value;
+
+	if (milliseconds < MIN_DATE_MS || milliseconds > MAX_DATE_MS) {
+		throw new MongoCompatibilityError(
+			`The date ${value.toISOString()} is outside the range SurrealDB can store: years -262143 to 262142. A JavaScript Date reaches further than that, and a value beyond it would hang the request rather than fail it.`,
+		);
+	}
+
+	// Everything else the SDK already encodes correctly, and is left to it: a date
+	// from the epoch onward, and a whole-second one before it.
+	if (milliseconds >= 0 || milliseconds % 1000 === 0) return value;
+
+	const seconds = Math.floor(milliseconds / 1000);
+	return new DateTime([
+		BigInt(seconds),
+		BigInt((milliseconds - seconds * 1000) * 1_000_000),
+	]);
 }
 
 /** True for an object whose fields this driver may walk and rebuild. */
