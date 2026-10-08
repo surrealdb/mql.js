@@ -263,7 +263,7 @@ function rangePredicate(
 	// Nothing is greater or less than null, and NaN orders against nothing; the
 	// inclusive operators are equality, which each of them does have.
 	if (value === null || value === undefined) {
-		return inclusive ? nullEqualityPredicate(field) : "false";
+		return inclusive ? nullEqualityPredicate(field, ctx) : "false";
 	}
 	if (typeof value === "number" && Number.isNaN(value)) {
 		if (!inclusive) return "false";

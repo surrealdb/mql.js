@@ -62,17 +62,60 @@ export function arrayTypeCheckFn(ctx: TranslateContext): string {
 }
 
 /**
+ * Arm of `{f: null}` for an array field: an element that is an explicit null.
+ *
+ * MongoDB's equality against an array field matches when any element equals the
+ * operand, so `{f: null}` matches `{f: [1, null]}` as `{f: 1}` does. It does not
+ * descend: `{f: [[null]]}` has one element, an array. A path that crosses an
+ * array of documents is covered too — `{"items.x": null}` reads `x` out of every
+ * item, SurrealQL evaluates that to the list of them, and a list holding a null
+ * is an array holding one.
+ *
+ * What it cannot see is an element that is *absent*: MongoDB also counts an item
+ * with no `x` as null, so `[{y: 1}]` matches `{"items.x": null}`. SurrealQL
+ * stands `NONE` in for that item, and for a scalar element too — `v.a` over
+ * `[1, 2]` is `[NONE, NONE]`, which MongoDB does not match — so the two cannot be
+ * told apart from the list, and naming `NONE` would trade one wrong answer for
+ * another. It is left unmatched, as it always was.
+ *
+ * Guarded by `type::is_array` for the reason `equalityPredicate`'s `CONTAINS`
+ * arm is: `CONTAINS` is overloaded over strings and objects.
+ */
+function nullElementArm(field: string, ctx: TranslateContext): string {
+	return `(${arrayTypeCheckFn(ctx)}(${field}) AND ${field} CONTAINS NULL)`;
+}
+
+/**
+ * True when `field` is a value to compare as a whole, with no elements to look
+ * inside: the document identity, which is one RecordId, and an `$elemMatch`
+ * element, which is the value being matched.
+ */
+function isWholeValue(field: string): boolean {
+	return isIdentityField(field) || field === ELEMENT_FIELD;
+}
+
+/**
  * Predicate for `{f: null}`.
  *
  * MongoDB matches both a document whose `f` is explicitly null *and* one that
  * has no `f` at all. SurrealDB keeps those two states distinct — `NULL` for an
- * explicit null, `NONE` for an absent field — so both have to be named.
+ * explicit null, `NONE` for an absent field — so both have to be named. As with
+ * every equality, an array field matches when one of its elements does: see
+ * `nullElementArm`.
  *
- * Defect fixed: `f = $p` with a bound `null` only ever matched the explicit
- * null, so `{a: null}` silently missed every document without an `a`.
+ * Defects fixed: `f = $p` with a bound `null` only ever matched the explicit
+ * null, so `{a: null}` silently missed every document without an `a`; and the
+ * `IS NULL OR IS NONE` that replaced it saw only the field itself, so
+ * `{a: null}` missed `a: [1, null]` and `{"items.x": null}` missed
+ * `items: [{x: null}]`.
  */
-export function nullEqualityPredicate(field: string): string {
-	return `(${field} IS NULL OR ${field} IS NONE)`;
+export function nullEqualityPredicate(
+	field: string,
+	ctx: TranslateContext,
+): string {
+	const own = `${field} IS NULL OR ${field} IS NONE`;
+	if (isWholeValue(field)) return `(${own})`;
+	return `(${own} OR ${nullElementArm(field, ctx)})`;
 }
 
 /**
@@ -96,7 +139,7 @@ export function equalityPredicate(
 	value: unknown,
 	ctx: TranslateContext,
 ): string {
-	if (value === null) return nullEqualityPredicate(field);
+	if (value === null) return nullEqualityPredicate(field, ctx);
 
 	const p = ctx.bind(value);
 	if (isIdentityField(field)) return `${field} = $${p}`;
@@ -109,14 +152,19 @@ export function equalityPredicate(
  *
  * The array arm has to be negated too: `{tags: {$ne: "a"}}` does *not* match
  * `{tags: ["a", "b"]}` in MongoDB. `{f: {$ne: null}}` matches neither an
- * explicit null nor an absent field.
+ * explicit null nor an absent field, nor an array with a null element.
  */
 export function inequalityPredicate(
 	field: string,
 	value: unknown,
 	ctx: TranslateContext,
 ): string {
-	if (value === null) return `(${field} IS NOT NULL AND ${field} IS NOT NONE)`;
+	if (value === null) {
+		if (isWholeValue(field)) {
+			return `(${field} IS NOT NULL AND ${field} IS NOT NONE)`;
+		}
+		return `!${nullEqualityPredicate(field, ctx)}`;
+	}
 
 	const p = ctx.bind(value);
 	if (isIdentityField(field)) return `${field} != $${p}`;
