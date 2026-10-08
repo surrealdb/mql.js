@@ -35,7 +35,7 @@
 		"typescript": "6.0.3"
 	},
 	"dependencies": {
-		"surrealdb": "^2.0.3"
+		"surrealdb": "^2.1.0"
 	},
 	"scripts": {
 		"ts": "tsc --watch --noEmit true --emitDeclarationOnly false",
@@ -48,9 +48,9 @@
 		"verify:package": "bun run scripts/verify-package.ts",
 		"test": "bun test",
 		"test:unit": "bun test tests/unit",
-		"test:unit:node": "node --import ./scripts/node-test/register.mjs --test \"tests/unit/**/*.test.ts\"",
+		"test:unit:node": "node scripts/node-test/run.mjs tests/unit",
 		"test:integration": "bun test tests/integration",
-		"test:integration:node": "node --import ./scripts/node-test/register.mjs --test \"tests/integration/**/*.test.ts\"",
+		"test:integration:node": "node scripts/node-test/run.mjs tests/integration",
 		"test:e2e": "bun test tests/e2e",
 		"test:e2e:mongodb": "E2E_DRIVER=mongodb bun test tests/e2e",
 		"test:e2e:mql": "E2E_DRIVER=mql bun test tests/e2e",
@@ -59,8 +59,9 @@
 		"test:e2e:in-memory:mql": "E2E_DRIVER=mql bun test tests/e2e/parity-in-memory.test.ts",
 		"test:e2e:node": "E2E_DRIVER=mql node --import ./scripts/node-test/register.mjs --test \"tests/e2e/parity-in-memory.test.ts\"",
 		"test:integration:3.0": "MQL_SURREAL_VERSION=3.0.5 bun test tests/integration",
-		"test:integration:3.1": "MQL_SURREAL_VERSION=3.1.5 bun test tests/integration",
-		"test:integration:3.2": "MQL_SURREAL_VERSION=3.2.4 bun test tests/integration"
+		"test:integration:3.1": "MQL_SURREAL_VERSION=3.1.6 bun test tests/integration",
+		"test:integration:3.2": "MQL_SURREAL_VERSION=3.2.5 bun test tests/integration",
+		"test:integration:3.3": "MQL_SURREAL_VERSION=3.3.2 bun test tests/integration"
 	},
 	"engines": {
 		"node": ">=20.19.0"
