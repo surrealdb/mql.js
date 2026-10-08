@@ -179,18 +179,25 @@ describe("range operators: null, undefined and NaN", () => {
 		}
 	});
 
-	test("$gte and $lte of null are equality with null: a null or a missing field", () => {
+	test("$gte and $lte of null are equality with null: a null, a missing field or an array holding a null", () => {
 		for (const operator of ["$gte", "$lte"]) {
 			const { clause, bindings } = translateFilter({ v: { [operator]: null } });
-			expect(clause).toBe("(`v` IS NULL OR `v` IS NONE)");
+			expect(clause).toBe(
+				"(`v` IS NULL OR `v` IS NONE OR (type::is_array(`v`) AND `v` CONTAINS NULL))",
+			);
 			expect(bindings).toEqual({});
 		}
+	});
+
+	test("inside $elemMatch, null equality is on the element alone", () => {
+		const { clause } = translateFilter({ v: { $elemMatch: { $gte: null } } });
+		expect(clause).toContain("WHERE ($this IS NULL OR $this IS NONE)]");
 	});
 
 	test("undefined is null, as the official driver serialises it", () => {
 		expect(translateFilter({ v: { $gt: undefined } }).clause).toBe("false");
 		expect(translateFilter({ v: { $lte: undefined } }).clause).toBe(
-			"(`v` IS NULL OR `v` IS NONE)",
+			"(`v` IS NULL OR `v` IS NONE OR (type::is_array(`v`) AND `v` CONTAINS NULL))",
 		);
 	});
 

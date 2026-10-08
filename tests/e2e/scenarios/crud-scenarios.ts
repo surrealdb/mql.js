@@ -623,6 +623,150 @@ export function registerCrudScenarios(provider: DatabaseProvider): void {
 		});
 
 		// -----------------------------------------------------------------
+		// NULL EQUALITY AND ARRAYS
+		// -----------------------------------------------------------------
+
+		describe("null equality sees the elements of an array", () => {
+			// `{f: null}` matches a null, a missing field, and — like any equality —
+			// an array with a null element; `$ne: null` is exactly the rest. The
+			// driver saw only the first two, so `[null]` and `[1, null]` were missed by
+			// `{f: null}` and let through by `$ne: null`.
+
+			interface NullDoc {
+				[key: string]: unknown;
+				_id?: unknown;
+				k: string;
+				v?: unknown;
+			}
+
+			let docs: MongoLikeCollection<NullDoc>;
+
+			const keys = async (filter: MongoLikeFilter) =>
+				(await docs.find(filter).toArray()).map((doc) => doc.k).sort();
+
+			const WITH_NULL = ["arrMixed", "arrNull", "missing", "null"];
+			const WITHOUT_NULL = [
+				"arrEmpty",
+				"arrNested",
+				"arrNum",
+				"num",
+				"obj",
+				"objArr",
+			];
+
+			beforeEach(async () => {
+				docs = db.collection<NullDoc>("null_elements");
+				try {
+					await docs.deleteMany({});
+				} catch {
+					// Some engines throw on missing tables; ignore.
+				}
+				await docs.insertMany([
+					{ k: "arrNull", v: [null] },
+					{ k: "arrMixed", v: [1, null, "x"] },
+					{ k: "arrNum", v: [1, 2] },
+					{ k: "arrEmpty", v: [] },
+					{ k: "arrNested", v: [[null]] },
+					{ k: "null", v: null },
+					{ k: "missing" },
+					{ k: "num", v: 5 },
+					{ k: "obj", v: { a: null } },
+					{ k: "objArr", v: [{ a: null }] },
+				]);
+			});
+
+			test("{f: null} and $eq: null match an array holding a null", async () => {
+				expect(await keys({ v: null })).toEqual(WITH_NULL);
+				expect(await keys({ v: { $eq: null } })).toEqual(WITH_NULL);
+			});
+
+			test("$ne: null excludes an array holding a null", async () => {
+				expect(await keys({ v: { $ne: null } })).toEqual(WITHOUT_NULL);
+			});
+
+			test("$not and $nor negate the whole predicate", async () => {
+				expect(await keys({ v: { $not: { $eq: null } } })).toEqual(
+					WITHOUT_NULL,
+				);
+				expect(await keys({ v: { $not: { $ne: null } } })).toEqual(WITH_NULL);
+				expect(await keys({ $nor: [{ v: null }] })).toEqual(WITHOUT_NULL);
+			});
+
+			test("$gte: null and $lte: null are the same equality", async () => {
+				expect(await keys({ v: { $gte: null } })).toEqual(WITH_NULL);
+				expect(await keys({ v: { $lte: null } })).toEqual(WITH_NULL);
+			});
+
+			test("$in and $nin of null agree with it", async () => {
+				expect(await keys({ v: { $in: [null] } })).toEqual(WITH_NULL);
+				expect(await keys({ v: { $nin: [null] } })).toEqual(WITHOUT_NULL);
+			});
+
+			test("an array inside an array is not searched", async () => {
+				expect(await keys({ v: null })).not.toContain("arrNested");
+			});
+
+			test("an $elemMatch element is a value, not an array to look inside", async () => {
+				expect(await keys({ v: { $elemMatch: { $eq: null } } })).toEqual([
+					"arrMixed",
+					"arrNull",
+				]);
+				expect(await keys({ v: { $elemMatch: { $ne: null } } })).toEqual([
+					"arrMixed",
+					"arrNested",
+					"arrNum",
+					"objArr",
+				]);
+			});
+
+			test("a path through an array of documents sees a null in one of them", async () => {
+				expect(await keys({ "v.a": null })).toEqual([
+					"missing",
+					"null",
+					"num",
+					"obj",
+					"objArr",
+				]);
+				expect(await keys({ "v.a": { $ne: null } })).toEqual([
+					"arrEmpty",
+					"arrMixed",
+					"arrNested",
+					"arrNull",
+					"arrNum",
+				]);
+			});
+
+			test("the same through a path into documents that hold an array", async () => {
+				await docs.deleteMany({});
+				await docs.insertMany([
+					{ k: "pathNull", items: [{ x: null }, { x: 1 }] },
+					{ k: "pathAll", items: [{ x: 1 }, { x: 2 }] },
+					{ k: "pathObj", items: { x: null } },
+					{ k: "pathEmpty", items: [] },
+					{ k: "pathNone" },
+				]);
+				expect(await keys({ "items.x": null })).toEqual([
+					"pathNone",
+					"pathNull",
+					"pathObj",
+				]);
+				expect(await keys({ "items.x": { $ne: null } })).toEqual([
+					"pathAll",
+					"pathEmpty",
+				]);
+			});
+
+			test("countDocuments and an aggregation $match agree with find", async () => {
+				expect(await docs.countDocuments({ v: null })).toBe(4);
+				expect(await docs.countDocuments({ v: { $ne: null } })).toBe(6);
+				const matched = await docs
+					.aggregate<NullDoc>([{ $match: { v: { $ne: null } } }])
+					.toArray();
+				expect(matched.map((doc) => doc.k).sort()).toEqual(WITHOUT_NULL);
+			});
+		});
+
+		// -----------------------------------------------------------------
 		// UPDATE
 		// -----------------------------------------------------------------
 

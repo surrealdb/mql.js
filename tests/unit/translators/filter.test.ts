@@ -44,6 +44,13 @@ const range = (
 	const leading = above ? own : `(${own} OR ${field} >= [])`;
 	return `(${leading} AND ((${guarded(field)}) OR (type::is_array(${field}) AND array::any(${field}, |$__mql_element| (${guarded("$__mql_element")})))))`;
 };
+/**
+ * MongoDB's `{f: null}`: a null, an absent field, or an array holding a null.
+ */
+const nullEq = (name: string) => {
+	const field = escapeFieldPath(name);
+	return `(${field} IS NULL OR ${field} IS NONE OR (type::is_array(${field}) AND ${field} CONTAINS NULL))`;
+};
 const inAny = (name: string, param: string) => {
 	const field = escapeFieldPath(name);
 	return `(${field} IN $${param} OR (type::is_array(${field}) AND ${field} ANYINSIDE $${param}))`;
@@ -81,11 +88,12 @@ describe("translateFilter", () => {
 		expect(bindings).toEqual({ p0: 30 });
 	});
 
-	test("implicit equality with null matches null OR a missing field", () => {
-		// MongoDB `{f: null}` matches an explicit null *and* an absent field;
-		// SurrealDB spells those NULL and NONE. No value needs binding.
+	test("implicit equality with null matches null, a missing field or an array holding a null", () => {
+		// MongoDB `{f: null}` matches an explicit null *and* an absent field, and
+		// like any equality an array with such an element; SurrealDB spells those
+		// NULL and NONE. No value needs binding.
 		const { clause, bindings } = translateFilter({ field: null });
-		expect(clause).toBe("(`field` IS NULL OR `field` IS NONE)");
+		expect(clause).toBe(nullEq("field"));
 		expect(bindings).toEqual({});
 	});
 
@@ -737,16 +745,55 @@ describe("translateFilter", () => {
 	// -----------------------------------------------------------------
 	// null vs. a missing field
 	// -----------------------------------------------------------------
-	test("$eq null matches an explicit null and an absent field", () => {
+	test("$eq null matches an explicit null, an absent field and an array holding a null", () => {
 		const { clause, bindings } = translateFilter({ a: { $eq: null } });
-		expect(clause).toBe("(`a` IS NULL OR `a` IS NONE)");
+		expect(clause).toBe(
+			"(`a` IS NULL OR `a` IS NONE OR (type::is_array(`a`) AND `a` CONTAINS NULL))",
+		);
 		expect(bindings).toEqual({});
 	});
 
-	test("$ne null matches neither an explicit null nor an absent field", () => {
+	test("$ne null is the exact negation, so it skips an array holding a null too", () => {
 		const { clause, bindings } = translateFilter({ a: { $ne: null } });
-		expect(clause).toBe("(`a` IS NOT NULL AND `a` IS NOT NONE)");
+		expect(clause).toBe(`!${nullEq("a")}`);
 		expect(bindings).toEqual({});
+	});
+
+	test("null equality looks for a null element, and never inside one", () => {
+		// `CONTAINS NULL` tests the elements of the array and not theirs, so
+		// `[[null]]` does not match, as in MongoDB.
+		const { clause } = translateFilter({ "items.x": null });
+		expect(clause).toBe(nullEq("items.x"));
+	});
+
+	test("the identity keeps the plain null test, which has no elements", () => {
+		const options = { collection: "users" };
+		expect(translateFilter({ _id: null }, options).clause).toBe(
+			"(id IS NULL OR id IS NONE)",
+		);
+		expect(translateFilter({ _id: { $ne: null } }, options).clause).toBe(
+			"(id IS NOT NULL AND id IS NOT NONE)",
+		);
+	});
+
+	test("an $elemMatch element is a value, so null equality has no element arm", () => {
+		// `[[null]]` has an element that is not null, and `$elemMatch: {$ne: null}`
+		// matches it in MongoDB; an arm that looked inside the element would not.
+		expect(
+			translateFilter({ v: { $elemMatch: { $eq: null } } }).clause,
+		).toContain("WHERE ($this IS NULL OR $this IS NONE)]");
+		expect(
+			translateFilter({ v: { $elemMatch: { $ne: null } } }).clause,
+		).toContain("WHERE ($this IS NOT NULL AND $this IS NOT NONE)]");
+	});
+
+	test("$not and $nor of null equality negate the whole predicate", () => {
+		expect(translateFilter({ a: { $not: { $eq: null } } }).clause).toBe(
+			`!(${nullEq("a")})`,
+		);
+		expect(translateFilter({ $nor: [{ a: null }] }).clause).toBe(
+			`NOT (${nullEq("a")})`,
+		);
 	});
 
 	// -----------------------------------------------------------------
