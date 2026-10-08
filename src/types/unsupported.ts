@@ -24,6 +24,7 @@
 import type { Document, OptionalId, WithoutId } from "./documents.ts";
 import type { Filter } from "./filter.ts";
 import type {
+	Abortable,
 	CollationOptions,
 	CommandOperationOptions,
 	Hint,
@@ -36,7 +37,7 @@ import type { UpdateFilter } from "./update.ts";
 // ---------------------------------------------------------------------------
 
 /** Options for `aggregate`. Mirrors MongoDB's `AggregateOptions` (mongodb.d.ts:451). */
-export interface AggregateOptions extends CommandOperationOptions {
+export interface AggregateOptions extends CommandOperationOptions, Abortable {
 	/** Let the server spill temporary results to disk. */
 	allowDiskUse?: boolean;
 	/** Documents per batch. */

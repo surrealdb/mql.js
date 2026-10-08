@@ -125,3 +125,42 @@ export class CursorRows<T> {
 		this.index = 0;
 	}
 }
+
+/**
+ * A cursor's `AbortSignal`, as MongoDB's cursors treat it.
+ *
+ * Two things, both taken from the official driver. Aborting the signal closes the
+ * cursor at once, so whatever it holds on the server is released without anyone
+ * having to read; and every read begins by asking the signal, before it asks
+ * whether the cursor is closed, so a cursor that was closed *by* its signal
+ * reports the signal's reason and not "cursor exhausted".
+ */
+export class CursorSignal {
+	private unwatch: (() => void) | undefined;
+
+	constructor(
+		private readonly signal: AbortSignal | undefined,
+		private readonly onAbort: () => void,
+	) {
+		this.watch();
+	}
+
+	/** Throw the signal's reason if it has aborted. */
+	throwIfAborted(): void {
+		this.signal?.throwIfAborted();
+	}
+
+	/** Begin listening for the abort, if it has not happened and is not already heard. */
+	watch(): void {
+		const signal = this.signal;
+		if (!signal || this.unwatch || signal.aborted) return;
+		signal.addEventListener("abort", this.onAbort, { once: true });
+		this.unwatch = () => signal.removeEventListener("abort", this.onAbort);
+	}
+
+	/** Stop listening, so a signal that outlives the cursor does not hold it. */
+	release(): void {
+		this.unwatch?.();
+		this.unwatch = undefined;
+	}
+}

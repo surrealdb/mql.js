@@ -21,6 +21,8 @@ export class FakeQueryExecutor implements QueryExecutor {
 	serverVersion: string | undefined = undefined;
 
 	readonly queries: RecordedQuery[] = [];
+	/** Every signal an operation scoped this executor to, in order. */
+	readonly signals: AbortSignal[] = [];
 	closed = false;
 
 	/** Queued responses returned in order from `query()`. */
@@ -62,6 +64,16 @@ export class FakeQueryExecutor implements QueryExecutor {
 				error: undefined,
 			})),
 		);
+	}
+
+	/**
+	 * Records the signal and answers as this same executor, so a test sees both
+	 * that an operation scoped itself to its caller's signal and what it then
+	 * sent. Stopping a statement is the SDK adapter's job, and is tested there.
+	 */
+	withSignal(signal: AbortSignal): this {
+		this.signals.push(signal);
+		return this;
 	}
 
 	/** Configure a hook that fires for every `query()` call. */

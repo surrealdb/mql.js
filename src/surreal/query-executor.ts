@@ -110,6 +110,21 @@ export interface QueryExecutor {
 	): AsyncIterableIterator<T>;
 
 	/**
+	 * This executor, with every statement it sends stopped by `signal`.
+	 *
+	 * A signal that is already aborted sends nothing and rejects with its reason;
+	 * one that aborts while a statement is in flight rejects with the reason too —
+	 * the signal's own, untouched, as MongoDB's driver does, so a caller can tell a
+	 * `controller.abort()` from an `AbortSignal.timeout()`.
+	 *
+	 * What reaches the server depends on it. From SurrealDB 3.3.0, over a
+	 * WebSocket, a query is cancelled there too and later statements do not run (a
+	 * statement already running is not undone). Anywhere else the caller stops
+	 * waiting and the statement runs to its end.
+	 */
+	withSignal(signal: AbortSignal): QueryExecutor;
+
+	/**
 	 * The version reported by the connected SurrealDB server, if known.
 	 */
 	readonly serverVersion: string | undefined;

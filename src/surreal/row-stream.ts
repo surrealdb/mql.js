@@ -78,6 +78,10 @@ export interface StreamFallback<T> {
  * frame, so an error can follow rows the caller already has. That is the cost of
  * streaming, and it is the same one a MongoDB `getMore` has.
  *
+ * `caller` is the signal the caller passed, which stops the stream the same way
+ * a consumer leaving does but is then reported, with its own reason, where leaving
+ * is not a failure to report.
+ *
  * `fallback` is for the one failure that says the query never ran: a server that
  * will not take another stream. MongoDB has no limit on open cursors, so a cursor
  * refused for this is read some other way rather than failed — but only before a
@@ -88,6 +92,7 @@ export function streamRows<T>(
 	open: (signal: AbortSignal) => AsyncIterable<StreamedFrame>,
 	statement: number,
 	fallback?: StreamFallback<T>,
+	caller?: AbortSignal,
 ): AsyncIterableIterator<T> {
 	const abort = new AbortController();
 	let frames: AsyncIterator<StreamedFrame> | undefined;
@@ -100,6 +105,8 @@ export function streamRows<T>(
 			if (finished) return FINISHED;
 			if (fellBack) return fellBack.next();
 			try {
+				// A signal that has already aborted sends nothing, and says why.
+				caller?.throwIfAborted();
 				frames ??= open(abort.signal)[Symbol.asyncIterator]();
 				const step = await nextRow<T>(frames, statement);
 				if (step.done) finished = true;
@@ -111,6 +118,11 @@ export function streamRows<T>(
 				const left = finished;
 				finished = true;
 				abort.abort();
+				// The caller's own signal stopped it: its reason, untouched, and not a
+				// failure of the query to be translated. Asked before whether the
+				// consumer left, because a cursor released by that very signal has
+				// also left, and a read in flight then still owes the reason.
+				caller?.throwIfAborted();
 				if (left) return FINISHED;
 				if (!delivered && fallback?.when(err)) {
 					finished = false;

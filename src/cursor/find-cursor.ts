@@ -20,7 +20,7 @@ import { MongoCursorExhaustedError, MongoCursorInUseError } from "../errors.ts";
 import { mapRows } from "../surreal/row-stream.ts";
 import { translateProjection } from "../translators/projection.ts";
 import type { Document, FindOptions, Projection, Sort } from "../types.ts";
-import { CursorRows } from "./cursor-rows.ts";
+import { CursorRows, CursorSignal } from "./cursor-rows.ts";
 
 /**
  * The "ports"-style hook the cursor uses to actually run its query.
@@ -62,6 +62,8 @@ export class FindCursor<TSchema extends Document = Document> {
 	private readonly _streamer: FindStreamer<Document> | undefined;
 	private readonly _transform: ((doc: Document) => TSchema) | undefined;
 	private readonly _rows: CursorRows<TSchema>;
+	private readonly _signal: CursorSignal;
+	private readonly _options: FindOptions | undefined;
 
 	/** @internal */
 	constructor(
@@ -73,6 +75,11 @@ export class FindCursor<TSchema extends Document = Document> {
 	) {
 		this._runner = runner;
 		this._streamer = streamer;
+		this._options = options;
+		this._signal = new CursorSignal(
+			options?.signal,
+			() => void this.close().catch(() => undefined),
+		);
 		this._transform = transform;
 		this._filter = filter;
 		this._sort = options?.sort;
@@ -155,6 +162,7 @@ export class FindCursor<TSchema extends Document = Document> {
 				limit: this._limit,
 				skip: this._skip,
 				projection: this._projection,
+				signal: this._options?.signal,
 			},
 			composed,
 			this._streamer,
@@ -166,11 +174,13 @@ export class FindCursor<TSchema extends Document = Document> {
 	// -------------------------------------------------------------------
 
 	async toArray(): Promise<TSchema[]> {
+		this._signal.throwIfAborted();
 		this._throwIfClosed();
 		return this._rows.toArray();
 	}
 
 	async next(): Promise<TSchema | null> {
+		this._signal.throwIfAborted();
 		this._throwIfClosed();
 		await this._rows.begin();
 		const step = await this._rows.next();
@@ -178,6 +188,7 @@ export class FindCursor<TSchema extends Document = Document> {
 	}
 
 	async hasNext(): Promise<boolean> {
+		this._signal.throwIfAborted();
 		this._throwIfClosed();
 		await this._rows.begin();
 		return this._rows.hasNext();
@@ -185,9 +196,11 @@ export class FindCursor<TSchema extends Document = Document> {
 
 	// biome-ignore lint/suspicious/noConfusingVoidType: matches MongoDB driver's forEach signature
 	async forEach(iterator: (doc: TSchema) => boolean | void): Promise<void> {
+		this._signal.throwIfAborted();
 		this._throwIfClosed();
 		await this._rows.begin();
 		for (;;) {
+			this._signal.throwIfAborted();
 			const step = await this._rows.next();
 			if (step.done) return;
 			if (iterator(step.value) === false) {
@@ -200,18 +213,21 @@ export class FindCursor<TSchema extends Document = Document> {
 
 	/** @deprecated use `collection.countDocuments()` instead. */
 	async count(): Promise<number> {
+		this._signal.throwIfAborted();
 		this._throwIfClosed();
 		return this._rows.count();
 	}
 
 	async close(): Promise<void> {
 		this._closed = true;
+		this._signal.release();
 		await this._rows.release();
 	}
 
 	rewind(): this {
 		this._rows.reset();
 		this._closed = false;
+		this._signal.watch();
 		return this;
 	}
 
@@ -224,6 +240,7 @@ export class FindCursor<TSchema extends Document = Document> {
 				limit: this._limit,
 				skip: this._skip,
 				projection: this._projection,
+				signal: this._options?.signal,
 			},
 			this._transform,
 			this._streamer,
@@ -231,6 +248,7 @@ export class FindCursor<TSchema extends Document = Document> {
 	}
 
 	async *[Symbol.asyncIterator](): AsyncGenerator<TSchema> {
+		this._signal.throwIfAborted();
 		this._throwIfClosed();
 		await this._rows.begin();
 		let exhausted = false;
@@ -242,6 +260,9 @@ export class FindCursor<TSchema extends Document = Document> {
 					return;
 				}
 				yield step.value;
+				// MongoDB asks after every document, so a loop whose signal aborted
+				// while its body ran is told so rather than handed the next one.
+				this._signal.throwIfAborted();
 			}
 		} finally {
 			// Breaking out of a `for await` leaves the cursor, as it does in MongoDB.
