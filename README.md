@@ -1140,7 +1140,7 @@ const byCategory = await orders.aggregate([
 
 The pipeline becomes as few `SELECT`s as its stages allow. SurrealQL is not a sequence of steps — it is one statement with clause slots evaluated in a fixed order — so consecutive stages are folded into one statement while each lands in a slot the statement has not passed, and a subquery opens when one does not. The example above is two: the `$match` after the `$group` is a `HAVING`, and everything else rides in the inner statement.
 
-You do not have to think about that, except when reading a slow query. What is worth knowing is that `$group` → `$sort` → `$limit` is a single statement, which is the shape most pipelines end in.
+You do not have to think about that, except when reading a slow query. What is worth knowing is that `$group` → `$sort` → `$limit` is a single statement, which is the shape most pipelines end in. The exception is a `$group` using `$first`, `$last`, `$firstN`, `$lastN`, `$maxN` or `$minN`: those need the group's values as a list before they can pick from it, so the grouped statement is wrapped in a second one that does the picking, and whatever follows folds into the wrapper — two statements instead of one, with nothing else about the pipeline changing. `$push` and the aggregate accumulators stay in the grouped statement.
 
 ### Stages
 

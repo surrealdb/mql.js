@@ -257,6 +257,68 @@ export function registerAggregationScenarios(provider: DatabaseProvider): void {
 			});
 		});
 
+		describe("$group collecting accumulators with repeated values", () => {
+			// The case SurrealDB 3.4's change to `array::group` turned from "every
+			// value" into "the unique values" broke, and the one the integration
+			// fixture did not contain: a value that repeats with something different
+			// between the two. MongoDB's answer is the one asserted, on both legs.
+			const seedRepeats = async () => {
+				await sales.insertMany([
+					{ cat: "g", price: 1, sub: "a", qty: 5 },
+					{ cat: "g", price: 2, sub: "b", qty: 3 },
+					{ cat: "g", price: 3, sub: "a", qty: 5 },
+				]);
+			};
+
+			test("$push, $first and $last count every row, not every distinct value", async () => {
+				await seedRepeats();
+				const [group] = await sales
+					.aggregate([
+						{ $sort: { price: 1 } },
+						{
+							$group: {
+								_id: "$cat",
+								all: { $push: "$sub" },
+								first: { $first: "$sub" },
+								last: { $last: "$sub" },
+							},
+						},
+					])
+					.toArray();
+				expect(group?.all).toEqual(["a", "b", "a"]);
+				expect(group?.first).toBe("a");
+				expect(group?.last).toBe("a");
+			});
+
+			test("$lastN, $maxN and $minN count a repeated value each time it occurs", async () => {
+				await seedRepeats();
+				const [group] = await sales
+					.aggregate([
+						{ $sort: { price: 1 } },
+						{
+							$group: {
+								_id: "$cat",
+								lastTwo: { $lastN: { input: "$sub", n: 2 } },
+								topTwo: { $maxN: { input: "$qty", n: 2 } },
+								bottomTwo: { $minN: { input: "$qty", n: 2 } },
+							},
+						},
+					])
+					.toArray();
+				expect(group?.lastTwo).toEqual(["b", "a"]);
+				expect(group?.topTwo).toEqual([5, 5]);
+				expect(group?.bottomTwo).toEqual([3, 5]);
+			});
+
+			test("a constant is pushed once per row", async () => {
+				await seedRepeats();
+				const [group] = await sales
+					.aggregate([{ $group: { _id: "$cat", ones: { $push: 1 } } }])
+					.toArray();
+				expect(group?.ones).toEqual([1, 1, 1]);
+			});
+		});
+
 		// -----------------------------------------------------------------
 		// $match
 		// -----------------------------------------------------------------
