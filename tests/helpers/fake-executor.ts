@@ -10,6 +10,7 @@ import type {
 	QueryExecutor,
 	StatementOutcome,
 } from "../../src/surreal/query-executor.ts";
+import { bufferedRows } from "../../src/surreal/row-stream.ts";
 
 export interface RecordedQuery {
 	sql: string;
@@ -92,6 +93,20 @@ export class FakeQueryExecutor implements QueryExecutor {
 			return undefined as T;
 		}
 		return this.responses.shift() as T;
+	}
+
+	/**
+	 * The next queued response, as rows. Recorded as a query when it is first read,
+	 * not when it is built, because that is when a real executor would send it.
+	 */
+	queryRows<T = unknown>(
+		sql: string,
+		bindings?: Record<string, unknown>,
+	): AsyncIterableIterator<T> {
+		return bufferedRows<T>(async () => {
+			const rows = await this.query<T[] | undefined>(sql, bindings);
+			return rows ?? [];
+		});
 	}
 
 	async queryEach(

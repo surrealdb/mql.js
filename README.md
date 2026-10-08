@@ -488,7 +488,7 @@ no effect, or rejected with a reason. Nothing is accepted and silently dropped.
 | `comment` | accepted, no effect | SurrealDB has no query-level comment mechanism, and a comment cannot change the answer |
 | `readPreference`, `readConcern` of `local`/`majority`/`available` | accepted, no effect | reading the only node is at least what they ask for |
 | `writeConcern`, other than `w: 0` and `w > 1` | accepted, no effect | every write waits for SurrealDB to acknowledge |
-| `batchSize`, `maxAwaitTimeMS`, `noCursorTimeout`, `allowDiskUse`, `allowPartialResults`, `oplogReplay` | accepted, no effect | server-cursor and sharding mechanics; results are materialised in one round trip |
+| `batchSize`, `maxAwaitTimeMS`, `noCursorTimeout`, `allowDiskUse`, `allowPartialResults`, `oplogReplay` | accepted, no effect | server-cursor and sharding mechanics. There is no batch size to honour: `toArray()` is one response, and a cursor read a document at a time is [streamed](#streaming-and-leaving-early) in frames the server sizes itself |
 | `ordered` | honoured | decides what an `insertMany` keeps when part of the batch is refused — see [A batch insert that partly fails](#a-batch-insert-that-partly-fails) |
 | `session` | honoured | while the session has a transaction in progress, the operation's statements run inside it and are committed or rolled back with it — see [Sessions and transactions](#sessions-and-transactions) |
 | `readConcern` of `snapshot` | accepted, no effect | asks that every read come from one consistent point in time, which is what a SurrealDB transaction is: a statement is a transaction, and a read inside an open one does not observe a commit another connection made after it began |
@@ -1286,7 +1286,7 @@ So `$unwind` filters first, keeping exactly what MongoDB keeps: a non-empty arra
 
 ## Cursors
 
-The `find()` method returns a `FindCursor` that is lazy -- no query is executed until results are consumed.
+The `find()` method returns a `FindCursor` that is lazy -- no query is executed until results are consumed. `aggregate()` returns an `AggregationCursor` that behaves the same way.
 
 ### Chaining
 
@@ -1328,6 +1328,28 @@ const names = await cursor
   .map((doc) => ({ fullName: doc.name }))
   .toArray();
 ```
+
+### Streaming, and leaving early
+
+`toArray()` reads the whole result in one response, which is the cheapest way to get all of it. `next()`, `hasNext()`, `forEach()` and `for await` read a document at a time, and for those the rows are **streamed**: from SurrealDB 3.3.0 the server sends them as it finds them, so the first document is in hand before the last has been found, and a `for await` over a large collection never holds the whole of it. On an older server, or over HTTP, the same calls answer in one piece, and what you can observe — the documents, their order, the errors — is identical.
+
+What streaming changes is leaving. A consumer that stops early stops the server producing the rest:
+
+```typescript
+for await (const doc of users.find({})) {
+  if (doc.name === "Ada") break; // the server is told to stop; the connection stays usable
+}
+
+await users.find({}).forEach((doc) => doc.age < 30); // returning false leaves too
+```
+
+`break`, an exception out of the loop, `forEach` returning `false` and `close()` all release the stream. A cursor you drop without any of those holds its stream until the server has produced everything, and the rows it has not yet read are held in memory meanwhile — there is no way to pause the server over a WebSocket — so close a cursor you are not going to finish.
+
+Three things to know:
+
+- **A failure can follow documents you already have.** A statement that times out or fails partway through a scan is thrown from the read that reaches it, after the rows before it were handed over, as a MongoDB `getMore` can fail after earlier batches. `toArray()` has no such case, because it answers all or nothing.
+- **There is no limit on open cursors**, as in MongoDB, although the server allows 32 open streams per connection. A cursor beyond that is read whole instead of being refused — it works, it just isn't streamed.
+- **Inside a transaction a cursor is read whole**, from memory, through the transaction's own queue. A half-read stream would hold everything behind it, including the commit, so it never streams. A pipeline that ends in `$out` or `$merge`, or one containing `$lookup` or `$facet`, is also read whole: those bind their intermediate rows to variables ahead of the statement that reads them, and the frames before the last are working, not results.
 
 ### Lifecycle
 

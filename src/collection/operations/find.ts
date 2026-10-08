@@ -6,6 +6,12 @@
  * pipeline with `LIMIT 1`.
  */
 
+import { isMissingTableError } from "../../surreal/error-mapper.ts";
+import {
+	deferredRows,
+	mapRows,
+	rowsOrNoneWhen,
+} from "../../surreal/row-stream.ts";
 import { statement } from "../../surreal/sql/statement.ts";
 import { translateFilter } from "../../translators/filter.ts";
 import { translateProjection } from "../../translators/projection.ts";
@@ -87,6 +93,46 @@ export async function executeFind<TSchema extends Document>(
 	state: ExecuteFindOptions,
 	options?: FindOptions,
 ): Promise<TSchema[]> {
+	const { sql, bindings } = await planFind(ctx, filter, state, options);
+	const rows = await selectRows(ctx, sql, bindings);
+
+	return rows.map((r) => recordToDocument<TSchema>(r));
+}
+
+/**
+ * The same query as `executeFind`, read a document at a time as the server
+ * produces them.
+ *
+ * Nothing is built or sent until the first read, so a cursor that is created and
+ * never consumed costs nothing, and a translation refusal surfaces from the
+ * first read exactly where `executeFind`'s would have.
+ */
+export function streamFind<TSchema extends Document>(
+	ctx: OperationContext,
+	filter: Document | undefined,
+	state: ExecuteFindOptions,
+	options?: FindOptions,
+): AsyncIterableIterator<TSchema> {
+	const rows = deferredRows(async () => {
+		const { sql, bindings } = await planFind(ctx, filter, state, options);
+		return ctx.executor.queryRows<Record<string, unknown>>(sql, bindings);
+	});
+
+	return mapRows(
+		// A collection that was never written to reads as empty, as `selectRows`
+		// makes it for the buffered path.
+		rowsOrNoneWhen(rows, (err) => isMissingTableError(err, ctx.collectionName)),
+		(row) => recordToDocument<TSchema>(row),
+	);
+}
+
+/** The statement a cursor's state compiles to, and what it binds. */
+async function planFind(
+	ctx: OperationContext,
+	filter: Document | undefined,
+	state: ExecuteFindOptions,
+	options?: FindOptions,
+): Promise<{ sql: string; bindings: Record<string, unknown> }> {
 	const plan = await resolveOperationPlan(ctx, options, { indexHint: true });
 
 	const { clause, bindings, nearDistance } = translateFilter(
@@ -117,7 +163,5 @@ export async function executeFind<TSchema extends Document>(
 		plan.timeout,
 	);
 
-	const rows = await selectRows(ctx, sql, bindings);
-
-	return rows.map((r) => recordToDocument<TSchema>(r));
+	return { sql, bindings };
 }

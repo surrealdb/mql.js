@@ -6,14 +6,21 @@
  * project/filter) mutate the cursor in place; calling them after the
  * query has run throws `MongoClientError`.
  *
+ * Read a document at a time — `next()`, `hasNext()`, `forEach()`, `for await` —
+ * the rows are streamed as the server produces them (see `CursorRows`), and
+ * leaving early stops the server producing the rest. `toArray()` reads the whole
+ * result in one response.
+ *
  * `map()` returns a new `FindCursor` whose `transform` callback is
  * applied during result materialisation – preserving full chainability
  * (Liskov-safe; the previous `MappedCursor` cast is gone).
  */
 
 import { MongoCursorExhaustedError, MongoCursorInUseError } from "../errors.ts";
+import { mapRows } from "../surreal/row-stream.ts";
 import { translateProjection } from "../translators/projection.ts";
 import type { Document, FindOptions, Projection, Sort } from "../types.ts";
+import { CursorRows } from "./cursor-rows.ts";
 
 /**
  * The "ports"-style hook the cursor uses to actually run its query.
@@ -22,6 +29,14 @@ import type { Document, FindOptions, Projection, Sort } from "../types.ts";
 export type FindRunner<TSchema extends Document = Document> = (
 	options: FindCursorState,
 ) => Promise<TSchema[]>;
+
+/**
+ * The hook the cursor uses to read its query a document at a time. Optional: a
+ * cursor with none reads everything at once, as it always did.
+ */
+export type FindStreamer<TSchema extends Document = Document> = (
+	options: FindCursorState,
+) => AsyncIterableIterator<TSchema>;
 
 /** State the cursor passes back to its runner. */
 export interface FindCursorState {
@@ -41,12 +56,12 @@ export class FindCursor<TSchema extends Document = Document> {
 	private _skip: number | undefined;
 	private _projection: Projection | undefined;
 
-	private _results: TSchema[] | null = null;
-	private _index = 0;
 	private _closed = false;
 
 	private readonly _runner: FindRunner<Document>;
+	private readonly _streamer: FindStreamer<Document> | undefined;
 	private readonly _transform: ((doc: Document) => TSchema) | undefined;
+	private readonly _rows: CursorRows<TSchema>;
 
 	/** @internal */
 	constructor(
@@ -54,14 +69,33 @@ export class FindCursor<TSchema extends Document = Document> {
 		filter?: Document,
 		options?: FindOptions,
 		transform?: (doc: Document) => TSchema,
+		streamer?: FindStreamer<Document>,
 	) {
 		this._runner = runner;
+		this._streamer = streamer;
 		this._transform = transform;
 		this._filter = filter;
 		this._sort = options?.sort;
 		this._limit = options?.limit;
 		this._skip = options?.skip;
 		this._projection = options?.projection;
+		this._rows = new CursorRows<TSchema>(
+			async () => {
+				const rows = await this._runner(this._state());
+				return this._transform
+					? rows.map(this._transform)
+					: (rows as unknown as TSchema[]);
+			},
+			streamer
+				? () => {
+						const rows = streamer(this._state());
+						const transform = this._transform;
+						return transform
+							? mapRows(rows, transform)
+							: (rows as unknown as AsyncIterableIterator<TSchema>);
+					}
+				: undefined,
+		);
 	}
 
 	get closed(): boolean {
@@ -123,6 +157,7 @@ export class FindCursor<TSchema extends Document = Document> {
 				projection: this._projection,
 			},
 			composed,
+			this._streamer,
 		);
 	}
 
@@ -132,47 +167,50 @@ export class FindCursor<TSchema extends Document = Document> {
 
 	async toArray(): Promise<TSchema[]> {
 		this._throwIfClosed();
-		await this._execute();
-		return this._results!.slice();
+		return this._rows.toArray();
 	}
 
 	async next(): Promise<TSchema | null> {
 		this._throwIfClosed();
-		await this._execute();
-		if (this._index >= this._results!.length) return null;
-		return this._results![this._index++];
+		await this._rows.begin();
+		const step = await this._rows.next();
+		return step.done ? null : step.value;
 	}
 
 	async hasNext(): Promise<boolean> {
 		this._throwIfClosed();
-		await this._execute();
-		return this._index < this._results!.length;
+		await this._rows.begin();
+		return this._rows.hasNext();
 	}
 
 	// biome-ignore lint/suspicious/noConfusingVoidType: matches MongoDB driver's forEach signature
 	async forEach(iterator: (doc: TSchema) => boolean | void): Promise<void> {
 		this._throwIfClosed();
-		await this._execute();
-		for (const doc of this._results ?? []) {
-			if (iterator(doc) === false) break;
+		await this._rows.begin();
+		for (;;) {
+			const step = await this._rows.next();
+			if (step.done) return;
+			if (iterator(step.value) === false) {
+				// Stopping is leaving: what is still being produced is not wanted.
+				if (this._rows.streaming) await this.close();
+				return;
+			}
 		}
 	}
 
 	/** @deprecated use `collection.countDocuments()` instead. */
 	async count(): Promise<number> {
 		this._throwIfClosed();
-		await this._execute();
-		return this._results!.length;
+		return this._rows.count();
 	}
 
 	async close(): Promise<void> {
 		this._closed = true;
-		this._results = null;
+		await this._rows.release();
 	}
 
 	rewind(): this {
-		this._index = 0;
-		this._results = null;
+		this._rows.reset();
 		this._closed = false;
 		return this;
 	}
@@ -188,25 +226,37 @@ export class FindCursor<TSchema extends Document = Document> {
 				projection: this._projection,
 			},
 			this._transform,
+			this._streamer,
 		);
 	}
 
 	async *[Symbol.asyncIterator](): AsyncGenerator<TSchema> {
 		this._throwIfClosed();
-		await this._execute();
-		for (const doc of this._results ?? []) yield doc;
+		await this._rows.begin();
+		let exhausted = false;
+		try {
+			for (;;) {
+				const step = await this._rows.next();
+				if (step.done) {
+					exhausted = true;
+					return;
+				}
+				yield step.value;
+			}
+		} finally {
+			// Breaking out of a `for await` leaves the cursor, as it does in MongoDB.
+			if (!exhausted && this._rows.streaming) await this.close();
+		}
 	}
 
 	// -------------------------------------------------------------------
 	// Internal
 	// -------------------------------------------------------------------
 
-	private async _execute(): Promise<void> {
-		if (this._results !== null) return;
-
+	/** What the cursor asks of its runner and its streamer, as it stands now. */
+	private _state(): FindCursorState {
 		const proj = translateProjection(this._projection);
-
-		const rows = await this._runner({
+		return {
 			filter: this._filter,
 			sort: this._sort,
 			limit: this._limit,
@@ -216,15 +266,11 @@ export class FindCursor<TSchema extends Document = Document> {
 				? proj.excludeFields
 				: undefined,
 			projectionIncludeId: proj.includeId,
-		});
-
-		this._results = this._transform
-			? rows.map(this._transform)
-			: (rows as unknown as TSchema[]);
+		};
 	}
 
 	private _throwIfExecuted(): void {
-		if (this._results !== null) {
+		if (this._rows.started) {
 			throw new MongoCursorInUseError(
 				"Cursor options cannot be changed after execution",
 			);

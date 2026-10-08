@@ -279,3 +279,58 @@ describe("statements for another database", () => {
 		).toEqual(["row"]);
 	});
 });
+
+describe("streaming rows inside a transaction", () => {
+	/**
+	 * A streamed read would be the one operation able to hold the queue open: a
+	 * cursor nobody finishes would stall the commit behind it, and a commit that
+	 * lands mid-stream commits only the part of the query that had run. So rows are
+	 * read whole through the same serialised queue and handed out from memory.
+	 */
+	test("are read whole through the queue, and handed out from memory", async () => {
+		const events: string[] = [];
+		const handle: TransactionHandle = {
+			query: <R extends unknown[] = unknown[]>(sql: string): HandleReply<R> => {
+				events.push(sql);
+				// One frame, holding the statement's rows.
+				return reply(
+					Promise.resolve([[{ a: 1 }, { a: 2 }]] as unknown as R),
+					sql,
+				);
+			},
+			commit: async () => undefined,
+			cancel: async () => undefined,
+		};
+		const executor = new TransactionExecutor(handle, "3.2.4");
+
+		const rows = executor.queryRows("SELECT 1");
+		// Nothing is sent until the first read.
+		expect(events).toEqual([]);
+
+		const seen: unknown[] = [];
+		for await (const row of rows) seen.push(row);
+		expect(seen).toEqual([{ a: 1 }, { a: 2 }]);
+		expect(events).toEqual(["SELECT 1"]);
+	});
+
+	test("a cursor left unread cannot stall a commit behind it", async () => {
+		const { handle, events } = immediateHandle();
+		const executor = new TransactionExecutor(handle, "3.2.4");
+
+		const rows = executor.queryRows("SELECT 1");
+		await rows.next();
+		// The rows are in memory and the query is over: the queue is free.
+		await executor.commit();
+		expect(events).toEqual(["SELECT 1", "commit"]);
+	});
+
+	test("a finished transaction refuses the read, as it refuses any statement", async () => {
+		const { handle } = immediateHandle();
+		const executor = new TransactionExecutor(handle, "3.2.4");
+		await executor.commit();
+
+		await expect(executor.queryRows("SELECT 1").next()).rejects.toThrow(
+			MongoTransactionError,
+		);
+	});
+});

@@ -7,8 +7,9 @@
 import { Features, type Surreal } from "surrealdb";
 import { MongoCompatibilityError } from "../errors.ts";
 import { ScopedExecutor } from "./database-scope.ts";
-import { mapQueryError } from "./error-mapper.ts";
+import { isStreamCapRefusal, mapQueryError } from "./error-mapper.ts";
 import type { StatementOutcome } from "./query-executor.ts";
+import { bufferedRows, type StreamedFrame, streamRows } from "./row-stream.ts";
 import type { TransactionScope } from "./transaction-executor.ts";
 import { TransactionExecutor } from "./transaction-executor.ts";
 
@@ -71,6 +72,44 @@ export class SurrealdbExecutor extends ScopedExecutor {
 			// the caller cannot attribute that to a document.
 			throw mapQueryError(err);
 		}
+	}
+
+	/**
+	 * Stream the rows of the statement at `frame`.
+	 *
+	 * `.stream()` and not `.rows()`, which flattens every statement into one run of
+	 * rows: the `USE DB` a scoped statement carries answers with an object, and
+	 * `.rows()` would hand it to the caller as the first document. Frames say which
+	 * statement they belong to, so the wanted one is picked out by index.
+	 *
+	 * Against a server that cannot stream — anything before 3.3.0, or the HTTP
+	 * engine — the SDK answers the same call buffered, so the rows arrive together
+	 * and everything else here is unchanged.
+	 */
+	protected dispatchRows(
+		sql: string,
+		bindings: Record<string, unknown> | undefined,
+		frame: number,
+	): AsyncIterableIterator<unknown> {
+		return streamRows(
+			(signal) =>
+				this.surreal
+					.query(sql, bindings)
+					.signal(signal)
+					.stream() as AsyncIterable<StreamedFrame>,
+			frame,
+			{
+				// MongoDB has no limit on open cursors and the server has one on open
+				// streams. A cursor over that limit is read whole instead: the server
+				// refused it outright, so nothing ran and nothing runs twice.
+				when: isStreamCapRefusal,
+				rows: () =>
+					bufferedRows(async () => {
+						const frames = await this.dispatch(sql, bindings);
+						return (frames[frame] as unknown[] | undefined) ?? [];
+					}),
+			},
+		);
 	}
 
 	/**

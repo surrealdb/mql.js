@@ -14,6 +14,7 @@ import type {
 	QueryExecutor,
 	StatementOutcome,
 } from "../surreal/query-executor.ts";
+import { deferredRows } from "../surreal/row-stream.ts";
 
 /** What the executor needs from the client that owns it. */
 export interface ConnectionGate {
@@ -55,6 +56,18 @@ export class ClientExecutor implements QueryExecutor {
 	): Promise<readonly StatementOutcome[]> {
 		await this.assertUsable();
 		return this.inner.queryEach(sql, bindings);
+	}
+
+	queryRows<T = unknown>(
+		sql: string,
+		bindings?: Record<string, unknown>,
+	): AsyncIterableIterator<T> {
+		// The precondition is asynchronous and the iterator is not, so it is
+		// checked on the first read — which is also when a query would be sent.
+		return deferredRows(async () => {
+			await this.assertUsable();
+			return this.inner.queryRows<T>(sql, bindings);
+		});
 	}
 
 	/** The precondition both ways in are subject to. */
