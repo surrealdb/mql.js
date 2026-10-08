@@ -62,6 +62,1153 @@ beforeEach(async () => {
 });
 
 // ---------------------------------------------------------------------------
+// POSITIONAL UPDATES: $[] AND $[identifier]
+// ---------------------------------------------------------------------------
+
+describe("positional updates compute each element's new value from its own", () => {
+	// An update through `v.$[].n` is a rewrite of `v` one element at a time (see
+	// `src/translators/update/positional.ts`). Through the path expression it was
+	// written as, `v[*].n` evaluates to the *list* of every element's `n`, so `$inc`
+	// appended to that list and wrote it into every element: `[{n: 0}, {n: 5}]`
+	// became `[{n: [0, 5, 1]}, {n: [0, 5, 1]}]`, and `$mul` failed outright. What a
+	// real `mongod` leaves in `v` is what each case below expects, and
+	// `tests/e2e/scenarios/crud-scenarios.ts` checks them against one.
+
+	interface ArrayDoc {
+		[key: string]: unknown;
+		_id?: ObjectId | string | number;
+		k: string;
+		v?: unknown;
+	}
+
+	let docs: Collection<ArrayDoc>;
+
+	beforeEach(async () => {
+		docs = ctx.db.collection<ArrayDoc>("positional_updates");
+		try {
+			await docs.deleteMany({});
+		} catch {
+			// ignore
+		}
+	});
+
+	const run = async (
+		doc: Record<string, unknown>,
+		update: Record<string, unknown>,
+		options?: Record<string, unknown> | null,
+	) => {
+		await docs.deleteMany({});
+		await docs.insertOne({ k: "a", ...doc });
+		const result = await docs.updateOne(
+			{ k: "a" },
+			update as never,
+			(options ?? undefined) as never,
+		);
+		return { result, doc: await docs.findOne({ k: "a" }) };
+	};
+
+	describe("an operator that reads what it writes", () => {
+		const CASES: [
+			string,
+			Record<string, unknown>,
+			Record<string, unknown>,
+			Record<string, unknown> | null,
+			unknown,
+		][] = [
+			[
+				"$[] $inc n",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $inc: { "v.$[].n": 1 } },
+				null,
+				[
+					{ n: 1, s: 1, t: ["a"], u: 3 },
+					{ n: 6, s: 2, t: ["b", "c"], u: 4 },
+					{ n: 1, s: 3 },
+				],
+			],
+			[
+				"$[] $inc new field",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $inc: { "v.$[].z": 2 } },
+				null,
+				[
+					{ n: 0, s: 1, t: ["a"], u: 3, z: 2 },
+					{ n: 5, s: 2, t: ["b", "c"], u: 4, z: 2 },
+					{ s: 3, z: 2 },
+				],
+			],
+			[
+				"$[] $mul n",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $mul: { "v.$[].u": 2 } },
+				null,
+				[
+					{ n: 0, s: 1, t: ["a"], u: 6 },
+					{ n: 5, s: 2, t: ["b", "c"], u: 8 },
+					{ s: 3, u: 0 },
+				],
+			],
+			[
+				"$[] $mul missing",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $mul: { "v.$[].z": 2 } },
+				null,
+				[
+					{ n: 0, s: 1, t: ["a"], u: 3, z: 0 },
+					{ n: 5, s: 2, t: ["b", "c"], u: 4, z: 0 },
+					{ s: 3, z: 0 },
+				],
+			],
+			[
+				"$[] $min n",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $min: { "v.$[].n": 3 } },
+				null,
+				[
+					{ n: 0, s: 1, t: ["a"], u: 3 },
+					{ n: 3, s: 2, t: ["b", "c"], u: 4 },
+					{ n: 3, s: 3 },
+				],
+			],
+			[
+				"$[] $max n",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $max: { "v.$[].n": 3 } },
+				null,
+				[
+					{ n: 3, s: 1, t: ["a"], u: 3 },
+					{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+					{ n: 3, s: 3 },
+				],
+			],
+			[
+				"$[] $set n",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $set: { "v.$[].n": 9 } },
+				null,
+				[
+					{ n: 9, s: 1, t: ["a"], u: 3 },
+					{ n: 9, s: 2, t: ["b", "c"], u: 4 },
+					{ n: 9, s: 3 },
+				],
+			],
+			[
+				"$[] $unset n",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $unset: { "v.$[].n": "" } },
+				null,
+				[{ s: 1, t: ["a"], u: 3 }, { s: 2, t: ["b", "c"], u: 4 }, { s: 3 }],
+			],
+			[
+				"$[] $push t",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $push: { "v.$[].t": "z" } },
+				null,
+				[
+					{ n: 0, s: 1, t: ["a", "z"], u: 3 },
+					{ n: 5, s: 2, t: ["b", "c", "z"], u: 4 },
+					{ s: 3, t: ["z"] },
+				],
+			],
+			[
+				"$[] $addToSet t",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $addToSet: { "v.$[].t": "a" } },
+				null,
+				[
+					{ n: 0, s: 1, t: ["a"], u: 3 },
+					{ n: 5, s: 2, t: ["b", "c", "a"], u: 4 },
+					{ s: 3, t: ["a"] },
+				],
+			],
+			[
+				"$[] $addToSet t new",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $addToSet: { "v.$[].t": "q" } },
+				null,
+				[
+					{ n: 0, s: 1, t: ["a", "q"], u: 3 },
+					{ n: 5, s: 2, t: ["b", "c", "q"], u: 4 },
+					{ s: 3, t: ["q"] },
+				],
+			],
+			[
+				"$[] $pop t",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $pop: { "v.$[].t": 1 } },
+				null,
+				[{ n: 0, s: 1, t: [], u: 3 }, { n: 5, s: 2, t: ["b"], u: 4 }, { s: 3 }],
+			],
+			[
+				"$[] $pull t",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $pull: { "v.$[].t": "a" } },
+				null,
+				[
+					{ n: 0, s: 1, t: [], u: 3 },
+					{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+					{ s: 3 },
+				],
+			],
+			[
+				"$[] $pullAll t",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $pullAll: { "v.$[].t": ["a", "b"] } },
+				null,
+				[{ n: 0, s: 1, t: [], u: 3 }, { n: 5, s: 2, t: ["c"], u: 4 }, { s: 3 }],
+			],
+			[
+				"$[] $rename n",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $rename: { "v.$[].n": "v.$[].m" } },
+				null,
+				"error",
+			],
+			[
+				"$[e] $inc n",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $inc: { "v.$[e].n": 1 } },
+				{ arrayFilters: [{ "e.s": { $gte: 2 } }] },
+				[
+					{ n: 0, s: 1, t: ["a"], u: 3 },
+					{ n: 6, s: 2, t: ["b", "c"], u: 4 },
+					{ n: 1, s: 3 },
+				],
+			],
+			[
+				"$[e] $inc new field",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $inc: { "v.$[e].z": 2 } },
+				{ arrayFilters: [{ "e.s": { $gte: 2 } }] },
+				[
+					{ n: 0, s: 1, t: ["a"], u: 3 },
+					{ n: 5, s: 2, t: ["b", "c"], u: 4, z: 2 },
+					{ s: 3, z: 2 },
+				],
+			],
+			[
+				"$[e] $mul u",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $mul: { "v.$[e].u": 2 } },
+				{ arrayFilters: [{ "e.s": { $gte: 2 } }] },
+				[
+					{ n: 0, s: 1, t: ["a"], u: 3 },
+					{ n: 5, s: 2, t: ["b", "c"], u: 8 },
+					{ s: 3, u: 0 },
+				],
+			],
+			[
+				"$[e] $min n",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $min: { "v.$[e].n": 3 } },
+				{ arrayFilters: [{ "e.s": { $gte: 2 } }] },
+				[
+					{ n: 0, s: 1, t: ["a"], u: 3 },
+					{ n: 3, s: 2, t: ["b", "c"], u: 4 },
+					{ n: 3, s: 3 },
+				],
+			],
+			[
+				"$[e] $max n",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $max: { "v.$[e].n": 3 } },
+				{ arrayFilters: [{ "e.s": { $gte: 2 } }] },
+				[
+					{ n: 0, s: 1, t: ["a"], u: 3 },
+					{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+					{ n: 3, s: 3 },
+				],
+			],
+			[
+				"$[e] $set n",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $set: { "v.$[e].n": 9 } },
+				{ arrayFilters: [{ "e.s": { $gte: 2 } }] },
+				[
+					{ n: 0, s: 1, t: ["a"], u: 3 },
+					{ n: 9, s: 2, t: ["b", "c"], u: 4 },
+					{ n: 9, s: 3 },
+				],
+			],
+			[
+				"$[e] $unset n",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $unset: { "v.$[e].n": "" } },
+				{ arrayFilters: [{ "e.s": { $gte: 2 } }] },
+				[
+					{ n: 0, s: 1, t: ["a"], u: 3 },
+					{ s: 2, t: ["b", "c"], u: 4 },
+					{ s: 3 },
+				],
+			],
+			[
+				"$[e] $push t",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $push: { "v.$[e].t": "z" } },
+				{ arrayFilters: [{ "e.s": { $gte: 2 } }] },
+				[
+					{ n: 0, s: 1, t: ["a"], u: 3 },
+					{ n: 5, s: 2, t: ["b", "c", "z"], u: 4 },
+					{ s: 3, t: ["z"] },
+				],
+			],
+			[
+				"$[e] $addToSet t",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $addToSet: { "v.$[e].t": "q" } },
+				{ arrayFilters: [{ "e.s": { $gte: 2 } }] },
+				[
+					{ n: 0, s: 1, t: ["a"], u: 3 },
+					{ n: 5, s: 2, t: ["b", "c", "q"], u: 4 },
+					{ s: 3, t: ["q"] },
+				],
+			],
+			[
+				"$[e] $pop t",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $pop: { "v.$[e].t": 1 } },
+				{ arrayFilters: [{ "e.s": { $gte: 2 } }] },
+				[
+					{ n: 0, s: 1, t: ["a"], u: 3 },
+					{ n: 5, s: 2, t: ["b"], u: 4 },
+					{ s: 3 },
+				],
+			],
+			[
+				"$[e] $pull t",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $pull: { "v.$[e].t": "b" } },
+				{ arrayFilters: [{ "e.s": { $gte: 2 } }] },
+				[
+					{ n: 0, s: 1, t: ["a"], u: 3 },
+					{ n: 5, s: 2, t: ["c"], u: 4 },
+					{ s: 3 },
+				],
+			],
+			[
+				"$[e] $inc, filter matches none",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $inc: { "v.$[e].n": 1 } },
+				{ arrayFilters: [{ "e.s": { $gt: 99 } }] },
+				[
+					{ n: 0, s: 1, t: ["a"], u: 3 },
+					{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+					{ s: 3 },
+				],
+			],
+			[
+				"$[e] $inc, filter matches all",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $inc: { "v.$[e].n": 1 } },
+				{ arrayFilters: [{ "e.s": { $gte: 0 } }] },
+				[
+					{ n: 1, s: 1, t: ["a"], u: 3 },
+					{ n: 6, s: 2, t: ["b", "c"], u: 4 },
+					{ n: 1, s: 3 },
+				],
+			],
+			[
+				"$[e] $inc, equality filter",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $inc: { "v.$[e].n": 1 } },
+				{ arrayFilters: [{ "e.s": 2 }] },
+				[
+					{ n: 0, s: 1, t: ["a"], u: 3 },
+					{ n: 6, s: 2, t: ["b", "c"], u: 4 },
+					{ s: 3 },
+				],
+			],
+			[
+				"$[e] $inc, two conditions",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $inc: { "v.$[e].n": 1 } },
+				{ arrayFilters: [{ "e.s": { $gte: 1 }, "e.u": { $lt: 4 } }] },
+				[
+					{ n: 1, s: 1, t: ["a"], u: 3 },
+					{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+					{ s: 3 },
+				],
+			],
+			[
+				"$[e] $inc, two ops one field",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $inc: { "v.$[e].n": 1, "v.$[e].u": 10 } },
+				{ arrayFilters: [{ "e.s": { $gte: 2 } }] },
+				[
+					{ n: 0, s: 1, t: ["a"], u: 3 },
+					{ n: 6, s: 2, t: ["b", "c"], u: 14 },
+					{ n: 1, s: 3, u: 10 },
+				],
+			],
+			[
+				"$[e] $inc negative",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+				},
+				{ $inc: { "v.$[e].n": -2 } },
+				{ arrayFilters: [{ "e.s": { $gte: 2 } }] },
+				[
+					{ n: 0, s: 1, t: ["a"], u: 3 },
+					{ n: 3, s: 2, t: ["b", "c"], u: 4 },
+					{ n: -2, s: 3 },
+				],
+			],
+			[
+				"scalars $[] $inc",
+				{ v: [1, 2, 3] },
+				{ $inc: { "v.$[]": 1 } },
+				null,
+				[2, 3, 4],
+			],
+			[
+				"scalars $[] $mul",
+				{ v: [1, 2, 3] },
+				{ $mul: { "v.$[]": 2 } },
+				null,
+				[2, 4, 6],
+			],
+			[
+				"scalars $[] $min",
+				{ v: [1, 5, 3] },
+				{ $min: { "v.$[]": 3 } },
+				null,
+				[1, 3, 3],
+			],
+			[
+				"scalars $[] $max",
+				{ v: [1, 5, 3] },
+				{ $max: { "v.$[]": 3 } },
+				null,
+				[3, 5, 3],
+			],
+			[
+				"scalars $[] $set",
+				{ v: [1, 2, 3] },
+				{ $set: { "v.$[]": 0 } },
+				null,
+				[0, 0, 0],
+			],
+			["empty array $inc", { v: [] }, { $inc: { "v.$[].n": 1 } }, null, []],
+			[
+				"nested $[a].w.$[b].n $inc",
+				{
+					v: [
+						{
+							k: 1,
+							w: [
+								{ n: 0, s: 1 },
+								{ n: 5, s: 2 },
+							],
+						},
+						{ k: 2, w: [{ n: 7, s: 3 }] },
+					],
+				},
+				{ $inc: { "v.$[a].w.$[b].n": 1 } },
+				{ arrayFilters: [{ "a.k": 1 }, { "b.s": { $gte: 2 } }] },
+				[
+					{
+						k: 1,
+						w: [
+							{ n: 0, s: 1 },
+							{ n: 6, s: 2 },
+						],
+					},
+					{ k: 2, w: [{ n: 7, s: 3 }] },
+				],
+			],
+			[
+				"nested $[].w.$[].n $inc",
+				{
+					v: [
+						{
+							k: 1,
+							w: [
+								{ n: 0, s: 1 },
+								{ n: 5, s: 2 },
+							],
+						},
+						{ k: 2, w: [{ n: 7, s: 3 }] },
+					],
+				},
+				{ $inc: { "v.$[].w.$[].n": 1 } },
+				null,
+				[
+					{
+						k: 1,
+						w: [
+							{ n: 1, s: 1 },
+							{ n: 6, s: 2 },
+						],
+					},
+					{ k: 2, w: [{ n: 8, s: 3 }] },
+				],
+			],
+			[
+				"nested $[a].w.$[].n $inc",
+				{
+					v: [
+						{
+							k: 1,
+							w: [
+								{ n: 0, s: 1 },
+								{ n: 5, s: 2 },
+							],
+						},
+						{ k: 2, w: [{ n: 7, s: 3 }] },
+					],
+				},
+				{ $inc: { "v.$[a].w.$[].n": 1 } },
+				{ arrayFilters: [{ "a.k": 2 }] },
+				[
+					{
+						k: 1,
+						w: [
+							{ n: 0, s: 1 },
+							{ n: 5, s: 2 },
+						],
+					},
+					{ k: 2, w: [{ n: 8, s: 3 }] },
+				],
+			],
+			[
+				"nested $[a].w.$[b].n $set",
+				{
+					v: [
+						{
+							k: 1,
+							w: [
+								{ n: 0, s: 1 },
+								{ n: 5, s: 2 },
+							],
+						},
+						{ k: 2, w: [{ n: 7, s: 3 }] },
+					],
+				},
+				{ $set: { "v.$[a].w.$[b].n": 99 } },
+				{ arrayFilters: [{ "a.k": 1 }, { "b.s": { $gte: 2 } }] },
+				[
+					{
+						k: 1,
+						w: [
+							{ n: 0, s: 1 },
+							{ n: 99, s: 2 },
+						],
+					},
+					{ k: 2, w: [{ n: 7, s: 3 }] },
+				],
+			],
+			[
+				"$inc positional + plain",
+				{
+					v: [
+						{ n: 0, s: 1, t: ["a"], u: 3 },
+						{ n: 5, s: 2, t: ["b", "c"], u: 4 },
+						{ s: 3 },
+					],
+					count: 0,
+				},
+				{ $inc: { "v.$[e].n": 1, count: 1 } },
+				{ arrayFilters: [{ "e.s": { $gte: 2 } }] },
+				[
+					{ n: 0, s: 1, t: ["a"], u: 3 },
+					{ n: 6, s: 2, t: ["b", "c"], u: 4 },
+					{ n: 1, s: 3 },
+				],
+			],
+			[
+				"scalar elems + sub-path",
+				{ v: [1, 2] },
+				{ $inc: { "v.$[].n": 1 } },
+				null,
+				"error",
+			],
+			[
+				"mixed elems + sub-path",
+				{ v: [{ n: 1 }, 5] },
+				{ $inc: { "v.$[].n": 1 } },
+				null,
+				"error",
+			],
+			[
+				"$unset element itself",
+				{ v: [1, 2] },
+				{ $unset: { "v.$[]": "" } },
+				null,
+				[null, null],
+			],
+			[
+				"$set element itself",
+				{ v: [1, 2] },
+				{ $set: { "v.$[]": { a: 1 } } },
+				null,
+				[{ a: 1 }, { a: 1 }],
+			],
+			[
+				"conflict: $inc + $set same leaf",
+				{ v: [{ n: 0, s: 1 }, { n: 5, s: 2 }, { s: 3 }] },
+				{ $inc: { "v.$[].n": 1 }, $set: { "v.$[].n": 9 } },
+				null,
+				"error",
+			],
+			[
+				"conflict: prefix",
+				{ v: [{ a: { b: 1 } }] },
+				{ $set: { "v.$[].a": 1 }, $inc: { "v.$[].a.b": 1 } },
+				null,
+				"error",
+			],
+			[
+				"two identifiers one array",
+				{ v: [{ n: 0, s: 1 }, { n: 5, s: 2 }, { s: 3 }] },
+				{ $inc: { "v.$[a].n": 1, "v.$[b].s": 10 } },
+				{ arrayFilters: [{ "a.s": 1 }, { "b.s": { $gte: 2 } }] },
+				[{ n: 1, s: 1 }, { n: 5, s: 12 }, { s: 13 }],
+			],
+			[
+				"$[] and $[e] one array",
+				{ v: [{ n: 0, s: 1 }, { n: 5, s: 2 }, { s: 3 }] },
+				{ $inc: { "v.$[].n": 1, "v.$[e].s": 10 } },
+				{ arrayFilters: [{ "e.s": 1 }] },
+				[
+					{ n: 1, s: 11 },
+					{ n: 6, s: 2 },
+					{ n: 1, s: 3 },
+				],
+			],
+			[
+				"$inc + $set different leaves",
+				{ v: [{ n: 0, s: 1 }, { n: 5, s: 2 }, { s: 3 }] },
+				{ $inc: { "v.$[e].n": 1 }, $set: { "v.$[e].flag": true } },
+				{ arrayFilters: [{ "e.s": { $gte: 2 } }] },
+				[
+					{ n: 0, s: 1 },
+					{ flag: true, n: 6, s: 2 },
+					{ flag: true, n: 1, s: 3 },
+				],
+			],
+			[
+				"filter on the field being incremented",
+				{ v: [{ n: 4 }, { n: 5 }, { n: 6 }] },
+				{ $inc: { "v.$[e].n": 1, "v.$[e].m": 1 } },
+				{ arrayFilters: [{ "e.n": { $lt: 6 } }] },
+				[{ m: 1, n: 5 }, { m: 1, n: 6 }, { n: 6 }],
+			],
+			[
+				"$inc deep new path ($[])",
+				{ v: [{ s: 1 }, { a: { b: 1 } }] },
+				{ $inc: { "v.$[].a.b": 2 } },
+				null,
+				[{ a: { b: 2 }, s: 1 }, { a: { b: 3 } }],
+			],
+			[
+				"$push deep",
+				{ v: [{ s: 1 }, { a: { t: [1] } }] },
+				{ $push: { "v.$[].a.t": 9 } },
+				null,
+				[{ a: { t: [9] }, s: 1 }, { a: { t: [1, 9] } }],
+			],
+			[
+				"$push $each $position",
+				{ v: [{ t: [1, 2] }, {}] },
+				{ $push: { "v.$[].t": { $each: [8, 9], $position: 1 } } },
+				null,
+				[{ t: [1, 8, 9, 2] }, { t: [8, 9] }],
+			],
+			[
+				"$push $each $sort $slice",
+				{ v: [{ t: [3, 1] }, {}] },
+				{ $push: { "v.$[].t": { $each: [2, 5], $sort: 1, $slice: 3 } } },
+				null,
+				[{ t: [1, 2, 3] }, { t: [2, 5] }],
+			],
+			[
+				"$addToSet $each",
+				{ v: [{ t: [1] }, {}] },
+				{ $addToSet: { "v.$[].t": { $each: [1, 2] } } },
+				null,
+				[{ t: [1, 2] }, { t: [1, 2] }],
+			],
+			[
+				"$pull condition",
+				{ v: [{ t: [1, 5, 9] }, { t: [2] }, {}] },
+				{ $pull: { "v.$[].t": { $gt: 4 } } },
+				null,
+				[{ t: [1] }, { t: [2] }, {}],
+			],
+			[
+				"$pull sub-doc condition",
+				{ v: [{ t: [{ p: 1 }, { p: 9 }] }, {}] },
+				{ $pull: { "v.$[].t": { p: { $gt: 4 } } } },
+				null,
+				[{ t: [{ p: 1 }] }, {}],
+			],
+			[
+				"$rename dest positional",
+				{ v: [{ a: 1 }] },
+				{ $rename: { "v.0.a": "v.$[].b" } },
+				null,
+				"error",
+			],
+			[
+				"$min/$max strings",
+				{ v: [{ s: "b" }, { s: "d" }] },
+				{ $min: { "v.$[].s": "c" } },
+				null,
+				[{ s: "b" }, { s: "c" }],
+			],
+			[
+				"$mul float",
+				{ v: [{ n: 2 }, { n: 3 }] },
+				{ $mul: { "v.$[].n": 1.5 } },
+				null,
+				[{ n: 3 }, { n: 4.5 }],
+			],
+			[
+				"$inc on string leaf",
+				{ v: [{ n: "a" }] },
+				{ $inc: { "v.$[].n": 1 } },
+				null,
+				"error",
+			],
+			[
+				"$inc on null leaf",
+				{ v: [{ n: null }] },
+				{ $inc: { "v.$[].n": 1 } },
+				null,
+				"error",
+			],
+			[
+				"index before marker",
+				{ v: [{ w: [{ n: 1 }, { n: 2 }] }, { w: [{ n: 3 }] }] },
+				{ $inc: { "v.0.w.$[].n": 1 } },
+				null,
+				[{ w: [{ n: 2 }, { n: 3 }] }, { w: [{ n: 3 }] }],
+			],
+			[
+				"$unset deep, elements lack the parent",
+				{ v: [{ s: 1 }, { a: { b: 1, c: 2 } }, { a: {} }] },
+				{ $unset: { "v.$[].a.b": "" } },
+				null,
+				[{ s: 1 }, { a: { c: 2 } }, { a: {} }],
+			],
+			[
+				"$unset deep, scalar parent",
+				{ v: [{ a: 5 }] },
+				{ $unset: { "v.$[].a.b": "" } },
+				null,
+				[{ a: 5 }],
+			],
+			[
+				"$unset + $inc same elements",
+				{
+					v: [
+						{ n: 1, m: 2 },
+						{ n: 3, m: 4 },
+					],
+				},
+				{ $unset: { "v.$[e].m": "" }, $inc: { "v.$[e].n": 1 } },
+				{ arrayFilters: [{ "e.n": { $gte: 3 } }] },
+				[{ m: 2, n: 1 }, { n: 4 }],
+			],
+			[
+				"$set deep creates parent",
+				{ v: [{ s: 1 }, { a: { c: 2 } }] },
+				{ $set: { "v.$[].a.b": 9 } },
+				null,
+				[{ a: { b: 9 }, s: 1 }, { a: { b: 9, c: 2 } }],
+			],
+			[
+				"$push on array inside branch, absent",
+				{ v: [{ s: 1 }, { a: { t: [1] } }] },
+				{ $push: { "v.$[].a.t": 7 } },
+				null,
+				[{ a: { t: [7] }, s: 1 }, { a: { t: [1, 7] } }],
+			],
+			[
+				"two arrays, one update",
+				{ v: [{ n: 1 }], w: [{ m: 1 }] },
+				{ $inc: { "v.$[].n": 1, "w.$[].m": 5 } },
+				null,
+				[{ n: 2 }],
+			],
+		];
+
+		for (const [label, doc, update, options, expected] of CASES) {
+			test(label, async () => {
+				if (expected === "error") {
+					await expect(run(doc, update, options)).rejects.toThrow();
+					return;
+				}
+				expect((await run(doc, update, options)).doc?.v).toEqual(expected);
+			});
+		}
+	});
+
+	test("$currentDate sets the same date on every element", async () => {
+		const { doc } = await run(
+			{ v: [{ n: 1 }, { n: 2 }] },
+			{ $currentDate: { "v.$[].at": true } },
+		);
+		const [first, second] = doc?.v as { at: unknown }[];
+		expect(first.at).toBeInstanceOf(Date);
+		expect(second.at).toEqual(first.at);
+	});
+
+	test("the plain fields beside it are updated as usual", async () => {
+		const { doc } = await run(
+			{
+				v: [
+					{ n: 0, s: 1 },
+					{ n: 5, s: 2 },
+				],
+				count: 0,
+			},
+			{ $inc: { "v.$[e].n": 1, count: 1 } },
+			{ arrayFilters: [{ "e.s": { $gte: 2 } }] },
+		);
+		expect(doc?.count).toBe(1);
+		expect(doc?.v).toEqual([
+			{ n: 0, s: 1 },
+			{ n: 6, s: 2 },
+		]);
+	});
+
+	describe("what an update reports", () => {
+		test("an update that changes an element is modified", async () => {
+			const { result } = await run(
+				{ v: [{ n: 1 }] },
+				{ $inc: { "v.$[].n": 1 } },
+			);
+			expect(result.matchedCount).toBe(1);
+			expect(result.modifiedCount).toBe(1);
+		});
+
+		test("an update that leaves every element as it was is not", async () => {
+			const { result } = await run(
+				{ v: [{ n: 9 }, { n: 8 }] },
+				{ $max: { "v.$[].n": 3 } },
+			);
+			expect(result.matchedCount).toBe(1);
+			expect(result.modifiedCount).toBe(0);
+		});
+
+		test("a filter that selects nothing changes nothing", async () => {
+			const { result, doc } = await run(
+				{ v: [{ n: 1, s: 1 }] },
+				{ $inc: { "v.$[e].n": 1 } },
+				{ arrayFilters: [{ "e.s": { $gt: 99 } }] },
+			);
+			expect(result.modifiedCount).toBe(0);
+			expect(doc?.v).toEqual([{ n: 1, s: 1 }]);
+		});
+	});
+
+	describe("where this driver differs from MongoDB", () => {
+		test("an array that is absent is left alone, where MongoDB raises", async () => {
+			const { result, doc } = await run({}, { $inc: { "v.$[].n": 1 } });
+			expect(result.matchedCount).toBe(1);
+			expect(doc?.v).toBeUndefined();
+		});
+
+		test("an element that is not a document raises, and nothing is written", async () => {
+			await docs.insertOne({ k: "a", v: [{ n: 1 }, 5] });
+			await expect(
+				(async () =>
+					docs.updateOne({ k: "a" }, { $inc: { "v.$[].n": 1 } } as never))(),
+			).rejects.toThrow("Cannot create a field in an array element");
+			expect((await docs.findOne({ k: "a" }))?.v).toEqual([{ n: 1 }, 5]);
+		});
+
+		test("an array index after a marker is refused", async () => {
+			await docs.insertOne({ k: "a", v: [{ c: [1, 2] }] });
+			await expect(
+				(async () =>
+					docs.updateOne({ k: "a" }, { $inc: { "v.$[].c.0": 1 } } as never))(),
+			).rejects.toThrow(MongoCompatibilityError);
+		});
+
+		test("$rename through a marker is refused, as MongoDB refuses it", async () => {
+			await docs.insertOne({ k: "a", v: [{ n: 1 }] });
+			await expect(
+				(async () =>
+					docs.updateOne({ k: "a" }, {
+						$rename: { "v.$[].n": "m" },
+					} as never))(),
+			).rejects.toThrow("The source field for $rename may not be dynamic");
+		});
+
+		test("two operators on one path are refused, as MongoDB refuses them", async () => {
+			await docs.insertOne({ k: "a", v: [{ n: 1 }] });
+			await expect(
+				(async () =>
+					docs.updateOne({ k: "a" }, {
+						$inc: { "v.$[].n": 1 },
+						$set: { "v.$[].n": 9 },
+					} as never))(),
+			).rejects.toThrow("would create a conflict");
+			expect((await docs.findOne({ k: "a" }))?.v).toEqual([{ n: 1 }]);
+		});
+	});
+
+	describe("every way of running an update", () => {
+		test("updateMany, over arrays of different lengths", async () => {
+			await docs.insertMany([
+				{ k: "a", v: [{ n: 0 }, { n: 5 }] },
+				{ k: "b", v: [{ n: 1 }] },
+				{ k: "c", v: [] },
+			]);
+			const result = await docs.updateMany({}, {
+				$inc: { "v.$[].n": 10 },
+			} as never);
+			expect(result.modifiedCount).toBe(2);
+			expect((await docs.findOne({ k: "a" }))?.v).toEqual([
+				{ n: 10 },
+				{ n: 15 },
+			]);
+			expect((await docs.findOne({ k: "b" }))?.v).toEqual([{ n: 11 }]);
+			expect((await docs.findOne({ k: "c" }))?.v).toEqual([]);
+		});
+
+		test("findOneAndUpdate, returning the document", async () => {
+			await docs.insertOne({
+				k: "a",
+				v: [
+					{ qty: 1, status: "active" },
+					{ qty: 5, status: "done" },
+				],
+			});
+			const updated = await docs.findOneAndUpdate(
+				{ k: "a" },
+				{ $inc: { "v.$[item].qty": 1 } } as never,
+				{
+					arrayFilters: [{ "item.status": "active" }],
+					returnDocument: "after",
+				},
+			);
+			expect(updated?.v).toEqual([
+				{ qty: 2, status: "active" },
+				{ qty: 5, status: "done" },
+			]);
+		});
+
+		test("bulkWrite", async () => {
+			await docs.insertOne({ k: "a", v: [{ n: 1 }] });
+			await docs.bulkWrite([
+				{
+					updateOne: {
+						filter: { k: "a" },
+						update: { $inc: { "v.$[].n": 1 } } as never,
+					},
+				},
+			]);
+			expect((await docs.findOne({ k: "a" }))?.v).toEqual([{ n: 2 }]);
+		});
+
+		test("an upsert that inserts leaves an absent array absent", async () => {
+			const result = await docs.updateOne(
+				{ k: "new" },
+				{ $inc: { "v.$[].n": 1 }, $set: { seen: true } } as never,
+				{ upsert: true },
+			);
+			expect(result.upsertedCount).toBe(1);
+			const created = await docs.findOne({ k: "new" });
+			expect(created?.seen).toBe(true);
+			expect(created?.v).toBeUndefined();
+		});
+	});
+});
+
+// ---------------------------------------------------------------------------
 // ORDERING OPERATORS IN $pull AND arrayFilters
 // ---------------------------------------------------------------------------
 

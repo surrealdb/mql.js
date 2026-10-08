@@ -4,7 +4,10 @@
 
 import { MongoInvalidArgumentError } from "../../../errors.ts";
 import { escapeFieldPath } from "../../../surreal/sql/escape.ts";
-import { ELEMENT_FIELD } from "../../filter/operators/comparison.ts";
+import {
+	arrayTypeCheckFn,
+	ELEMENT_FIELD,
+} from "../../filter/operators/comparison.ts";
 import {
 	isRangeOperator,
 	rangePredicate,
@@ -36,20 +39,31 @@ function isPushModifier(value: unknown): boolean {
 	);
 }
 
-function applyPushWithModifiers(
-	field: string,
-	mods: Record<string, unknown>,
-	ctx: UpdateContext,
-): void {
-	const f = ctx.resolveField(field);
-	const eachParam = ctx.bind(mods.$each);
+/**
+ * The array an update starts from when the field is absent: MongoDB creates it.
+ *
+ * Spelled with `IS NONE` and not `??`, so a field that holds a *null* is not
+ * quietly taken for an absent one.
+ */
+function orEmpty(current: string): string {
+	return `IF ${current} IS NONE THEN [] ELSE ${current} END`;
+}
 
+/**
+ * The array a `$push` with modifiers builds from `current`, which is the SurrealQL
+ * reading the field as it is now — the field's own path for a plain one, and the
+ * element's field for a positional one.
+ */
+function pushExpression(
+	current: string,
+	mods: Record<string, unknown>,
+	params: { each: string; position?: string; slice?: string },
+): string {
 	let expr: string;
-	if (mods.$position !== undefined) {
-		const posParam = ctx.bind(mods.$position);
-		expr = `array::concat(array::concat(array::slice(${f}, 0, $${posParam}), $${eachParam}), array::slice(${f}, $${posParam}))`;
+	if (params.position !== undefined) {
+		expr = `array::concat(array::concat(array::slice(${current}, 0, $${params.position}), $${params.each}), array::slice(${current}, $${params.position}))`;
 	} else {
-		expr = `array::concat(${f}, $${eachParam})`;
+		expr = `array::concat(${current}, $${params.each})`;
 	}
 
 	if (mods.$sort !== undefined) {
@@ -64,16 +78,35 @@ function applyPushWithModifiers(
 		}
 	}
 
-	if (mods.$slice !== undefined) {
-		const sliceVal = mods.$slice as number;
-		const sliceParam = ctx.bind(sliceVal);
+	if (params.slice !== undefined) {
 		expr =
-			sliceVal < 0
-				? `array::slice(${expr}, $${sliceParam})`
-				: `array::slice(${expr}, 0, $${sliceParam})`;
+			(mods.$slice as number) < 0
+				? `array::slice(${expr}, $${params.slice})`
+				: `array::slice(${expr}, 0, $${params.slice})`;
 	}
 
-	ctx.parts.push(`${f} = ${expr}`);
+	return expr;
+}
+
+function applyPushWithModifiers(
+	field: string,
+	mods: Record<string, unknown>,
+	ctx: UpdateContext,
+): void {
+	const params = {
+		each: ctx.bind(mods.$each),
+		position:
+			mods.$position !== undefined ? ctx.bind(mods.$position) : undefined,
+		slice: mods.$slice !== undefined ? ctx.bind(mods.$slice) : undefined,
+	};
+
+	const positional = ctx.updatePositional(field, {
+		value: (current) => pushExpression(orEmpty(current), mods, params),
+	});
+	if (positional) return;
+
+	const f = ctx.resolveField(field);
+	ctx.parts.push(`${f} = ${pushExpression(f, mods, params)}`);
 }
 
 export const pushOperator: UpdateOperator = {
@@ -83,9 +116,15 @@ export const pushOperator: UpdateOperator = {
 			if (isPushModifier(value)) {
 				applyPushWithModifiers(field, value as Record<string, unknown>, ctx);
 			} else {
-				const f = ctx.resolveField(field);
 				const p = ctx.bind(value);
-				ctx.parts.push(`${f} += [$${p}]`);
+				if (
+					ctx.updatePositional(field, {
+						value: (current) => `array::concat(${orEmpty(current)}, [$${p}])`,
+					})
+				) {
+					continue;
+				}
+				ctx.parts.push(`${ctx.resolveField(field)} += [$${p}]`);
 			}
 		}
 	},
@@ -225,21 +264,30 @@ export const pullOperator: UpdateOperator = {
 	name: "$pull",
 	apply(entries, ctx) {
 		for (const [field, value] of entries) {
-			const f = ctx.resolveField(field);
 			const conditions = pullConditions(value, ctx);
+			const p = conditions ? undefined : ctx.bind(value);
 
-			if (conditions) {
-				// Keep the elements that do *not* match. A `[WHERE …]` filter over
-				// the array evaluates each element as `$this`, and — verified on
-				// SurrealDB 3.2.3 — assigning it back is a no-op when the field is
-				// absent, so an absent array is left absent rather than created as
-				// `[]`, which is what MongoDB does too.
-				ctx.parts.push(`${f} = ${f}[WHERE !(${conditions.join(" AND ")})]`);
-				continue;
-			}
+			// What is left once the matching elements are gone. A `[WHERE …]` filter
+			// over the array evaluates each element as `$this`.
+			const without = (current: string) =>
+				conditions
+					? `${current}[WHERE !(${conditions.join(" AND ")})]`
+					: `${current} - [$${p}]`;
 
-			const p = ctx.bind(value);
-			ctx.parts.push(`${f} -= [$${p}]`);
+			// Inside an element a field that is not an array — absent, say — is left
+			// as it is, where the filter over it would not be.
+			const isArray = arrayTypeCheckFn(ctx);
+			const positional = ctx.updatePositional(field, {
+				value: (current) =>
+					`IF ${isArray}(${current}) THEN ${without(current)} ELSE ${current} END`,
+			});
+			if (positional) continue;
+
+			// Verified on SurrealDB 3.2.3, assigning the filtered array back is a
+			// no-op when the field is absent, so an absent array is left absent
+			// rather than created as `[]`, which is what MongoDB does too.
+			const f = ctx.resolveField(field);
+			ctx.parts.push(conditions ? `${f} = ${without(f)}` : `${f} -= [$${p}]`);
 		}
 	},
 };
@@ -248,8 +296,14 @@ export const pullAllOperator: UpdateOperator = {
 	name: "$pullAll",
 	apply(entries, ctx) {
 		for (const [field, value] of entries) {
-			const f = ctx.resolveField(field);
 			const p = ctx.bind(value);
+			const isArray = arrayTypeCheckFn(ctx);
+			const positional = ctx.updatePositional(field, {
+				value: (current) =>
+					`IF ${isArray}(${current}) THEN array::complement(${current}, $${p}) ELSE ${current} END`,
+			});
+			if (positional) continue;
+			const f = ctx.resolveField(field);
 			ctx.parts.push(`${f} = array::complement(${f}, $${p})`);
 		}
 	},
@@ -287,13 +341,18 @@ export const addToSetOperator: UpdateOperator = {
 	name: "$addToSet",
 	apply(entries, ctx) {
 		for (const [field, value] of entries) {
-			const f = ctx.resolveField(field);
 			const each = addToSetEach(value);
 			const p = ctx.bind(each ?? value);
 			// With `$each` every element of the list is a candidate; without it the
 			// operand is added as a *single* element, so it stays wrapped — that is
 			// what makes `$addToSet: {t: [1,2]}` append the array itself.
 			const additions = each ? `$${p}` : `[$${p}]`;
+			const positional = ctx.updatePositional(field, {
+				value: (current) => `array::union(${orEmpty(current)}, ${additions})`,
+			});
+			if (positional) continue;
+
+			const f = ctx.resolveField(field);
 			// `?? []` because `array::union` rejects NONE: MongoDB creates the array
 			// when the field is absent.
 			ctx.parts.push(`${f} = array::union(${f} ?? [], ${additions})`);
@@ -305,12 +364,21 @@ export const popOperator: UpdateOperator = {
 	name: "$pop",
 	apply(entries, ctx) {
 		for (const [field, value] of entries) {
+			const popped = (f: string) =>
+				value === -1
+					? `array::slice(${f}, 1)`
+					: `array::slice(${f}, 0, array::len(${f}) - 1)`;
+
+			// An absent field is left absent, as MongoDB leaves it.
+			const isArray = arrayTypeCheckFn(ctx);
+			const positional = ctx.updatePositional(field, {
+				value: (current) =>
+					`IF ${isArray}(${current}) THEN ${popped(current)} ELSE ${current} END`,
+			});
+			if (positional) continue;
+
 			const f = ctx.resolveField(field);
-			if (value === -1) {
-				ctx.parts.push(`${f} = array::slice(${f}, 1)`);
-			} else {
-				ctx.parts.push(`${f} = array::slice(${f}, 0, array::len(${f}) - 1)`);
-			}
+			ctx.parts.push(`${f} = ${popped(f)}`);
 		}
 	},
 };

@@ -103,7 +103,7 @@ describe("findOneAndUpdate", () => {
 			{ arrayFilters: [{ "g.score": { $gte: 90 } }] },
 		);
 		expect(executor.queries[0].sql).toContain(
-			"`grades`[WHERE ((type::is_number(`score`) AND `score` <= math::inf AND `score` >= $p1)",
+			"array::map(`grades`, |$__mql_item0| IF ((type::is_number($__mql_item0.`score`) AND $__mql_item0.`score` <= math::inf AND $__mql_item0.`score` >= $p3)",
 		);
 	});
 

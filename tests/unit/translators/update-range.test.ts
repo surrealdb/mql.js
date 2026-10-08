@@ -196,58 +196,59 @@ describe("$pull: a condition on a field of each element", () => {
 });
 
 describe("arrayFilters: a condition on a field of the element", () => {
+	// The condition is tested in the closure that rewrites the array, where a bare
+	// field name would read the document, so its field is addressed through the
+	// element: `$__mql_item0.score`. The `$set` is only there to have a path.
+	const selecting = (
+		condition: Record<string, unknown>,
+		options: { dialect?: V3Dialect } = {},
+	) =>
+		translateUpdate({ $set: { "v.$[e].f": 1 } }, 0, {
+			arrayFilters: [{ "e.s": condition }],
+			...options,
+		}).clause;
+
+	const ITEM = "$__mql_item0";
+
 	test("a number operand", () => {
 		const { clause, bindings } = translateUpdate(
 			{ $set: { "scores.$[high].passed": true } },
 			0,
 			{ arrayFilters: [{ "high.value": { $gte: 90 } }] },
 		);
-		expect(clause).toBe(
-			`SET \`scores\`[WHERE ${arms("`value`", (e) => `type::is_number(${e}) AND ${e} <= math::inf AND ${e} >= $p0`)}].\`passed\` = $p1`,
+		expect(clause).toContain(
+			`IF ${arms(`${ITEM}.\`value\``, (e) => `type::is_number(${e}) AND ${e} <= math::inf AND ${e} >= $p2`)} THEN `,
 		);
-		expect(bindings).toEqual({ p0: 90, p1: true });
+		expect(bindings.p2).toBe(90);
 	});
 
 	test("a string, a boolean and a Date each get their own guard", () => {
 		const guards: [unknown, string][] = [
-			["8", "type::is_string(`s`)"],
-			[true, "type::is_bool(`s`)"],
-			[new Date(1), "type::is_datetime(`s`)"],
+			["8", `type::is_string(${ITEM}.\`s\`)`],
+			[true, `type::is_bool(${ITEM}.\`s\`)`],
+			[new Date(1), `type::is_datetime(${ITEM}.\`s\`)`],
 		];
 		for (const [operand, guard] of guards) {
-			const { clause } = translateUpdate({ $set: { "v.$[e].f": 1 } }, 0, {
-				arrayFilters: [{ "e.s": { $gt: operand } }],
-			});
-			expect(clause).toContain(guard);
+			expect(selecting({ $gt: operand })).toContain(guard);
 		}
 	});
 
 	test("an array-valued field is searched for an element in range", () => {
-		const { clause } = translateUpdate({ $set: { "v.$[e].f": 1 } }, 0, {
-			arrayFilters: [{ "e.score": { $lt: 60 } }],
-		});
-		expect(clause).toContain(
-			"type::is_array(`score`) AND array::any(`score`, |$__mql_element| (",
+		expect(selecting({ $lt: 60 })).toContain(
+			`type::is_array(${ITEM}.\`s\`) AND array::any(${ITEM}.\`s\`, |$__mql_element| (`,
 		);
 	});
 
 	test("it leaves out the range a table scan would use", () => {
-		const { clause } = translateUpdate({ $set: { "v.$[e].f": 1 } }, 0, {
-			arrayFilters: [{ "e.score": { $lt: 60 } }],
-		});
-		expect(clause).not.toContain(">= []");
+		expect(selecting({ $lt: 60 })).not.toContain(">= []");
 	});
 
 	test("null and NaN follow the same rules as in a filter", () => {
-		const filtered = (operator: string, operand: unknown) =>
-			translateUpdate({ $set: { "v.$[e].f": 1 } }, 0, {
-				arrayFilters: [{ "e.s": { [operator]: operand } }],
-			}).clause;
-		expect(filtered("$gt", null)).toBe("SET `v`[WHERE false].`f` = $p0");
-		expect(filtered("$lte", null)).toBe(
-			"SET `v`[WHERE (`s` IS NULL OR `s` IS NONE OR (type::is_array(`s`) AND `s` CONTAINS NULL))].`f` = $p0",
+		expect(selecting({ $gt: null })).toContain("IF false THEN");
+		expect(selecting({ $lt: Number.NaN })).toContain("IF false THEN");
+		expect(selecting({ $lte: null })).toContain(
+			`IF (${ITEM}.\`s\` IS NULL OR ${ITEM}.\`s\` IS NONE OR (type::is_array(${ITEM}.\`s\`) AND ${ITEM}.\`s\` CONTAINS NULL)) THEN `,
 		);
-		expect(filtered("$lt", Number.NaN)).toBe("SET `v`[WHERE false].`f` = $p0");
 	});
 
 	test("conditions are ANDed with the equality ones", () => {
@@ -257,21 +258,17 @@ describe("arrayFilters: a condition on a field of the element", () => {
 			{ arrayFilters: [{ "item.status": "active", "item.qty": { $lt: 100 } }] },
 		);
 		expect(clause).toContain(
-			"[WHERE `status` = $p0 AND ((type::is_number(`qty`)",
+			`IF ${ITEM}.\`status\` = $p2 AND ((type::is_number(${ITEM}.\`qty\`)`,
 		);
-		expect(bindings).toEqual({ p0: "active", p1: 100, p2: 1 });
+		expect(bindings).toMatchObject({ p0: 1, p2: "active", p3: 100 });
 	});
 
 	test("$eq, $ne, $in and $nin are unchanged", () => {
-		const filtered = (spec: Record<string, unknown>) =>
-			translateUpdate({ $set: { "v.$[e].f": 1 } }, 0, {
-				arrayFilters: [{ "e.s": spec }],
-			}).clause;
-		expect(filtered({ $eq: 1 })).toBe("SET `v`[WHERE `s` = $p0].`f` = $p1");
-		expect(filtered({ $ne: 1 })).toBe("SET `v`[WHERE `s` != $p0].`f` = $p1");
-		expect(filtered({ $in: [1] })).toBe("SET `v`[WHERE `s` IN $p0].`f` = $p1");
-		expect(filtered({ $nin: [1] })).toBe(
-			"SET `v`[WHERE `s` NOT IN $p0].`f` = $p1",
+		expect(selecting({ $eq: 1 })).toContain(`IF ${ITEM}.\`s\` = $p2 THEN `);
+		expect(selecting({ $ne: 1 })).toContain(`IF ${ITEM}.\`s\` != $p2 THEN `);
+		expect(selecting({ $in: [1] })).toContain(`IF ${ITEM}.\`s\` IN $p2 THEN `);
+		expect(selecting({ $nin: [1] })).toContain(
+			`IF ${ITEM}.\`s\` NOT IN $p2 THEN `,
 		);
 	});
 
@@ -281,11 +278,8 @@ describe("arrayFilters: a condition on a field of the element", () => {
 				return super.typeCheckFn(bson)?.replace("type::is_", "type::is::");
 			}
 		}
-		const { clause } = translateUpdate({ $set: { "v.$[e].f": 1 } }, 0, {
-			arrayFilters: [{ "e.s": { $gt: 5 } }],
-			dialect: new Renamed(),
-		});
-		expect(clause).toContain("type::is::number(`s`)");
+		const clause = selecting({ $gt: 5 }, { dialect: new Renamed() });
+		expect(clause).toContain(`type::is::number(${ITEM}.\`s\`)`);
 		expect(clause).not.toContain("type::is_");
 	});
 });

@@ -1145,6 +1145,8 @@ await users.updateMany(
 | `"field.$[]"` | All elements in the array |
 | `"field.$[id]"` | Elements matching the `arrayFilters` condition for `id` |
 
+An update through a positional path is a **rewrite of the array, one element at a time**, so every operator that takes a field — `$set`, `$unset`, `$inc`, `$mul`, `$min`, `$max`, `$currentDate`, `$push`, `$addToSet`, `$pop`, `$pull` and `$pullAll` — gives MongoDB's result through `$[]` and `$[identifier]`: `$inc` and `$mul` create the field on an element that lacks it, `$push` creates its array, and several fields of the same elements can be updated in one operation, the elements being selected once, by what they were. Where it differs: an array that does not exist is left alone, where MongoDB raises; an element that is not a document, given a path that goes inside it (`{ $inc: { "v.$[].n": 1 } }` over `[1, 2]`), raises as MongoDB's does, with other wording; two operators on one path, or on a path and one inside it, are refused as MongoDB refuses them, and so is `$rename` through a positional path; and an array index after a marker (`"v.$[].c.0"`) is refused, as is an `arrayFilters` entry that names the element itself (`{ "e": { $gte: 90 } }`), which was never supported. Several identifiers on one array (`$[a]` and `$[b]`, or `$[]` and `$[e]`) are applied one after another, so one identifier's filter sees the array as the identifier before it left it, which agrees with MongoDB unless that filter reads a field the other identifier changes.
+
 ## Aggregation
 
 `collection.aggregate(pipeline)` returns an `AggregationCursor` synchronously, as MongoDB does, and sends nothing until you consume it.

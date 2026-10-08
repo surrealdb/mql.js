@@ -11,7 +11,7 @@ import type { Document } from "../../types.ts";
 import { resolveDialect, type SurrealDialect } from "../dialect/index.ts";
 import { DEFAULT_UPDATE_REGISTRY } from "./default-registry.ts";
 import type { UpdateOperatorRegistry } from "./operator-registry.ts";
-import { resolveField } from "./positional.ts";
+import { PositionalUpdates, resolveField } from "./positional.ts";
 import type { UpdateContext } from "./update-context.ts";
 
 export interface TranslatedUpdate {
@@ -58,6 +58,7 @@ export function translateUpdate(
 	const bindings: Record<string, unknown> = {};
 	const parts: string[] = [];
 	let counter = startIndex ?? options?.startIndex ?? 0;
+	const positional = new PositionalUpdates();
 
 	const ctx: UpdateContext = {
 		bindings,
@@ -74,6 +75,9 @@ export function translateUpdate(
 		resolveField(field) {
 			return resolveField(field, ctx);
 		},
+		updatePositional(field, update) {
+			return positional.add(field, update);
+		},
 	};
 
 	for (const [op, fields] of Object.entries(update)) {
@@ -87,6 +91,10 @@ export function translateUpdate(
 		rejectIdMutation(entries);
 		handler.apply(entries, ctx);
 	}
+
+	// Every positional update to an array is one rewrite of it, which has to wait
+	// until all of them are known.
+	positional.emit(ctx);
 
 	if (parts.length === 0) {
 		return { clause: "", bindings: {} };

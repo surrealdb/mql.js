@@ -8,6 +8,7 @@
 
 import type { Document } from "../../types.ts";
 import type { SurrealDialect } from "../dialect/index.ts";
+import type { PositionalUpdate } from "./positional.ts";
 
 export interface UpdateContext {
 	/** Bindings produced so far. Mutated in place by operators. */
@@ -33,6 +34,19 @@ export interface UpdateContext {
 	nextParam(): string;
 	/** Bind a value and return the parameter name. */
 	bind(value: unknown): string;
-	/** Resolve a possibly-positional MongoDB field path to SurrealQL syntax. */
+	/**
+	 * Resolve a MongoDB field path to SurrealQL syntax. A positional path (`$[]`,
+	 * `$[identifier]`) is refused: it is not a path expression, and goes through
+	 * `updatePositional`.
+	 */
 	resolveField(field: string): string;
+	/**
+	 * Record what an operator does to the value at a positional path, and return
+	 * `true`; return `false`, recording nothing, for a path with no positional
+	 * marker, which the caller resolves as a plain field.
+	 *
+	 * The updates to one array are gathered and emitted together once every
+	 * operator has run, as one rewrite of it — see `positional.ts`.
+	 */
+	updatePositional(field: string, update: PositionalUpdate): boolean;
 }
