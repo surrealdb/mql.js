@@ -564,15 +564,49 @@ function applyGroup(
 	const fields = [
 		`${compileExpression(_id, bind, plainId)} AS ${escapeAlias(GROUP_KEY)}`,
 	];
+
+	// What an enclosing statement reads back out, when one is needed: the key,
+	// then each accumulator by the name it ends up under.
+	const outer = [escapeAlias(GROUP_KEY)];
+	let derived = false;
+	const taken = new Set(Object.keys(accumulators));
+	let collected = 0;
+
 	for (const [field, accumulator] of Object.entries(accumulators)) {
-		fields.push(
-			`${compileAccumulator(field, accumulator, bind, plainId)} AS ${escapeAlias(field)}`,
+		const compiled = compileAccumulator(field, accumulator, bind, plainId);
+		if (!compiled.derive) {
+			fields.push(`${compiled.sql} AS ${escapeAlias(field)}`);
+			outer.push(escapeAlias(field));
+			continue;
+		}
+
+		// The grouped statement carries the group's values as a list, under a name
+		// of its own that no accumulator field is using; the enclosing one turns
+		// the list into the answer. Both halves are needed because a scalar array
+		// function written beside a bare projection runs per row, not over the
+		// list — see accumulators.ts.
+		let alias = `__mql_collected_${collected++}`;
+		while (taken.has(alias)) alias = `_${alias}`;
+		taken.add(alias);
+		fields.push(`${compiled.sql} AS ${escapeAlias(alias)}`);
+		outer.push(
+			`${compiled.derive(escapeAlias(alias))} AS ${escapeAlias(field)}`,
 		);
+		derived = true;
 	}
 
 	builder.claim(Slot.Group, { needsNoSplit: true });
 	builder.setGroup(`GROUP BY ${escapeAlias(GROUP_KEY)}`);
 	builder.setFields(fields.join(", "));
+
+	// Claiming the field list a second time is how a statement is told to close
+	// and continue as a subquery, so everything after the `$group` — a `$sort`, a
+	// `$limit` — folds into this outer statement exactly as it folded into the
+	// grouped one before.
+	if (derived) {
+		builder.claim(Slot.Fields);
+		builder.setFields(outer.join(", "));
+	}
 }
 
 /**
