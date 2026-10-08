@@ -215,6 +215,7 @@ for (const [kind, make] of KINDS) {
 		test("returning false from forEach releases the stream", async () => {
 			const s = scripted(ROWS);
 			const cursor = make(s);
+			// biome-ignore lint/suspicious/useIterableCallbackReturn: forEach() short-circuits on `false` per the MongoDB driver contract.
 			await cursor.forEach(() => false);
 
 			expect(s.tracking.released).toBe(1);
@@ -260,9 +261,11 @@ for (const [kind, make] of KINDS) {
 			await expect(cursor.next()).rejects.toThrow(MongoCursorExhaustedError);
 			await expect(cursor.hasNext()).rejects.toThrow(MongoCursorExhaustedError);
 			await expect(cursor.toArray()).rejects.toThrow(MongoCursorExhaustedError);
-			await expect(cursor.forEach(() => undefined)).rejects.toThrow(
-				MongoCursorExhaustedError,
-			);
+			await expect(
+				cursor.forEach(() => {
+					/* never called: the cursor is closed */
+				}),
+			).rejects.toThrow(MongoCursorExhaustedError);
 		});
 
 		test("closing twice releases once", async () => {

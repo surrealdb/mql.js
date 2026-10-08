@@ -47,7 +47,12 @@ function stub(options: {
 		query(sql: string, bindings?: unknown) {
 			const call: Stub["calls"][number] = { sql, bindings, streamed: false };
 			calls.push(call);
-			const query = {
+			// A real promise with the SDK query's other methods attached, as the
+			// transaction tests build theirs: awaiting it answers whole.
+			const query: Promise<unknown> & {
+				signal(signal: AbortSignal): unknown;
+				stream(): AsyncIterable<StreamedFrame>;
+			} = Object.assign(Promise.resolve(options.buffered ?? []), {
 				signal(signal: AbortSignal) {
 					call.signal = signal;
 					return query;
@@ -56,10 +61,7 @@ function stub(options: {
 					call.streamed = true;
 					return options.stream();
 				},
-				then(resolve: (value: unknown) => void) {
-					resolve(options.buffered ?? []);
-				},
-			};
+			});
 			return query;
 		},
 	} as unknown as Surreal;

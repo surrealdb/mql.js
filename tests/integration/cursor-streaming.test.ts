@@ -95,6 +95,7 @@ describe("find() read a document at a time", () => {
 		await items
 			.find({})
 			.sort({ n: 1 })
+			// biome-ignore lint/suspicious/useIterableCallbackReturn: forEach() short-circuits on `false` per the MongoDB driver contract.
 			.forEach((doc) => {
 				seen.push(doc.n);
 				return seen.length < 4;
@@ -163,6 +164,7 @@ describe("leaving a cursor early", () => {
 	});
 
 	test("forEach returning false leaves it usable", async () => {
+		// biome-ignore lint/suspicious/useIterableCallbackReturn: forEach() short-circuits on `false` per the MongoDB driver contract.
 		await items.find({}).forEach(() => false);
 		expect(await items.countDocuments({})).toBe(SIZE);
 	});
