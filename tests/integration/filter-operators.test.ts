@@ -6,7 +6,11 @@ import {
 	expect,
 	test,
 } from "bun:test";
-import type { Collection, ObjectId } from "../../src/index.ts";
+import {
+	type Collection,
+	MongoCompatibilityError,
+	ObjectId,
+} from "../../src/index.ts";
 import {
 	type SurrealTestContext,
 	setupSurreal,
@@ -155,6 +159,417 @@ describe("combined comparison operators", () => {
 			.toArray();
 		expect(results).toHaveLength(2);
 		expect(results.map((r) => r.name)).toEqual(["Bob", "Charlie"]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// RANGE OPERATORS AND BSON TYPE BRACKETS
+// ---------------------------------------------------------------------------
+
+describe("range operators match within one BSON type bracket", () => {
+	interface RangeDoc {
+		[key: string]: unknown;
+		_id?: ObjectId | string | number;
+		k: string;
+		v?: unknown;
+	}
+
+	let docs: Collection<RangeDoc>;
+
+	const keys = async (filter: Record<string, unknown>) =>
+		(await docs.find(filter).toArray()).map((doc) => doc.k).sort();
+
+	// One document of each type. `{v: {$lt: 5}}` used to return `bool`, `missing`
+	// and `null` as well, because SurrealQL orders them all in one total order.
+	const insertOneOfEachType = () =>
+		docs.insertMany([
+			{ k: "num10", v: 10 },
+			{ k: "num1", v: 1 },
+			{ k: "str", v: "abc" },
+			{ k: "bool", v: true },
+			{ k: "arr", v: [7, 8] },
+			{ k: "obj", v: { a: 1 } },
+			{ k: "date", v: new Date(5000) },
+			{ k: "null", v: null },
+			{ k: "missing" },
+		]);
+
+	beforeEach(async () => {
+		docs = ctx.db.collection<RangeDoc>("range_ops");
+		try {
+			await docs.deleteMany({});
+		} catch {
+			// ignore
+		}
+	});
+
+	// What a real `mongod` returns for each of these, which
+	// `tests/e2e/scenarios/crud-scenarios.ts` checks against one.
+	test("$gt of a number matches numbers, and an array with a number above it", async () => {
+		await insertOneOfEachType();
+		expect(await keys({ v: { $gt: 5 } })).toEqual(["arr", "num10"]);
+	});
+
+	test("$lt of a number skips a missing field, a null and a boolean", async () => {
+		await insertOneOfEachType();
+		expect(await keys({ v: { $lt: 5 } })).toEqual(["num1"]);
+	});
+
+	test("$gt of a string matches strings only", async () => {
+		await insertOneOfEachType();
+		expect(await keys({ v: { $gt: "a" } })).toEqual(["str"]);
+	});
+
+	test("$lt of a string matches strings only", async () => {
+		await insertOneOfEachType();
+		expect(await keys({ v: { $lt: "z" } })).toEqual(["str"]);
+	});
+
+	test("$gt of a Date matches dates only", async () => {
+		await insertOneOfEachType();
+		expect(await keys({ v: { $gt: new Date(1) } })).toEqual(["date"]);
+	});
+
+	test("$gte and $lte of a boolean match booleans only", async () => {
+		await insertOneOfEachType();
+		expect(await keys({ v: { $gte: true } })).toEqual(["bool"]);
+		expect(await keys({ v: { $lte: true } })).toEqual(["bool"]);
+		expect(await keys({ v: { $lte: false } })).toEqual([]);
+	});
+
+	test("a person with no age is not under 30", async () => {
+		const people = ctx.db.collection<RangeDoc>("range_people");
+		await people.deleteMany({});
+		await people.insertMany([
+			{ k: "Alice", age: 25 },
+			{ k: "Bob", age: 40 },
+			{ k: "Carol" },
+			{ k: "Dave", age: null },
+			{ k: "Eve", age: "unknown" },
+		]);
+		const under30 = await people.find({ age: { $lt: 30 } }).toArray();
+		expect(under30.map((person) => person.k)).toEqual(["Alice"]);
+		expect(await people.countDocuments({ age: { $lt: 30 } })).toBe(1);
+	});
+
+	describe("null", () => {
+		test("$gt and $lt of null match nothing", async () => {
+			await insertOneOfEachType();
+			expect(await keys({ v: { $gt: null } })).toEqual([]);
+			expect(await keys({ v: { $lt: null } })).toEqual([]);
+		});
+
+		test("$gte and $lte of null match a null and a missing field", async () => {
+			await insertOneOfEachType();
+			expect(await keys({ v: { $gte: null } })).toEqual(["missing", "null"]);
+			expect(await keys({ v: { $lte: null } })).toEqual(["missing", "null"]);
+		});
+
+		test("an undefined operand is null", async () => {
+			await insertOneOfEachType();
+			expect(await keys({ v: { $gt: undefined } })).toEqual([]);
+			expect(await keys({ v: { $gte: undefined } })).toEqual([
+				"missing",
+				"null",
+			]);
+		});
+	});
+
+	describe("NaN and infinities", () => {
+		beforeEach(async () => {
+			await docs.insertMany([
+				{ k: "nan", v: Number.NaN },
+				{ k: "inf", v: Number.POSITIVE_INFINITY },
+				{ k: "ninf", v: Number.NEGATIVE_INFINITY },
+				{ k: "five", v: 5 },
+				{ k: "arrNan", v: [Number.NaN] },
+			]);
+		});
+
+		test("a stored NaN is in no range", async () => {
+			expect(await keys({ v: { $gt: 0 } })).toEqual(["five", "inf"]);
+			expect(await keys({ v: { $gte: 0 } })).toEqual(["five", "inf"]);
+			expect(await keys({ v: { $lt: 10 } })).toEqual(["five", "ninf"]);
+			expect(await keys({ v: { $lte: 10 } })).toEqual(["five", "ninf"]);
+		});
+
+		test("an operand of NaN is ordered against nothing, but equals NaN", async () => {
+			expect(await keys({ v: { $gt: Number.NaN } })).toEqual([]);
+			expect(await keys({ v: { $lt: Number.NaN } })).toEqual([]);
+			expect(await keys({ v: { $gte: Number.NaN } })).toEqual([
+				"arrNan",
+				"nan",
+			]);
+			expect(await keys({ v: { $lte: Number.NaN } })).toEqual([
+				"arrNan",
+				"nan",
+			]);
+		});
+
+		test("infinities order as numbers", async () => {
+			expect(await keys({ v: { $gt: Number.POSITIVE_INFINITY } })).toEqual([]);
+			expect(await keys({ v: { $gte: Number.POSITIVE_INFINITY } })).toEqual([
+				"inf",
+			]);
+			expect(await keys({ v: { $lte: Number.NEGATIVE_INFINITY } })).toEqual([
+				"ninf",
+			]);
+		});
+	});
+
+	describe("arrays", () => {
+		beforeEach(async () => {
+			await docs.insertMany([
+				{ k: "low", v: [1, 2] },
+				{ k: "high", v: [7, 8] },
+				{ k: "both", v: [1, 9] },
+				{ k: "mixed", v: [1, "x"] },
+				{ k: "nested", v: [[7, 8]] },
+				{ k: "empty", v: [] },
+				{ k: "scalar", v: 6 },
+			]);
+		});
+
+		test("an array matches when any element is in range", async () => {
+			expect(await keys({ v: { $gt: 5 } })).toEqual(["both", "high", "scalar"]);
+			expect(await keys({ v: { $lt: 5 } })).toEqual(["both", "low", "mixed"]);
+		});
+
+		test("an array that is itself above the operand does not match on that account", async () => {
+			// `[1, 2] > 5` in SurrealQL's order, which is what the old comparison used.
+			expect(await keys({ v: { $gt: 5 } })).not.toContain("low");
+		});
+
+		test("an array inside an array is not searched", async () => {
+			expect(await keys({ v: { $gte: 7 } })).toEqual(["both", "high"]);
+		});
+
+		test("an $elemMatch element is compared as a value", async () => {
+			expect(await keys({ v: { $elemMatch: { $gt: 7 } } })).toEqual([
+				"both",
+				"high",
+			]);
+			expect(await keys({ v: { $elemMatch: { $gt: 2, $lt: 5 } } })).toEqual([]);
+		});
+
+		test("$not negates the whole bracketed predicate", async () => {
+			expect(await keys({ v: { $not: { $gt: 5 } } })).toEqual([
+				"empty",
+				"low",
+				"mixed",
+				"nested",
+			]);
+		});
+
+		test("an element addressed by index is a value of its own", async () => {
+			await docs.deleteMany({});
+			await docs.insertMany([
+				{ k: "first", scores: [95, 10] },
+				{ k: "second", scores: [10, 95] },
+				{ k: "text", scores: ["95", 10] },
+				{ k: "short", scores: [] },
+			]);
+			expect(await keys({ "scores.0": { $gt: 90 } })).toEqual(["first"]);
+			expect(await keys({ "scores.0": { $lt: 20 } })).toEqual(["second"]);
+		});
+
+		test("an array of documents is searched through its path", async () => {
+			await docs.deleteMany({});
+			await docs.insertMany([
+				{ k: "hi", items: [{ price: 1 }, { price: 9 }] },
+				{ k: "lo", items: [{ price: 1 }] },
+				{ k: "obj", items: { price: 9 } },
+				{ k: "none" },
+			]);
+			expect(await keys({ "items.price": { $gt: 5 } })).toEqual(["hi", "obj"]);
+			expect(await keys({ "items.price": { $lt: 5 } })).toEqual(["hi", "lo"]);
+		});
+	});
+
+	describe("ObjectIds", () => {
+		const oid = (hex: string) => new ObjectId(hex);
+
+		beforeEach(async () => {
+			await docs.insertMany([
+				{ k: "one", ref: oid("000000000000000000000001") },
+				{ k: "two", ref: oid("000000000000000000000002") },
+				{ k: "ff", ref: oid("0000000000000000000000ff") },
+				{
+					k: "arr",
+					ref: [
+						oid("000000000000000000000002"),
+						oid("000000000000000000000003"),
+					],
+				},
+				{ k: "str", ref: "000000000000000000000002" },
+				{ k: "obj", ref: { $oid: "000000000000000000000009", extra: 1 } },
+			]);
+		});
+
+		test("order follows the twelve bytes", async () => {
+			expect(
+				await keys({ ref: { $gt: oid("000000000000000000000001") } }),
+			).toEqual(["arr", "ff", "two"]);
+			expect(
+				await keys({ ref: { $lt: oid("0000000000000000000000ff") } }),
+			).toEqual(["arr", "one", "two"]);
+			expect(
+				await keys({ ref: { $gte: oid("0000000000000000000000ff") } }),
+			).toEqual(["ff"]);
+			expect(
+				await keys({ ref: { $lte: oid("000000000000000000000001") } }),
+			).toEqual(["one"]);
+		});
+
+		test("a string of the same hex is not an ObjectId", async () => {
+			expect(await keys({ ref: { $gte: "000000000000000000000001" } })).toEqual(
+				["str"],
+			);
+		});
+
+		test("a document that merely has a $oid field is not one either", async () => {
+			expect(
+				await keys({ ref: { $gt: oid("000000000000000000000000") } }),
+			).not.toContain("obj");
+		});
+	});
+
+	describe("the rest of the driver reads them the same way", () => {
+		beforeEach(insertOneOfEachType);
+
+		test("countDocuments", async () => {
+			expect(await docs.countDocuments({ v: { $lt: 5 } })).toBe(1);
+			expect(await docs.countDocuments({ v: { $gte: null } })).toBe(2);
+		});
+
+		test("distinct", async () => {
+			expect(await docs.distinct("k", { v: { $gt: "a" } })).toEqual(["str"]);
+		});
+
+		test("updateMany touches only what matches", async () => {
+			const result = await docs.updateMany(
+				{ v: { $lt: 5 } },
+				{ $set: { touched: true } },
+			);
+			expect(result.matchedCount).toBe(1);
+			expect(await keys({ touched: true })).toEqual(["num1"]);
+		});
+
+		test("deleteMany removes only what matches", async () => {
+			const result = await docs.deleteMany({ v: { $gt: "a" } });
+			expect(result.deletedCount).toBe(1);
+			expect(await docs.countDocuments({})).toBe(8);
+		});
+
+		test("an aggregation $match", async () => {
+			const matched = await docs
+				.aggregate<RangeDoc>([{ $match: { v: { $gt: 5 } } }])
+				.toArray();
+			expect(matched.map((doc) => doc.k).sort()).toEqual(["arr", "num10"]);
+		});
+
+		test("an aggregation $match on a grouped _id compares the group key", async () => {
+			const keyed = ctx.db.collection<RangeDoc>("range_groups");
+			await keyed.deleteMany({});
+			await keyed.insertMany([
+				{ k: "n1", g: 1 },
+				{ k: "n9", g: 9 },
+				{ k: "s", g: "a" },
+				{ k: "b", g: true },
+			]);
+			const under5 = await keyed
+				.aggregate<{ _id: unknown }>([
+					{ $group: { _id: "$g", n: { $sum: 1 } } },
+					{ $match: { _id: { $lt: 5 } } },
+				])
+				.toArray();
+			expect(under5.map((row) => row._id)).toEqual([1]);
+		});
+
+		test("an aggregation $match on a computed field", async () => {
+			const grouped = await docs
+				.aggregate<{ _id: unknown; n: number }>([
+					{ $group: { _id: "$k", n: { $sum: 1 } } },
+					{ $match: { n: { $gt: 0 } } },
+				])
+				.toArray();
+			expect(grouped).toHaveLength(9);
+		});
+
+		test("the identity field keeps comparing record ids", async () => {
+			const all = await docs.find({}).sort({ _id: 1 }).toArray();
+			const middle = all[4]._id;
+			const above = await docs.find({ _id: { $gt: middle } }).toArray();
+			expect(above).toHaveLength(4);
+		});
+	});
+
+	describe("an index on the field", () => {
+		// Scalars only: SurrealDB's index scan returns an array-valued field once
+		// per element the scan range covers, which `find()` would then hand back
+		// as a duplicate. That holds for a bare `v > 5` as much as for this
+		// predicate, so it is not a thing these assertions could tell apart.
+		test("answers the same as a scan, whatever else is in the range", async () => {
+			await docs.insertMany([
+				{ k: "num10", v: 10 },
+				{ k: "num1", v: 1 },
+				{ k: "str", v: "abc" },
+				{ k: "bool", v: true },
+				{ k: "date", v: new Date(5000) },
+				{ k: "null", v: null },
+				{ k: "missing" },
+			]);
+			const queries: Record<string, unknown>[] = [
+				{ v: { $gt: 5 } },
+				{ v: { $gte: 10 } },
+				{ v: { $lt: 5 } },
+				{ v: { $lte: 1 } },
+				{ v: { $gt: "a" } },
+				{ v: { $lt: "z" } },
+				{ v: { $gt: new Date(1) } },
+				{ v: { $gte: null } },
+				{ v: { $gt: 0, $lt: 100 } },
+			];
+			const scanned = await Promise.all(queries.map(keys));
+
+			await docs.createIndex({ v: 1 });
+			const indexed = await Promise.all(queries.map(keys));
+
+			expect(indexed).toEqual(scanned);
+			expect(scanned[0]).toEqual(["num10"]);
+			expect(scanned[2]).toEqual(["num1"]);
+		});
+	});
+
+	describe("what has no exact translation is refused", () => {
+		const find = (filter: Record<string, unknown>) =>
+			(async () => docs.find(filter).toArray())();
+
+		test("an array operand", async () => {
+			await expect(find({ v: { $gt: [7] } })).rejects.toThrow(
+				MongoCompatibilityError,
+			);
+			await expect(find({ v: { $lte: [] } })).rejects.toThrow(
+				"$lte with an array operand is not supported",
+			);
+		});
+
+		test("an embedded document operand", async () => {
+			await expect(find({ v: { $lt: { a: 1 } } })).rejects.toThrow(
+				MongoCompatibilityError,
+			);
+			await expect(find({ v: { $gte: {} } })).rejects.toThrow(
+				"$gte with an embedded document operand is not supported",
+			);
+		});
+
+		test("a refusal reaches deleteMany before it deletes anything", async () => {
+			await insertOneOfEachType();
+			await expect(
+				(async () => docs.deleteMany({ v: { $gt: [1] } }))(),
+			).rejects.toThrow(MongoCompatibilityError);
+			expect(await docs.countDocuments({})).toBe(9);
+		});
 	});
 });
 

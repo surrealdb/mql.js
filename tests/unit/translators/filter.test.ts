@@ -22,6 +22,28 @@ const eq = (name: string, param: string) => {
 	const field = escapeFieldPath(name);
 	return `(${field} = $${param} OR (type::is_array(${field}) AND ${field} CONTAINS $${param}))`;
 };
+
+/**
+ * What `$gt`/`$gte`/`$lt`/`$lte` emit for a *number* operand on `name`.
+ *
+ * Spelled out the same way `eq` is, for the same reason: the incidental tests
+ * below are about where a range predicate sits, not what is in it, and the
+ * "range operators" block further down pins every part of it literally.
+ */
+const range = (
+	name: string,
+	operator: ">" | ">=" | "<" | "<=",
+	param: string,
+) => {
+	const field = escapeFieldPath(name);
+	const above = operator.startsWith(">");
+	const bound = above ? "<= math::inf" : ">= math::neg_inf";
+	const guarded = (expr: string) =>
+		`type::is_number(${expr}) AND ${expr} ${bound} AND ${expr} ${operator} $${param}`;
+	const own = `${field} ${operator} $${param}`;
+	const leading = above ? own : `(${own} OR ${field} >= [])`;
+	return `(${leading} AND ((${guarded(field)}) OR (type::is_array(${field}) AND array::any(${field}, |$__mql_element| (${guarded("$__mql_element")})))))`;
+};
 const inAny = (name: string, param: string) => {
 	const field = escapeFieldPath(name);
 	return `(${field} IN $${param} OR (type::is_array(${field}) AND ${field} ANYINSIDE $${param}))`;
@@ -101,25 +123,25 @@ describe("translateFilter", () => {
 
 	test("$gt", () => {
 		const { clause, bindings } = translateFilter({ x: { $gt: 10 } });
-		expect(clause).toBe("`x` > $p0");
+		expect(clause).toBe(range("x", ">", "p0"));
 		expect(bindings).toEqual({ p0: 10 });
 	});
 
 	test("$gte", () => {
 		const { clause, bindings } = translateFilter({ x: { $gte: 10 } });
-		expect(clause).toBe("`x` >= $p0");
+		expect(clause).toBe(range("x", ">=", "p0"));
 		expect(bindings).toEqual({ p0: 10 });
 	});
 
 	test("$lt", () => {
 		const { clause, bindings } = translateFilter({ x: { $lt: 10 } });
-		expect(clause).toBe("`x` < $p0");
+		expect(clause).toBe(range("x", "<", "p0"));
 		expect(bindings).toEqual({ p0: 10 });
 	});
 
 	test("$lte", () => {
 		const { clause, bindings } = translateFilter({ x: { $lte: 10 } });
-		expect(clause).toBe("`x` <= $p0");
+		expect(clause).toBe(range("x", "<=", "p0"));
 		expect(bindings).toEqual({ p0: 10 });
 	});
 
@@ -127,7 +149,9 @@ describe("translateFilter", () => {
 		const { clause, bindings } = translateFilter({
 			age: { $gt: 18, $lt: 65 },
 		});
-		expect(clause).toBe("`age` > $p0 AND `age` < $p1");
+		expect(clause).toBe(
+			`${range("age", ">", "p0")} AND ${range("age", "<", "p1")}`,
+		);
 		expect(bindings).toEqual({ p0: 18, p1: 65 });
 	});
 
@@ -282,7 +306,7 @@ describe("translateFilter", () => {
 		const { clause, bindings } = translateFilter({
 			age: { $not: { $gt: 18 } },
 		});
-		expect(clause).toBe("!(`age` > $p0)");
+		expect(clause).toBe(`!(${range("age", ">", "p0")})`);
 		expect(bindings).toEqual({ p0: 18 });
 	});
 
@@ -290,7 +314,9 @@ describe("translateFilter", () => {
 		const { clause, bindings } = translateFilter({
 			age: { $not: { $gt: 18, $lt: 65 } },
 		});
-		expect(clause).toBe("!(`age` > $p0 AND `age` < $p1)");
+		expect(clause).toBe(
+			`!(${range("age", ">", "p0")} AND ${range("age", "<", "p1")})`,
+		);
 		expect(bindings).toEqual({ p0: 18, p1: 65 });
 	});
 
@@ -301,7 +327,7 @@ describe("translateFilter", () => {
 		const { clause, bindings } = translateFilter({
 			$and: [{ name: "John" }, { age: { $gt: 25 } }],
 		});
-		expect(clause).toBe(`(${eq("name", "p0")} AND \`age\` > $p1)`);
+		expect(clause).toBe(`(${eq("name", "p0")} AND ${range("age", ">", "p1")})`);
 		expect(bindings).toEqual({ p0: "John", p1: 25 });
 	});
 
@@ -345,7 +371,7 @@ describe("translateFilter", () => {
 		const { clause } = translateFilter({
 			"a.b.c.d": { $gt: 10 },
 		});
-		expect(clause).toBe("`a`.`b`.`c`.`d` > $p0");
+		expect(clause).toBe(range("a.b.c.d", ">", "p0"));
 	});
 
 	// -----------------------------------------------------------------
@@ -357,7 +383,7 @@ describe("translateFilter", () => {
 			$or: [{ role: "admin" }, { age: { $gte: 18 } }],
 		});
 		expect(clause).toBe(
-			`${eq("active", "p0")} AND (${eq("role", "p1")} OR \`age\` >= $p2)`,
+			`${eq("active", "p0")} AND (${eq("role", "p1")} OR ${range("age", ">=", "p2")})`,
 		);
 		expect(bindings).toEqual({ p0: true, p1: "admin", p2: 18 });
 	});
@@ -429,7 +455,7 @@ describe("translateFilter", () => {
 		});
 		expect(clause).toBe(
 			"(type::is_array(`results`) AND array::len(`results`[WHERE " +
-				`\`score\` > $p0 AND ${eq("grade", "p1")}]) > 0)`,
+				`${range("score", ">", "p0")} AND ${eq("grade", "p1")}]) > 0)`,
 		);
 		expect(bindings).toEqual({ p0: 80, p1: "A" });
 	});
@@ -440,7 +466,7 @@ describe("translateFilter", () => {
 		});
 		expect(clause).toBe(
 			"(type::is_array(`items`) AND array::len(`items`[WHERE " +
-				`\`x\` >= $p0 AND \`x\` < $p1 AND ${eq("y", "p2")}]) > 0)`,
+				`${range("x", ">=", "p0")} AND ${range("x", "<", "p1")} AND ${eq("y", "p2")}]) > 0)`,
 		);
 		expect(bindings).toEqual({ p0: 1, p1: 5, p2: 2 });
 	});
@@ -449,9 +475,12 @@ describe("translateFilter", () => {
 		const { clause, bindings } = translateFilter({
 			scores: { $elemMatch: { $gte: 80, $lt: 90 } },
 		});
-		// Top-level operators apply to the element itself via $this
+		// Top-level operators apply to the element itself via $this, which is not
+		// an array to look inside — so no element arm and no leading range.
 		expect(clause).toBe(
-			"(type::is_array(`scores`) AND array::len(`scores`[WHERE $this >= $p0 AND $this < $p1]) > 0)",
+			"(type::is_array(`scores`) AND array::len(`scores`[WHERE " +
+				"type::is_number($this) AND $this <= math::inf AND $this >= $p0 AND " +
+				"type::is_number($this) AND $this >= math::neg_inf AND $this < $p1]) > 0)",
 		);
 		expect(bindings).toEqual({ p0: 80, p1: 90 });
 	});
@@ -605,7 +634,7 @@ describe("translateFilter", () => {
 		const { clause, bindings } = translateFilter({
 			qty: { $mod: [4, 0], $gt: 10 },
 		});
-		expect(clause).toBe("`qty` % $p0 = $p1 AND `qty` > $p2");
+		expect(clause).toBe(`\`qty\` % $p0 = $p1 AND ${range("qty", ">", "p2")}`);
 		expect(bindings).toEqual({ p0: 4, p1: 0, p2: 10 });
 	});
 

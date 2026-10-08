@@ -14,10 +14,12 @@ import { evaluationOperators } from "./operators/evaluation.ts";
 import { geospatialOperators } from "./operators/geospatial.ts";
 import { logicalOperators } from "./operators/logical.ts";
 import { membershipOperators } from "./operators/membership.ts";
+import { rangeOperators } from "./operators/range.ts";
 
 export const DEFAULT_FILTER_REGISTRY: FilterOperatorRegistry =
 	new FilterOperatorRegistry().registerAll([
 		...comparisonOperators,
+		...rangeOperators,
 		...membershipOperators,
 		...elementOperators,
 		...evaluationOperators,

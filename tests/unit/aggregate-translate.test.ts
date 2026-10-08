@@ -76,7 +76,11 @@ describe("stages that force a subquery", () => {
 			]),
 		).toBe(2);
 		expect(statement).toContain("FROM (SELECT");
-		expect(statement).toEndWith("WHERE `n` > $m1p0");
+		// A range predicate, as a find() filter would be: `n` is a computed column
+		// and the type guard is what MongoDB's bracketing asks of any field.
+		expect(statement).toContain(
+			"WHERE (`n` > $m1p0 AND ((type::is_number(`n`) AND `n` <= math::inf AND `n` > $m1p0)",
+		);
 	});
 
 	test("$match after $project nests, because WHERE cannot see an alias", () => {

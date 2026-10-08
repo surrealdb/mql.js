@@ -6,7 +6,11 @@ import { escapeFieldPath } from "../../../surreal/sql/escape.ts";
 import type { Document } from "../../../types.ts";
 import type { FilterOperator } from "../operator-registry.ts";
 import type { TranslateContext } from "../translate-context.ts";
-import { arrayTypeCheckFn, equalityPredicate } from "./comparison.ts";
+import {
+	arrayTypeCheckFn,
+	ELEMENT_FIELD,
+	equalityPredicate,
+} from "./comparison.ts";
 
 function isOperatorObject(value: unknown): boolean {
 	if (value === null || value === undefined || typeof value !== "object") {
@@ -45,8 +49,8 @@ function translateElemMatch(
 	const guard = `${arrayTypeCheckFn(ctx)}(${field})`;
 
 	// Operator keys with no field name apply to the element itself, addressed as
-	// `$this`. They are collected and translated together so a `$regex` can see
-	// its sibling `$options`.
+	// `ELEMENT_FIELD` (`$this`). They are collected and translated together so a
+	// `$regex` can see its sibling `$options`.
 	const elementOps: Document = {};
 	const parts: string[] = [];
 
@@ -58,7 +62,9 @@ function translateElemMatch(
 
 	if (Object.keys(elementOps).length > 0) {
 		parts.unshift(
-			ctx.withoutNearOrder(() => ctx.translateOperators("$this", elementOps)),
+			ctx.withoutNearOrder(() =>
+				ctx.translateOperators(ELEMENT_FIELD, elementOps),
+			),
 		);
 	}
 
