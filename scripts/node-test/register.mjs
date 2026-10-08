@@ -1,7 +1,13 @@
 /**
  * What Node needs before it can run this suite: `--import` this file.
  *
- * Two hooks and a global.
+ * Two hooks and a global. The hooks live in `hooks.mjs`, and are installed one of
+ * two ways: `registerHooks` (Node 22.15 and later), which runs them in this
+ * thread, or `register` (Node 20.6 and later), which runs them in a worker. The
+ * floor `engines.node` declares is 20.19.0, and only the second exists there, so
+ * both are wired — they are the same functions, since neither looks at what the
+ * next hook returns. Set `MQL_NODE_TEST_ASYNC_HOOKS=1` to take the second path on
+ * a Node that has the first, which is how it is exercised without an old Node.
  *
  * **Resolving `bun:test`.** Node has no such module, and `package.json`
  * `"imports"` cannot help — subpath imports must begin with `#`, so the
@@ -24,32 +30,18 @@
  * else needs rewriting.
  */
 
-import { readFileSync } from "node:fs";
-import { registerHooks } from "node:module";
-import { fileURLToPath } from "node:url";
-import { transformSync } from "esbuild";
+import * as nodeModule from "node:module";
 
 import "./bun-globals.mjs";
 
-const shim = new URL("./bun-test-shim.mjs", import.meta.url).href;
+import * as hooks from "./hooks.mjs";
 
-registerHooks({
-	resolve(specifier, context, next) {
-		if (specifier === "bun:test") return { url: shim, shortCircuit: true };
-		return next(specifier, context);
-	},
+const useAsyncHooks =
+	process.env.MQL_NODE_TEST_ASYNC_HOOKS === "1" ||
+	typeof nodeModule.registerHooks !== "function";
 
-	load(url, context, next) {
-		if (!url.startsWith("file:") || !url.endsWith(".ts")) {
-			return next(url, context);
-		}
-		const path = fileURLToPath(url);
-		const { code } = transformSync(readFileSync(path, "utf8"), {
-			loader: "ts",
-			format: "esm",
-			target: "esnext",
-			sourcefile: path,
-		});
-		return { format: "module", source: code, shortCircuit: true };
-	},
-});
+if (useAsyncHooks) {
+	nodeModule.register("./hooks.mjs", import.meta.url);
+} else {
+	nodeModule.registerHooks(hooks);
+}
