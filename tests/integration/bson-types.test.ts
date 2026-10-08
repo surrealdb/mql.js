@@ -433,6 +433,141 @@ describe("a Date", () => {
 	});
 });
 
+describe("a Date before 1970", () => {
+	// An instant before the epoch with a fractional second — `new Date(-1)` is
+	// the smallest — used to be encoded with a negative nanosecond count, which
+	// SurrealDB cannot decode and does not answer: the insert never returned. The
+	// whole-second cases are here to show the boundary was never the epoch.
+	const instants = [
+		"1970-01-01T00:00:00.000Z",
+		"1969-12-31T23:59:59.999Z",
+		"1969-12-31T23:59:59.000Z",
+		"1960-06-15T12:30:45.123Z",
+		"1900-01-01T00:00:00.001Z",
+		"0001-01-01T00:00:00.000Z",
+	];
+
+	/** A hang is the failure under test, so it must fail rather than stall the run. */
+	const within = <T>(work: Promise<T>) =>
+		Promise.race([
+			work,
+			new Promise<never>((_, reject) =>
+				setTimeout(
+					() => reject(new Error("the operation never returned")),
+					5000,
+				),
+			),
+		]);
+
+	test("is stored and read back as the same instant", async () => {
+		const col = freshCollection();
+		for (const iso of instants) {
+			const when = new Date(iso);
+			const { insertedId } = await within(col.insertOne({ when } as never));
+			const back = await within(col.findOne({ _id: insertedId } as never));
+			expect((back as { when: Date }).when.getTime()).toBe(when.getTime());
+		}
+	});
+
+	test("can be matched, compared and sorted, inside arrays and documents too", async () => {
+		const col = freshCollection();
+		await col.insertMany([
+			{ name: "modern", when: new Date("2024-03-15T10:00:00.500Z") },
+			{ name: "epoch-1ms", when: new Date(-1) },
+			{ name: "old", when: new Date("1960-06-15T12:30:45.123Z") },
+			{
+				name: "nested",
+				when: new Date("2030-01-01T00:00:00.000Z"),
+				meta: { at: new Date(-1500) },
+				dates: [new Date(-2)],
+			},
+		] as never);
+
+		expect(
+			(await within(col.find({ when: new Date(-1) } as never).toArray())).map(
+				(d) => d.name,
+			),
+		).toEqual(["epoch-1ms"]);
+		expect(
+			(
+				await within(
+					col.find({ when: { $lt: new Date(0) } } as never).toArray(),
+				)
+			)
+				.map((d) => d.name)
+				.sort(),
+		).toEqual(["epoch-1ms", "old"]);
+		expect(
+			(
+				await within(
+					col
+						.find({ when: { $exists: true } } as never)
+						.sort({ when: 1 } as never)
+						.toArray(),
+				)
+			).map((d) => d.name),
+		).toEqual(["old", "epoch-1ms", "modern", "nested"]);
+
+		const nested = (await within(col.findOne({ name: "nested" } as never))) as {
+			meta: { at: Date };
+			dates: Date[];
+		};
+		expect(nested.meta.at.getTime()).toBe(-1500);
+		expect(nested.dates[0].getTime()).toBe(-2);
+	});
+
+	test("an update can set one, and $in can name several", async () => {
+		const col = freshCollection();
+		await col.insertOne({ name: "a" } as never);
+		await within(
+			col.updateOne({ name: "a" }, { $set: { when: new Date(-7) } }),
+		);
+		expect(
+			(
+				await within(
+					col
+						.find({ when: { $in: [new Date(-7), new Date(-8)] } } as never)
+						.toArray(),
+				)
+			).length,
+		).toBe(1);
+	});
+});
+
+describe("a Date beyond the range SurrealDB can store", () => {
+	test("is refused by name, rather than hanging the request", async () => {
+		const err = await new Promise<unknown>((resolve) => {
+			setTimeout(
+				() => resolve(new Error("the operation never returned")),
+				5000,
+			);
+			freshCollection()
+				.insertOne({ when: new Date(8.64e15) } as never)
+				.then(
+					() => resolve(undefined),
+					(error: unknown) => resolve(error),
+				);
+		});
+		expect(err).toBeInstanceOf(MongoCompatibilityError);
+		expect((err as Error).message).toContain("years -262143 to 262142");
+	});
+
+	test("the instants at each end of the range are stored", async () => {
+		const col = freshCollection();
+		const min = new Date(Date.UTC(-262143, 0, 1));
+		const max = new Date(Date.UTC(262143, 0, 1) - 1);
+		await col.insertMany([{ when: min }, { when: max }] as never);
+		const back = await col
+			.find({})
+			.sort({ when: 1 } as never)
+			.toArray();
+		expect(back.map((d) => (d as { when: Date }).when.getTime())).toEqual([
+			min.getTime(),
+			max.getTime(),
+		]);
+	});
+});
+
 describe("BSON types with no SurrealDB representation", () => {
 	// Each of these is an object as far as the wire is concerned, so it *would*
 	// encode — as its own internals — and read back as a plain object that is no

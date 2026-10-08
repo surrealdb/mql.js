@@ -133,6 +133,26 @@ export function registerCrudScenarios(provider: DatabaseProvider): void {
 				expect(result.insertedCount).toBe(3);
 				expect(Object.keys(result.insertedIds)).toHaveLength(3);
 			});
+
+			test("a Date before 1970 round-trips to the millisecond", async () => {
+				// A fractional second before the epoch used to hang the insert on this
+				// driver: the SDK encoded `new Date(-1)` with negative nanoseconds,
+				// which SurrealDB cannot decode and does not answer. MongoDB stores the
+				// instant as an int64 of milliseconds, so it has no such edge.
+				const instants = [
+					new Date(-1),
+					new Date("1969-12-31T23:59:59.000Z"),
+					new Date("1960-06-15T12:30:45.123Z"),
+					new Date("0001-01-01T00:00:00.000Z"),
+				];
+				for (const [i, when] of instants.entries()) {
+					await users.insertOne({ name: `d${i}`, age: i, when });
+				}
+				const found = await users.find({}).sort({ age: 1 }).toArray();
+				expect(found.map((doc) => (doc.when as Date).getTime())).toEqual(
+					instants.map((d) => d.getTime()),
+				);
+			});
 		});
 
 		// -----------------------------------------------------------------
