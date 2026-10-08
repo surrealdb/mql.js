@@ -15,10 +15,12 @@ import {
 	expect,
 	test,
 } from "bun:test";
+import { ObjectId } from "mongodb";
 import type {
 	MongoLikeClient,
 	MongoLikeCollection,
 	MongoLikeDb,
+	MongoLikeFilter,
 } from "../contracts/mongo-like.ts";
 import type { DatabaseProvider } from "../providers/database-provider.ts";
 
@@ -237,6 +239,386 @@ export function registerCrudScenarios(provider: DatabaseProvider): void {
 				expect(matches).toHaveLength(2);
 				const names = matches.map((d) => d.name).sort();
 				expect(names).toEqual(["Alice", "Charlie"]);
+			});
+		});
+
+		// -----------------------------------------------------------------
+		// RANGE OPERATORS
+		// -----------------------------------------------------------------
+
+		describe("range operators", () => {
+			// MongoDB does not rank values of different types against each other. A
+			// range comparison matches only values in the same BSON type bracket as
+			// its operand — numbers with numbers, strings with strings, dates with
+			// dates — and never a missing field, whatever SurrealDB's own total order
+			// would say. Every expectation below is what a real `mongod` returns, which
+			// is what makes the fixture worth having: it holds one document of each
+			// type, so an operator that over-matches shows up as a wrong set rather
+			// than a wrong count. No scenario existed before with a mixed-type or
+			// missing field on a range operator, which is how `{age: {$lt: 30}}`
+			// returning every person with no `age` went unnoticed.
+
+			interface RangeDoc {
+				[key: string]: unknown;
+				_id?: unknown;
+				k: string;
+				v?: unknown;
+			}
+
+			let docs: MongoLikeCollection<RangeDoc>;
+
+			const keys = async (filter: MongoLikeFilter) =>
+				(await docs.find(filter).toArray()).map((doc) => doc.k).sort();
+
+			const show = (operand: unknown): string => {
+				if (operand instanceof Date) return `new Date(${operand.getTime()})`;
+				if (typeof operand === "number") return String(operand);
+				return JSON.stringify(operand);
+			};
+
+			beforeEach(async () => {
+				docs = db.collection<RangeDoc>("range_brackets");
+				try {
+					await docs.deleteMany({});
+				} catch {
+					// Some engines throw on missing tables; ignore.
+				}
+			});
+
+			describe("over one document of each type", () => {
+				beforeEach(async () => {
+					await docs.insertMany([
+						{ k: "num10", v: 10 },
+						{ k: "num1", v: 1 },
+						{ k: "str", v: "abc" },
+						{ k: "bool", v: true },
+						{ k: "arr", v: [7, 8] },
+						{ k: "obj", v: { a: 1 } },
+						{ k: "date", v: new Date(5000) },
+						{ k: "null", v: null },
+						{ k: "missing" },
+					]);
+				});
+
+				const EXPECTED: Record<string, [unknown, string[]][]> = {
+					$gt: [
+						[5, ["arr", "num10"]],
+						[1, ["arr", "num10"]],
+						[10, []],
+						[7.5, ["arr", "num10"]],
+						[Number.NEGATIVE_INFINITY, ["arr", "num1", "num10"]],
+						["abc", []],
+						["a", ["str"]],
+						["z", []],
+						["", ["str"]],
+						[true, []],
+						[false, ["bool"]],
+						[new Date(5000), []],
+						[new Date(1), ["date"]],
+						[new Date(6000), []],
+						[null, []],
+						[Number.NaN, []],
+					],
+					$gte: [
+						[5, ["arr", "num10"]],
+						[1, ["arr", "num1", "num10"]],
+						[10, ["num10"]],
+						[7.5, ["arr", "num10"]],
+						[Number.NEGATIVE_INFINITY, ["arr", "num1", "num10"]],
+						["abc", ["str"]],
+						["a", ["str"]],
+						["z", []],
+						["", ["str"]],
+						[true, ["bool"]],
+						[false, ["bool"]],
+						[new Date(5000), ["date"]],
+						[new Date(1), ["date"]],
+						[new Date(6000), []],
+						[null, ["missing", "null"]],
+						[Number.NaN, []],
+					],
+					$lt: [
+						[5, ["num1"]],
+						[1, []],
+						[10, ["arr", "num1"]],
+						[7.5, ["arr", "num1"]],
+						[Number.NEGATIVE_INFINITY, []],
+						["abc", []],
+						["a", []],
+						["z", ["str"]],
+						["", []],
+						[true, []],
+						[false, []],
+						[new Date(5000), []],
+						[new Date(1), []],
+						[new Date(6000), ["date"]],
+						[null, []],
+						[Number.NaN, []],
+					],
+					$lte: [
+						[5, ["num1"]],
+						[1, ["num1"]],
+						[10, ["arr", "num1", "num10"]],
+						[7.5, ["arr", "num1"]],
+						[Number.NEGATIVE_INFINITY, []],
+						["abc", ["str"]],
+						["a", []],
+						["z", ["str"]],
+						["", []],
+						[true, ["bool"]],
+						[false, []],
+						[new Date(5000), ["date"]],
+						[new Date(1), []],
+						[new Date(6000), ["date"]],
+						[null, ["missing", "null"]],
+						[Number.NaN, []],
+					],
+				};
+
+				for (const [operator, cases] of Object.entries(EXPECTED)) {
+					describe(operator, () => {
+						for (const [operand, expected] of cases) {
+							test(`${show(operand)} matches ${expected.length === 0 ? "nothing" : expected.join(", ")}`, async () => {
+								expect(await keys({ v: { [operator]: operand } })).toEqual(
+									expected,
+								);
+							});
+						}
+					});
+				}
+
+				test("an undefined operand is null, as the official driver serialises it", async () => {
+					expect(await keys({ v: { $gt: undefined } })).toEqual([]);
+					expect(await keys({ v: { $gte: undefined } })).toEqual([
+						"missing",
+						"null",
+					]);
+				});
+
+				test("two operators on one field bracket together", async () => {
+					expect(await keys({ v: { $gte: 1, $lte: 10 } })).toEqual([
+						"arr",
+						"num1",
+						"num10",
+					]);
+					// `[7, 8]` matches: 8 satisfies `$gt: 7` and 7 satisfies `$lt: 8`. Two
+					// operators on an array need not be met by the same element.
+					expect(await keys({ v: { $gt: 7, $lt: 8 } })).toEqual(["arr"]);
+				});
+
+				test("$not of a range also matches what the range skips by type", async () => {
+					expect(await keys({ v: { $not: { $gt: 5 } } })).toEqual([
+						"bool",
+						"date",
+						"missing",
+						"null",
+						"num1",
+						"obj",
+						"str",
+					]);
+				});
+
+				test("$nor of both ends of the number bracket leaves every other type", async () => {
+					expect(
+						await keys({ $nor: [{ v: { $lt: 5 } }, { v: { $gt: 5 } }] }),
+					).toEqual(["bool", "date", "missing", "null", "obj", "str"]);
+				});
+
+				test("countDocuments and an aggregation $match agree with find", async () => {
+					expect(await docs.countDocuments({ v: { $lt: 5 } })).toBe(1);
+					const matched = await docs
+						.aggregate<RangeDoc>([{ $match: { v: { $lt: 5 } } }])
+						.toArray();
+					expect(matched.map((doc) => doc.k)).toEqual(["num1"]);
+				});
+			});
+
+			describe("over a grouped _id", () => {
+				// After `$group`, `_id` is the group key and not a record identity, so a
+				// key of one type must not match a range of another.
+				beforeEach(async () => {
+					await docs.insertMany([
+						{ k: "n1", g: 1 },
+						{ k: "n9", g: 9 },
+						{ k: "s", g: "a" },
+						{ k: "b", g: true },
+					]);
+				});
+
+				const groupedKeys = async (range: MongoLikeFilter) =>
+					(
+						await docs
+							.aggregate<RangeDoc>([
+								{ $group: { _id: "$g", n: { $sum: 1 } } },
+								{ $match: { _id: range } },
+							])
+							.toArray()
+					)
+						.map((doc) => doc._id)
+						.sort();
+
+				test("a number range keeps the numbers", async () => {
+					expect(await groupedKeys({ $lt: 5 })).toEqual([1]);
+					expect(await groupedKeys({ $gt: 5 })).toEqual([9]);
+				});
+
+				test("a string range keeps the strings", async () => {
+					expect(await groupedKeys({ $gte: "a" })).toEqual(["a"]);
+				});
+			});
+
+			describe("over arrays", () => {
+				beforeEach(async () => {
+					await docs.insertMany([
+						{ k: "arrLow", v: [1, 2] },
+						{ k: "arrHigh", v: [7, 8] },
+						{ k: "arrBoth", v: [1, 9] },
+						{ k: "arrMixed", v: [1, "x"] },
+						{ k: "arrNested", v: [[7, 8]] },
+						{ k: "arrEmpty", v: [] },
+						{ k: "num", v: 6 },
+					]);
+				});
+
+				test("a field matches when any element is in range", async () => {
+					expect(await keys({ v: { $gt: 5 } })).toEqual([
+						"arrBoth",
+						"arrHigh",
+						"num",
+					]);
+					expect(await keys({ v: { $lt: 5 } })).toEqual([
+						"arrBoth",
+						"arrLow",
+						"arrMixed",
+					]);
+				});
+
+				test("an element of another type is not in the bracket", async () => {
+					expect(await keys({ v: { $gt: "a" } })).toEqual(["arrMixed"]);
+				});
+
+				test("an array inside an array is not searched", async () => {
+					// `[[7, 8]]` has one element, and it is an array.
+					expect(await keys({ v: { $gte: 7 } })).toEqual([
+						"arrBoth",
+						"arrHigh",
+					]);
+				});
+
+				test("two operators may be satisfied by different elements", async () => {
+					expect(await keys({ v: { $gt: 2, $lt: 5 } })).toEqual(["arrBoth"]);
+				});
+
+				test("$elemMatch needs one element to satisfy them all", async () => {
+					expect(await keys({ v: { $elemMatch: { $gt: 2, $lt: 5 } } })).toEqual(
+						[],
+					);
+					expect(await keys({ v: { $elemMatch: { $gt: 5, $lt: 9 } } })).toEqual(
+						["arrHigh"],
+					);
+				});
+			});
+
+			describe("over an array element addressed by index", () => {
+				beforeEach(async () => {
+					await docs.insertMany([
+						{ k: "first", scores: [95, 10] },
+						{ k: "second", scores: [10, 95] },
+						{ k: "text", scores: ["95", 10] },
+						{ k: "short", scores: [] },
+					]);
+				});
+
+				test("the element is a value of its own", async () => {
+					expect(await keys({ "scores.0": { $gt: 90 } })).toEqual(["first"]);
+					expect(await keys({ "scores.0": { $lt: 20 } })).toEqual(["second"]);
+				});
+			});
+
+			describe("over a path through an array of documents", () => {
+				beforeEach(async () => {
+					await docs.insertMany([
+						{ k: "itemsHi", items: [{ price: 1 }, { price: 9 }] },
+						{ k: "itemsLo", items: [{ price: 1 }] },
+						{ k: "itemsObj", items: { price: 9 } },
+						{ k: "itemsStr", items: [{ price: "9" }] },
+						{ k: "noItems" },
+					]);
+				});
+
+				test("any item in range matches", async () => {
+					expect(await keys({ "items.price": { $gt: 5 } })).toEqual([
+						"itemsHi",
+						"itemsObj",
+					]);
+					expect(await keys({ "items.price": { $lt: 5 } })).toEqual([
+						"itemsHi",
+						"itemsLo",
+					]);
+				});
+
+				test("a price of another type is skipped", async () => {
+					expect(await keys({ "items.price": { $gt: "5" } })).toEqual([
+						"itemsStr",
+					]);
+				});
+
+				test("a sub-field condition inside $elemMatch is bracketed too", async () => {
+					expect(
+						await keys({ items: { $elemMatch: { price: { $gt: 5 } } } }),
+					).toEqual(["itemsHi"]);
+				});
+			});
+
+			describe("over ObjectIds", () => {
+				// An ObjectId is its own bracket: a string of the same hex is not in it.
+				beforeEach(async () => {
+					await docs.insertMany([
+						{ k: "oid1", ref: new ObjectId("000000000000000000000001") },
+						{ k: "oid2", ref: new ObjectId("000000000000000000000002") },
+						{ k: "oid3", ref: new ObjectId("0000000000000000000000ff") },
+						{
+							k: "oidArr",
+							ref: [
+								new ObjectId("000000000000000000000002"),
+								new ObjectId("000000000000000000000003"),
+							],
+						},
+						{ k: "oidStr", ref: "000000000000000000000002" },
+					]);
+				});
+
+				test("$gt and $gte", async () => {
+					expect(
+						await keys({
+							ref: { $gt: new ObjectId("000000000000000000000001") },
+						}),
+					).toEqual(["oid2", "oid3", "oidArr"]);
+					expect(
+						await keys({
+							ref: { $gte: new ObjectId("000000000000000000000002") },
+						}),
+					).toEqual(["oid2", "oid3", "oidArr"]);
+				});
+
+				test("$lt and $lte", async () => {
+					expect(
+						await keys({
+							ref: { $lt: new ObjectId("0000000000000000000000ff") },
+						}),
+					).toEqual(["oid1", "oid2", "oidArr"]);
+					expect(
+						await keys({
+							ref: { $lte: new ObjectId("000000000000000000000002") },
+						}),
+					).toEqual(["oid1", "oid2", "oidArr"]);
+				});
+
+				test("a string operand does not reach an ObjectId", async () => {
+					expect(
+						await keys({ ref: { $gt: "000000000000000000000001" } }),
+					).toEqual(["oidStr"]);
+				});
 			});
 		});
 

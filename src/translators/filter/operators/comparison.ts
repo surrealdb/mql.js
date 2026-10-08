@@ -1,19 +1,31 @@
 /**
- * Comparison operators: $eq, $ne, $gt, $gte, $lt, $lte.
+ * Equality operators: $eq and $ne.
  *
- * The ordering operators ($gt, $gte, $lt, $lte) are plain `field <sql-op>
- * $param` and are generated from one factory. Equality is not: MongoDB's
- * `{f: v}` is neither whole-value equality nor a single SurrealQL operator, so
- * $eq / $ne are built by the exported predicate helpers below. Those helpers
- * are the single definition of "MongoDB equality" for the whole filter
- * translator — the implicit-equality path in `../index.ts` and the
- * `$elemMatch` sub-conditions in `./array.ts` both call them.
+ * MongoDB's `{f: v}` is neither whole-value equality nor a single SurrealQL
+ * operator, so $eq / $ne are built by the exported predicate helpers below.
+ * Those helpers are the single definition of "MongoDB equality" for the whole
+ * filter translator — the implicit-equality path in `../index.ts`, the
+ * `$elemMatch` sub-conditions in `./array.ts` and the `$gte: null` / `$lte: null`
+ * arms of `./range.ts` all call them. The ordering operators ($gt, $gte, $lt,
+ * $lte) live in `./range.ts`.
  */
 
 import { escapeIdentifier } from "../../../surreal/sql/escape.ts";
 import { MONGO_ID_FIELD, SURREAL_ID_FIELD } from "../id-field.ts";
 import type { FilterOperator } from "../operator-registry.ts";
 import type { TranslateContext } from "../translate-context.ts";
+
+/**
+ * The field an `$elemMatch` addresses its own element by.
+ *
+ * Conditions written without a field name — `{tags: {$elemMatch: {$gt: 5}}}` —
+ * apply to the element itself, and SurrealQL's name for the element a filtered
+ * projection (`field[WHERE …]`) is currently visiting is `$this`. An operator
+ * handed this as its field is therefore looking at one array element rather than
+ * at a document field, which changes what it may do with an array: see
+ * `./range.ts`.
+ */
+export const ELEMENT_FIELD = "$this";
 
 /**
  * True when `field` addresses the document identity.
@@ -112,16 +124,7 @@ export function inequalityPredicate(
 	return `!(${field} = $${p} OR (${arrayTypeCheckFn(ctx)}(${field}) AND ${field} CONTAINS $${p}))`;
 }
 
-function makeBinary(name: string, sqlOp: string): FilterOperator {
-	return {
-		name,
-		translate(field, value, ctx) {
-			const p = ctx.bind(value);
-			return `${field} ${sqlOp} $${p}`;
-		},
-	};
-}
-
+/** `$eq` and `$ne`. The ordering operators are `rangeOperators`. */
 export const comparisonOperators: FilterOperator[] = [
 	{
 		name: "$eq",
@@ -135,8 +138,4 @@ export const comparisonOperators: FilterOperator[] = [
 			return inequalityPredicate(field, value, ctx);
 		},
 	},
-	makeBinary("$gt", ">"),
-	makeBinary("$gte", ">="),
-	makeBinary("$lt", "<"),
-	makeBinary("$lte", "<="),
 ];
