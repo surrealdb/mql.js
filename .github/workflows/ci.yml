@@ -191,11 +191,14 @@ jobs:
         run: bun run test:unit
 
   node-tests:
-    name: Tests under Node (SurrealDB ${{ matrix.surrealdb.name }})
+    # Node 24 keeps the name it has always had; the floor `engines.node` declares
+    # is named, since it is the one that has to be told apart.
+    name: Tests under Node${{ matrix.node != '24' && format(' {0}', matrix.node) || '' }} (SurrealDB ${{ matrix.surrealdb.name }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
+        node: ["24"]
         surrealdb:
           - name: "3.2.5"
             tag: v3.2.5
@@ -206,6 +209,18 @@ jobs:
           - name: nightly
             tag: nightly
             target: latest
+        include:
+          # The declared floor, connected. The `package` job packs and loads the
+          # tarball from 20.19.0 but never opens a connection, and this driver
+          # passes the SDK no WebSocket implementation, so on Node it depends on
+          # `globalThis.WebSocket` — which Node only stopped hiding behind a flag
+          # in 22. Everything above runs on 24 and cannot say whether the floor
+          # connects.
+          - node: "20.19.0"
+            surrealdb:
+              name: "3.3.2"
+              tag: v3.3.2
+              target: 3.3.2
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
@@ -223,7 +238,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "24"
+          node-version: ${{ matrix.node }}
 
       - name: Cache dependencies
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0

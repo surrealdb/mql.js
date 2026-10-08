@@ -433,6 +433,54 @@ describe("a Date", () => {
 	});
 });
 
+describe("a number beyond the safe integer range", () => {
+	// MongoDB's driver stores any JS number that is not a safe 32-bit integer as
+	// a BSON double, so `1e20` and `2 ** 53 + 2` are ordinary writes there. On
+	// `surrealdb` 2.0.x they were not: the CBOR encoder refused an integral
+	// number it could not fit in 64 bits, and the caller got a
+	// `MongoServerError` whose message was `[object Object]`. From 2.1.0 such a
+	// number is encoded as a float64, which is exactly what the double was.
+	const numbers = [1e20, 2 ** 53 + 2, -1e300, 5e-324, 2 ** 53];
+
+	test("is stored and read back as the same number", async () => {
+		const col = freshCollection();
+		for (const n of numbers) {
+			const { insertedId } = await col.insertOne({ n } as never);
+			const back = (await col.findOne({ _id: insertedId } as never)) as {
+				n: number;
+			};
+			expect(back.n).toBe(n);
+			expect(typeof back.n).toBe("number");
+		}
+	});
+
+	test("can be matched, compared and sorted among smaller numbers", async () => {
+		const col = freshCollection();
+		await col.insertMany([
+			{ name: "small", n: 1 },
+			{ name: "huge", n: 1e20 },
+			{ name: "large", n: 2 ** 53 + 2 },
+		] as never);
+
+		expect(
+			(await col.find({ n: 1e20 } as never).toArray()).map((d) => d.name),
+		).toEqual(["huge"]);
+		expect(
+			(await col.find({ n: { $gt: 2 ** 53 } } as never).toArray())
+				.map((d) => d.name)
+				.sort(),
+		).toEqual(["huge", "large"]);
+		expect(
+			(
+				await col
+					.find({})
+					.sort({ n: 1 } as never)
+					.toArray()
+			).map((d) => d.name),
+		).toEqual(["small", "large", "huge"]);
+	});
+});
+
 describe("BSON types with no SurrealDB representation", () => {
 	// Each of these is an object as far as the wire is concerned, so it *would*
 	// encode — as its own internals — and read back as a plain object that is no

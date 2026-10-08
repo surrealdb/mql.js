@@ -118,7 +118,12 @@ export class ConnectionManager {
 		if (statements.length === 0) return;
 
 		try {
-			await this.surreal.query(`${statements.join("; ")};`);
+			// `.responses()` and not the awaited query. The awaited form throws at the
+			// first statement that fails, and since SDK 2.1.0 a 3.3+ server also
+			// cancels the statements behind it. These are independent and best-effort
+			// — a user may be allowed to define a database but not the namespace it
+			// lives in — so every one has to be sent whatever the one before did.
+			await this.surreal.query(`${statements.join("; ")};`).responses();
 		} catch {
 			// Intentionally ignored — see the doc comment above.
 		}

@@ -9,10 +9,16 @@ function makeSurrealStub(opts: { throwOnQuery?: boolean } = {}): {
 } {
 	const queries: string[] = [];
 	const surreal = {
-		async query(sql: string) {
+		query(sql: string) {
 			queries.push(sql);
-			if (opts.throwOnQuery) throw new Error("permission denied");
-			return [];
+			// The SDK's query object answers `.responses()` with every statement's
+			// outcome and rejects only for the dispatch itself.
+			return {
+				async responses() {
+					if (opts.throwOnQuery) throw new Error("permission denied");
+					return [];
+				},
+			};
 		},
 	} as unknown as Surreal;
 	return { surreal, queries };
@@ -62,6 +68,20 @@ describe("ConnectionManager.ensureNamespaceAndDatabase", () => {
 		);
 
 		expect(queries).toHaveLength(0);
+	});
+
+	test("reads every statement's outcome rather than awaiting the query", async () => {
+		// The awaited query throws at the first statement that fails and, from SDK
+		// 2.1.0 on a 3.3+ server, cancels the ones behind it: a user who may define
+		// a database but not its namespace would then never get the database. A
+		// stub that only answers `.responses()` fails this test if the call
+		// reverts to awaiting the query itself.
+		const { surreal, queries } = makeSurrealStub();
+		await new ConnectionManager(surreal).ensureNamespaceAndDatabase(
+			"test",
+			"mydb",
+		);
+		expect(queries).toHaveLength(1);
 	});
 
 	test("swallows errors so a usable connection is never broken", async () => {

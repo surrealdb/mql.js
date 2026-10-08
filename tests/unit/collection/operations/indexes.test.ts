@@ -420,6 +420,75 @@ describe("createIndex – fields the server cannot store an index on", () => {
 	});
 });
 
+describe("createIndex – a definition the server rolls back", () => {
+	/**
+	 * What the SDK reports for `BEGIN; DEFINE INDEX …; INFO FOR TABLE …; COMMIT`
+	 * when the read-back cannot parse the definition it just stored, as measured:
+	 * the definition is discarded ("not executed"), the read-back carries the real
+	 * failure, and the commit refuses. A SDK that throws one error for the block
+	 * throws the first of these before 2.1.0 and the second since — which is why
+	 * this reads each statement's own outcome and not the thrown error.
+	 */
+	const failed = (message: string) => ({
+		ok: false as const,
+		value: undefined,
+		error: new MongoServerError(message),
+	});
+	const ok = { ok: true as const, value: null, error: undefined };
+	const NOT_EXECUTED = "The query was not executed due to a failed transaction";
+	const ROOT_CAUSE =
+		'A user generated conversion error occured: Conversion("SyntaxError { … }")';
+
+	test("is refused, with the server's own failure kept as the cause", async () => {
+		const { ctx, executor } = makeContext();
+		serverIndexes(executor, []);
+		executor.enqueueOutcomes([
+			ok,
+			failed(NOT_EXECUTED),
+			failed(ROOT_CAUSE),
+			failed("Cannot COMMIT: the transaction was aborted due to a prior error"),
+		]);
+
+		const err = await createIndex(ctx, { futureword: 1 } as never).catch(
+			(e: Error) => e,
+		);
+
+		expect(err).toBeInstanceOf(MongoCompatibilityError);
+		expect((err as Error).message).toContain("'futureword'");
+		expect((err as Error).message).toContain("No index was created");
+		// The cause is the read-back's failure, not the "not executed" frame that
+		// merely says something else went wrong.
+		expect(((err as Error).cause as Error).message).toContain(ROOT_CAUSE);
+	});
+
+	test("is refused the same way inside a caller's transaction", async () => {
+		const { ctx, executor } = makeContext({ inTransaction: true });
+		serverIndexes(executor, []);
+		executor.enqueueOutcomes([failed(NOT_EXECUTED), failed(ROOT_CAUSE)]);
+
+		await expect(createIndex(ctx, { futureword: 1 } as never)).rejects.toThrow(
+			MongoCompatibilityError,
+		);
+	});
+
+	test("a definition that itself failed reaches the caller as that failure", async () => {
+		const { ctx, executor } = makeContext();
+		serverIndexes(executor, []);
+		// The first frame to fail is the definition, so what follows is fallout.
+		executor.enqueueOutcomes([
+			ok,
+			failed("The index 'age_1' already exists"),
+			failed(NOT_EXECUTED),
+			failed("Cannot COMMIT: the transaction was aborted due to a prior error"),
+		]);
+
+		const err = await createIndex(ctx, { age: 1 }).catch((e: Error) => e);
+
+		expect(err).not.toBeInstanceOf(MongoCompatibilityError);
+		expect((err as Error).message).toContain("already exists");
+	});
+});
+
 describe("createIndex – rejected index types", () => {
 	for (const type of ["2d", "2dsphere", "geoHaystack", "hashed"] as const) {
 		test(`'${type}' is rejected instead of creating an ordinary index`, async () => {
