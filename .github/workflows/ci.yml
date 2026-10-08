@@ -195,6 +195,15 @@ jobs:
     # is named, since it is the one that has to be told apart.
     name: Tests under Node${{ matrix.node != '24' && format(' {0}', matrix.node) || '' }} (SurrealDB ${{ matrix.surrealdb.name }})
     runs-on: ubuntu-latest
+    # These connect, and a connection that never settles is a job that never ends:
+    # one did, for 26 minutes, before anyone looked. The suites take about a minute.
+    timeout-minutes: 15
+    env:
+      # Node has no global WebSocket before 22, and this driver — through the SDK —
+      # opens its socket with it. 20.10 and later have one behind this flag, which
+      # is what the declared floor needs to connect at all; without it the driver
+      # refuses a ws:// URL by name rather than crashing.
+      NODE_OPTIONS: ${{ matrix.node == '20.19.0' && '--experimental-websocket' || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -284,6 +293,7 @@ jobs:
   integration-tests:
     name: Integration Tests (SurrealDB ${{ matrix.surrealdb.name }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     continue-on-error: ${{ matrix.surrealdb.experimental || false }}
     strategy:
       fail-fast: false
@@ -395,6 +405,7 @@ jobs:
   e2e-mql:
     name: E2E (mql.js / SurrealDB ${{ matrix.surrealdb.name }} / Docker)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     continue-on-error: ${{ matrix.surrealdb.experimental || false }}
     strategy:
       fail-fast: false
