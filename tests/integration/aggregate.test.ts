@@ -238,6 +238,131 @@ describe("$group", () => {
 	});
 });
 
+describe("collecting accumulators with repeated values", () => {
+	/**
+	 * SurrealDB 3.4 changed `array::group` from "every value" to "the unique
+	 * values". The fixture above only repeats a value *within* a list that was
+	 * already in order (`x, x`), which is why a `$push` that had silently started
+	 * dropping repeats was the one thing the nightly run noticed. These repeat a
+	 * value with something different between the two, so the first, last and
+	 * N-th of the list cannot be right by accident.
+	 */
+	const readings = () => db.collection<Document>("readings");
+
+	const seed = async () => {
+		await readings().deleteMany({});
+		await readings().insertMany([
+			{ k: "g", seq: 1, v: "a", score: 5 },
+			{ k: "g", seq: 2, v: "b", score: 3 },
+			{ k: "g", seq: 3, v: "a", score: 5 },
+			{ k: "h", seq: 4, v: "c", score: 1 },
+		]);
+	};
+
+	test("$push keeps every value, in the order the group saw them", async () => {
+		await seed();
+		expect(
+			await readings()
+				.aggregate([
+					{ $sort: { seq: 1 } },
+					{ $group: { _id: "$k", vs: { $push: "$v" } } },
+					{ $sort: { _id: 1 } },
+				])
+				.toArray(),
+		).toEqual([
+			{ _id: "g", vs: ["a", "b", "a"] },
+			{ _id: "h", vs: ["c"] },
+		]);
+	});
+
+	test("$first and $last are the first and last row's value, not the first and last distinct one", async () => {
+		await seed();
+		expect(
+			await readings()
+				.aggregate([
+					{ $sort: { seq: 1 } },
+					{
+						$group: {
+							_id: "$k",
+							first: { $first: "$v" },
+							last: { $last: "$v" },
+						},
+					},
+					{ $sort: { _id: 1 } },
+				])
+				.toArray(),
+		).toEqual([
+			// A distinct list is [a, b], whose last is b.
+			{ _id: "g", first: "a", last: "a" },
+			{ _id: "h", first: "c", last: "c" },
+		]);
+	});
+
+	test("$firstN, $lastN, $maxN and $minN count a repeated value each time it occurs", async () => {
+		await seed();
+		const [g] = await readings()
+			.aggregate([
+				{ $sort: { seq: 1 } },
+				{
+					$group: {
+						_id: "$k",
+						firstTwo: { $firstN: { input: "$v", n: 2 } },
+						lastTwo: { $lastN: { input: "$v", n: 2 } },
+						topTwo: { $maxN: { input: "$score", n: 2 } },
+						bottomTwo: { $minN: { input: "$score", n: 2 } },
+					},
+				},
+				{ $match: { _id: "g" } },
+			])
+			.toArray();
+		expect(g).toEqual({
+			_id: "g",
+			firstTwo: ["a", "b"],
+			// A distinct list is [a, b], which would answer [a, b] here.
+			lastTwo: ["b", "a"],
+			// ...and [5, 3] here, with the second 5 gone.
+			topTwo: [5, 5],
+			bottomTwo: [3, 5],
+		});
+	});
+
+	test("derived accumulators sit beside aggregates, and a later $sort and $limit still apply", async () => {
+		await seed();
+		expect(
+			await readings()
+				.aggregate([
+					{ $sort: { seq: 1 } },
+					{
+						$group: {
+							_id: "$k",
+							n: { $sum: 1 },
+							total: { $sum: "$score" },
+							last: { $last: "$v" },
+						},
+					},
+					{ $sort: { n: -1 } },
+					{ $limit: 1 },
+				])
+				.toArray(),
+		).toEqual([{ _id: "g", n: 3, total: 13, last: "a" }]);
+	});
+
+	test("a constant is pushed once per row, as it is in MongoDB", async () => {
+		await seed();
+		expect(
+			await readings()
+				.aggregate([
+					{ $group: { _id: "$k", ones: { $push: 1 } } },
+					{ $sort: { _id: 1 } },
+				])
+				.toArray(),
+		).toEqual([
+			{ _id: "g", ones: [1, 1, 1] },
+			{ _id: "h", ones: [1] },
+		]);
+	});
+});
+
 describe("$match", () => {
 	test("before a $group filters the rows going in", async () => {
 		expect(
