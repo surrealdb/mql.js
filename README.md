@@ -720,6 +720,11 @@ written by SurrealDB itself — or by any other client — with sub-millisecond
 digits arrives here **rounded to the millisecond**. That is the deliberate trade
 for handing back a real `Date`, which is the only date type MongoDB has.
 
+A `Date` before 1970 is stored exactly, milliseconds included. The range is
+narrower than JavaScript's: a datetime spans the years **−262143 to 262142**,
+where a `Date` reaches ±275760, and a `Date` outside it is refused with a
+`MongoCompatibilityError` naming the range.
+
 ### The ObjectId class
 
 `ObjectId` is this driver's own implementation rather than a re-export of `bson`:
