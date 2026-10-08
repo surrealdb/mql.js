@@ -69,6 +69,12 @@ latest patch release (currently 3.0.5, 3.1.6, 3.2.5 and 3.3.2), plus SurrealDB
 packs the tarball and consumes it from Node 20.19.0, 22 and 24, in both an ESM
 and a CommonJS project.
 
+Connecting over `ws://` or `wss://` — the default — needs a global `WebSocket`,
+which Node has from **22**; on 20.10 and later it is behind
+`node --experimental-websocket`. On a Node that has neither, `connect()` refuses
+by name and says so, rather than failing obscurely. `http://` and `https://` need
+none, but have no sessions, no transactions and no query streaming.
+
 **TypeScript 5.3 or newer**, if you use the types. The public API includes
 `await using session = client.startSession()`, so the declarations reference
 `lib.esnext.disposable` (TypeScript 5.2), and the CommonJS declarations use a

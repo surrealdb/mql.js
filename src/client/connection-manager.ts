@@ -13,6 +13,7 @@
 
 import type { ConnectOptions, Surreal } from "surrealdb";
 import {
+	MongoCompatibilityError,
 	MongoNetworkError,
 	MongoNetworkTimeoutError,
 	MongoServerSelectionError,
@@ -27,6 +28,28 @@ export interface ConnectArgs {
 	connectTimeoutMS?: number;
 	/** Milliseconds allowed to find a usable server; `0` for no limit. */
 	serverSelectionTimeoutMS?: number;
+}
+
+/**
+ * Refuse a `ws://` or `wss://` connection in a runtime with nothing to open it.
+ *
+ * The SDK opens its socket with `globalThis.WebSocket` and has no other source
+ * for one here, and when that is missing it fails by throwing a `TypeError`
+ * ("WebSocketImpl is not a constructor") from inside a loop nothing awaits — so
+ * the caller's `connect()` never settles, or the process dies on an unhandled
+ * rejection, depending on the runtime. Node has no global `WebSocket` before 22;
+ * 20.10 and later have one behind `--experimental-websocket`. Said here, up front,
+ * in the caller's own call, it is a line to act on.
+ *
+ * `http://` and `https://` need none: they go through `fetch`.
+ */
+export function assertTransportAvailable(url: string): void {
+	if (!/^wss?:/i.test(url)) return;
+	if (typeof globalThis.WebSocket === "function") return;
+
+	throw new MongoCompatibilityError(
+		"This runtime has no global WebSocket, which ws:// and wss:// connections need. Node.js has one from version 22, and on 20.10 and later behind `node --experimental-websocket`. Upgrade, pass that flag, or connect over http:// or https:// instead — which needs none, but has no sessions, no transactions and no query streaming.",
+	);
 }
 
 /** A connect budget that expired, and the error it is reported as. */
@@ -45,6 +68,10 @@ export class ConnectionManager {
 		connectTimeoutMS,
 		serverSelectionTimeoutMS,
 	}: ConnectArgs): Promise<void> {
+		// Before the SDK is touched, and outside the `try` below so that it is
+		// reported as what it is rather than mapped as a connection failure.
+		assertTransportAvailable(url);
+
 		let connectSettled = false;
 		let capturedError: Error | undefined;
 
