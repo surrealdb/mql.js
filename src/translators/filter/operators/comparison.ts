@@ -16,6 +16,18 @@ import type { FilterOperator } from "../operator-registry.ts";
 import type { TranslateContext } from "../translate-context.ts";
 
 /**
+ * What the predicate builders in this file and in `./range.ts` need of a
+ * translation context: the dialect their type checks are spelled in, and a way
+ * to bind the operand.
+ *
+ * A narrower contract than `TranslateContext`, so that the update translator —
+ * whose `$pull` and `arrayFilters` conditions are the same MongoDB predicates
+ * applied to an array element — can use them without a filter context it has no
+ * other use for.
+ */
+export type PredicateContext = Pick<TranslateContext, "dialect" | "bind">;
+
+/**
  * The field an `$elemMatch` addresses its own element by.
  *
  * Conditions written without a field name — `{tags: {$elemMatch: {$gt: 5}}}` —
@@ -57,7 +69,7 @@ export function isIdentityField(field: string): boolean {
  * major can rename it in one place; the fallback keeps the helper total and is
  * unreachable for every dialect this driver supports.
  */
-export function arrayTypeCheckFn(ctx: TranslateContext): string {
+export function arrayTypeCheckFn(ctx: PredicateContext): string {
 	return ctx.dialect.typeCheckFn("array") ?? "type::is_array";
 }
 
@@ -81,7 +93,7 @@ export function arrayTypeCheckFn(ctx: TranslateContext): string {
  * Guarded by `type::is_array` for the reason `equalityPredicate`'s `CONTAINS`
  * arm is: `CONTAINS` is overloaded over strings and objects.
  */
-function nullElementArm(field: string, ctx: TranslateContext): string {
+function nullElementArm(field: string, ctx: PredicateContext): string {
 	return `(${arrayTypeCheckFn(ctx)}(${field}) AND ${field} CONTAINS NULL)`;
 }
 
@@ -111,7 +123,7 @@ function isWholeValue(field: string): boolean {
  */
 export function nullEqualityPredicate(
 	field: string,
-	ctx: TranslateContext,
+	ctx: PredicateContext,
 ): string {
 	const own = `${field} IS NULL OR ${field} IS NONE`;
 	if (isWholeValue(field)) return `(${own})`;
@@ -137,7 +149,7 @@ export function nullEqualityPredicate(
 export function equalityPredicate(
 	field: string,
 	value: unknown,
-	ctx: TranslateContext,
+	ctx: PredicateContext,
 ): string {
 	if (value === null) return nullEqualityPredicate(field, ctx);
 
@@ -157,7 +169,7 @@ export function equalityPredicate(
 export function inequalityPredicate(
 	field: string,
 	value: unknown,
-	ctx: TranslateContext,
+	ctx: PredicateContext,
 ): string {
 	if (value === null) {
 		if (isWholeValue(field)) {

@@ -1112,6 +1112,8 @@ collection untouched rather than damaging it.
 | `$pullAll` | `{ $pullAll: { tags: ["a", "b"] } }` | Remove all listed elements |
 | `$pop` | `{ $pop: { tags: 1 } }` | Remove last (`1`) or first (`-1`) element |
 
+A `$pull` with a condition — `{ $pull: { scores: { $gte: 90 } } }`, or on a field of each sub-document, `{ $pull: { items: { price: { $gt: 5 } } } }` — and an `arrayFilters` entry such as `{ "elem.score": { $gte: 90 } }` apply `$gt`, `$gte`, `$lt` and `$lte` to each element **within one BSON type**, as a query filter does (see [Comparison](#comparison)). `{ $pull: { v: { $gt: 5 } } }` removes the numbers above 5 and keeps a string, a boolean and a null; an element that is itself an array is removed when any of its elements is above 5; and an array or an embedded-document operand is refused with `MongoCompatibilityError`, for the reason given under Comparison. The other operators accepted there — `$eq`, `$ne`, `$in`, `$nin` — compare each element as a plain value, so `{ $pull: { v: { $eq: 7 } } }` does not remove an element that is an array holding a 7, which MongoDB does.
+
 ### Positional array operators
 
 Update specific elements within arrays using positional operators in field paths.

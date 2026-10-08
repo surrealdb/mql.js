@@ -4,6 +4,24 @@ import {
 	translateUpdate,
 } from "../../../src/translators/update.ts";
 
+/**
+ * What a `$pull` or `arrayFilters` ordering operator emits for a *number*
+ * operand on `target`: the filter translator's type-bracketed comparison, with
+ * no planner range in front of it. The incidental tests below are about where
+ * that predicate sits, so it is built here the way `filter.test.ts` builds its
+ * own; `update-range.test.ts` pins every part of it literally.
+ */
+const range = (
+	target: string,
+	operator: ">" | ">=" | "<" | "<=",
+	param: string,
+) => {
+	const bound = operator.startsWith(">") ? "<= math::inf" : ">= math::neg_inf";
+	const guarded = (expr: string) =>
+		`type::is_number(${expr}) AND ${expr} ${bound} AND ${expr} ${operator} $${param}`;
+	return `((${guarded(target)}) OR (type::is_array(${target}) AND array::any(${target}, |$__mql_element| (${guarded("$__mql_element")}))))`;
+};
+
 describe("translateUpdate", () => {
 	// -----------------------------------------------------------------
 	// $set
@@ -126,7 +144,9 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$pull: { n: { $gte: 3 } },
 		});
-		expect(clause).toBe("SET `n` = `n`[WHERE !($this >= $p0)]");
+		expect(clause).toBe(
+			`SET \`n\` = \`n\`[WHERE !(${range("($this)", ">=", "p0")})]`,
+		);
 		expect(bindings).toEqual({ p0: 3 });
 	});
 
@@ -134,7 +154,9 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$pull: { n: { $gte: 2, $lt: 10 } },
 		});
-		expect(clause).toBe("SET `n` = `n`[WHERE !($this >= $p0 AND $this < $p1)]");
+		expect(clause).toBe(
+			`SET \`n\` = \`n\`[WHERE !(${range("($this)", ">=", "p0")} AND ${range("($this)", "<", "p1")})]`,
+		);
 		expect(bindings).toEqual({ p0: 2, p1: 10 });
 	});
 
@@ -159,7 +181,7 @@ describe("translateUpdate", () => {
 			$pull: { results: { score: { $gte: 8 }, item: "B" } },
 		});
 		expect(clause).toBe(
-			"SET `results` = `results`[WHERE !($this.`score` >= $p0 AND $this.`item` = $p1)]",
+			`SET \`results\` = \`results\`[WHERE !(${range("$this.`score`", ">=", "p0")} AND $this.\`item\` = $p1)]`,
 		);
 		expect(bindings).toEqual({ p0: 8, p1: "B" });
 	});
@@ -526,7 +548,9 @@ describe("translateUpdate", () => {
 			0,
 			{ arrayFilters: [{ "high.value": { $gte: 90 } }] },
 		);
-		expect(clause).toBe("SET `scores`[WHERE `value` >= $p0].`passed` = $p1");
+		expect(clause).toBe(
+			`SET \`scores\`[WHERE ${range("`value`", ">=", "p0")}].\`passed\` = $p1`,
+		);
 		expect(bindings).toEqual({ p0: 90, p1: true });
 	});
 
@@ -539,7 +563,7 @@ describe("translateUpdate", () => {
 			},
 		);
 		expect(clause).toBe(
-			"SET `items`[WHERE `status` = $p0 AND `qty` < $p1].`qty` += $p2",
+			`SET \`items\`[WHERE \`status\` = $p0 AND ${range("`qty`", "<", "p1")}].\`qty\` += $p2`,
 		);
 		expect(bindings).toEqual({ p0: "active", p1: 100, p2: 1 });
 	});

@@ -7,6 +7,7 @@
  */
 
 import type { Document } from "../../types.ts";
+import type { SurrealDialect } from "../dialect/index.ts";
 
 export interface UpdateContext {
 	/** Bindings produced so far. Mutated in place by operators. */
@@ -15,6 +16,12 @@ export interface UpdateContext {
 	readonly parts: string[];
 	/** Optional arrayFilters (used by `$[identifier]` positional updates). */
 	readonly arrayFilters: Document[] | undefined;
+	/**
+	 * SurrealQL dialect to target. A `$pull` or `arrayFilters` condition is a
+	 * MongoDB query predicate applied to an array element, and is spelled by the
+	 * filter translator's builders, whose type checks come from the dialect.
+	 */
+	readonly dialect: SurrealDialect;
 	/**
 	 * True when the statement being built can insert, i.e. it is on the upsert
 	 * path. `$setOnInsert` needs this: MongoDB applies it only when the operation
