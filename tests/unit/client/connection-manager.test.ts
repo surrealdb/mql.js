@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { Surreal } from "surrealdb";
-import { ConnectionManager } from "../../../src/client/connection-manager.ts";
+import {
+	assertTransportAvailable,
+	ConnectionManager,
+} from "../../../src/client/connection-manager.ts";
+import { MongoCompatibilityError } from "../../../src/errors.ts";
 
 /** Minimal `Surreal` stub that records the SQL passed to `query()`. */
 function makeSurrealStub(opts: { throwOnQuery?: boolean } = {}): {
@@ -100,3 +104,81 @@ describe("ConnectionManager.ensureNamespaceAndDatabase", () => {
 		expect(threw).toBe(false);
 	});
 });
+
+describe("a runtime with no global WebSocket", () => {
+	/**
+	 * Node has no global `WebSocket` before 22 (20.10+ behind a flag). The SDK then
+	 * throws a `TypeError` from a loop nothing awaits, and `connect()` never
+	 * settles, or the process dies. Measured by deleting the global under Node 26.
+	 */
+	const without = async <T>(work: () => Promise<T> | T): Promise<T> => {
+		const original = globalThis.WebSocket;
+		// biome-ignore lint/suspicious/noExplicitAny: removing a global to simulate a runtime
+		delete (globalThis as any).WebSocket;
+		try {
+			return await work();
+		} finally {
+			globalThis.WebSocket = original;
+		}
+	};
+
+	test("refuses a ws:// or wss:// connection by name, before the SDK is asked", async () => {
+		const { surreal, calls } = connectStub();
+		for (const url of [
+			"ws://localhost:8000/rpc",
+			"wss://db.example/rpc",
+			"WS://x",
+		]) {
+			await without(async () => {
+				await expect(
+					new ConnectionManager(surreal).connect({ url, options: {} }),
+				).rejects.toThrow(MongoCompatibilityError);
+			});
+		}
+		expect(calls.connect).toBe(0);
+	});
+
+	test("says what to do about it", async () => {
+		await without(() => {
+			expect(() => assertTransportAvailable("ws://x")).toThrow(
+				/--experimental-websocket/,
+			);
+			expect(() => assertTransportAvailable("ws://x")).toThrow(
+				/http:\/\/ or https:\/\//,
+			);
+		});
+	});
+
+	test("an http:// connection needs none, so is not refused", async () => {
+		await without(() => {
+			expect(() =>
+				assertTransportAvailable("http://localhost:8000"),
+			).not.toThrow();
+			expect(() =>
+				assertTransportAvailable("https://db.example"),
+			).not.toThrow();
+		});
+	});
+
+	test("a runtime that has one is not refused", () => {
+		expect(typeof globalThis.WebSocket).toBe("function");
+		expect(() =>
+			assertTransportAvailable("ws://localhost:8000/rpc"),
+		).not.toThrow();
+	});
+});
+
+/** A `Surreal` whose `connect` succeeds at once and counts being called. */
+function connectStub(): { surreal: Surreal; calls: { connect: number } } {
+	const calls = { connect: 0 };
+	const surreal = {
+		subscribe: () => () => undefined,
+		async connect() {
+			calls.connect += 1;
+		},
+		async close() {
+			return undefined;
+		},
+	} as unknown as Surreal;
+	return { surreal, calls };
+}
