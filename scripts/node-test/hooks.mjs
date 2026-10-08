@@ -30,7 +30,10 @@ export function load(url, context, next) {
 	const { code } = transformSync(readFileSync(path, "utf8"), {
 		loader: "ts",
 		format: "esm",
-		target: "esnext",
+		// The floor `engines.node` declares, so esbuild lowers what that Node cannot
+		// parse. `esnext` left `await using` in the sessions tests as written, and on
+		// 20.19.0 the file failed to compile at all.
+		target: "node20.19",
 		sourcefile: path,
 	});
 	return { format: "module", source: code, shortCircuit: true };
