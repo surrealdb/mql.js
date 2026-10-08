@@ -1034,14 +1034,27 @@ describe("positional updates compute each element's new value from its own", () 
 		}
 	});
 
-	test("$currentDate sets the same date on every element", async () => {
+	// MongoDB reads the clock as it reaches each element, and so does this driver:
+	// over 3,000 elements a real `mongod` wrote two different dates, a millisecond
+	// apart. So what is asserted is a date on every element and that they are all
+	// the same moment to within a second, and not that they are equal.
+	test("$currentDate sets the current date on every element", async () => {
+		const before = Date.now();
 		const { doc } = await run(
-			{ v: [{ n: 1 }, { n: 2 }] },
+			{ v: Array.from({ length: 200 }, (_, n) => ({ n })) },
 			{ $currentDate: { "v.$[].at": true } },
 		);
-		const [first, second] = doc?.v as { at: unknown }[];
-		expect(first.at).toBeInstanceOf(Date);
-		expect(second.at).toEqual(first.at);
+		const after = Date.now();
+
+		const dates = (doc?.v as { at: unknown }[]).map((element) => element.at);
+		for (const date of dates) expect(date).toBeInstanceOf(Date);
+
+		const times = (dates as Date[]).map((date) => date.getTime());
+		expect(Math.max(...times) - Math.min(...times)).toBeLessThan(1000);
+		// The server's clock and this one are the same on any machine these run on,
+		// to well within a minute.
+		expect(Math.abs(times[0] - before)).toBeLessThan(60_000);
+		expect(Math.abs(times[0] - after)).toBeLessThan(60_000);
 	});
 
 	test("the plain fields beside it are updated as usual", async () => {
