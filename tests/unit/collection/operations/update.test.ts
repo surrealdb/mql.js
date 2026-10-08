@@ -138,9 +138,11 @@ describe("updateMany", () => {
 			{ $inc: { "items.$[item].qty": 1 } },
 			{ arrayFilters: [{ "item.status": "active" }] },
 		);
-		expect(executor.queries[0].sql).toContain("WHERE `status` = $p0");
+		// The condition is tested on each element, in the closure that rewrites
+		// `items`: the value is `$p0`, the refusal for an element that is not a
+		// document `$p1`, and the filter's operand `$p2`.
 		expect(executor.queries[0].sql).toContain(
-			"`items`[WHERE `status` = $p0].`qty`",
+			"array::map(`items`, |$__mql_item0| IF $__mql_item0.`status` = $p2 THEN",
 		);
 	});
 });

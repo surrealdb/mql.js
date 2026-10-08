@@ -5,14 +5,15 @@
 
 import { MongoInvalidArgumentError } from "../../../errors.ts";
 import type { UpdateOperator } from "../operator-registry.ts";
+import { isPositionalPath, REMOVE } from "../positional.ts";
 
 export const setOperator: UpdateOperator = {
 	name: "$set",
 	apply(entries, ctx) {
 		for (const [field, value] of entries) {
-			const f = ctx.resolveField(field);
 			const p = ctx.bind(value);
-			ctx.parts.push(`${f} = $${p}`);
+			if (ctx.updatePositional(field, { value: () => `$${p}` })) continue;
+			ctx.parts.push(`${ctx.resolveField(field)} = $${p}`);
 		}
 	},
 };
@@ -49,6 +50,7 @@ export const unsetOperator: UpdateOperator = {
 	name: "$unset",
 	apply(entries, ctx) {
 		for (const [field] of entries) {
+			if (ctx.updatePositional(field, REMOVE)) continue;
 			ctx.parts.push(`${ctx.resolveField(field)} = NONE`);
 		}
 	},
@@ -58,9 +60,17 @@ export const incOperator: UpdateOperator = {
 	name: "$inc",
 	apply(entries, ctx) {
 		for (const [field, value] of entries) {
-			const f = ctx.resolveField(field);
 			const p = ctx.bind(value);
-			ctx.parts.push(`${f} += $${p}`);
+			// MongoDB creates the field at the increment when it is absent.
+			if (
+				ctx.updatePositional(field, {
+					value: (current) =>
+						`IF ${current} IS NONE THEN $${p} ELSE ${current} + $${p} END`,
+				})
+			) {
+				continue;
+			}
+			ctx.parts.push(`${ctx.resolveField(field)} += $${p}`);
 		}
 	},
 };
@@ -69,8 +79,17 @@ export const mulOperator: UpdateOperator = {
 	name: "$mul",
 	apply(entries, ctx) {
 		for (const [field, value] of entries) {
-			const f = ctx.resolveField(field);
 			const p = ctx.bind(value);
+			// MongoDB sets an absent field to zero: there was nothing to multiply.
+			if (
+				ctx.updatePositional(field, {
+					value: (current) =>
+						`IF ${current} IS NONE THEN 0 ELSE ${current} * $${p} END`,
+				})
+			) {
+				continue;
+			}
+			const f = ctx.resolveField(field);
 			ctx.parts.push(`${f} = ${f} * $${p}`);
 		}
 	},
@@ -96,11 +115,12 @@ function makeComparisonOp(name: string, cmp: "<" | ">"): UpdateOperator {
 		name,
 		apply(entries, ctx) {
 			for (const [field, value] of entries) {
-				const f = ctx.resolveField(field);
 				const p = ctx.bind(value);
-				ctx.parts.push(
-					`${f} = IF ${f} IS NONE OR $${p} ${cmp} ${f} THEN $${p} ELSE ${f} END`,
-				);
+				const choose = (f: string) =>
+					`IF ${f} IS NONE OR $${p} ${cmp} ${f} THEN $${p} ELSE ${f} END`;
+				if (ctx.updatePositional(field, { value: choose })) continue;
+				const f = ctx.resolveField(field);
+				ctx.parts.push(`${f} = ${choose(f)}`);
 			}
 		},
 	};
@@ -113,6 +133,18 @@ export const renameOperator: UpdateOperator = {
 	name: "$rename",
 	apply(entries, ctx) {
 		for (const [oldField, newField] of entries) {
+			// MongoDB refuses a positional path on either side, in these words: a
+			// rename moves one value, and a marker names many.
+			if (isPositionalPath(oldField)) {
+				throw new MongoInvalidArgumentError(
+					`The source field for $rename may not be dynamic: ${oldField}`,
+				);
+			}
+			if (isPositionalPath(newField as string)) {
+				throw new MongoInvalidArgumentError(
+					`The destination field for $rename may not be dynamic: ${newField}`,
+				);
+			}
 			ctx.parts.push(
 				`${ctx.resolveField(newField as string)} = ${ctx.resolveField(oldField)}`,
 			);
@@ -160,6 +192,7 @@ export const currentDateOperator: UpdateOperator = {
 	apply(entries, ctx) {
 		for (const [field, value] of entries) {
 			assertCurrentDateSpec(field, value);
+			if (ctx.updatePositional(field, { value: () => "time::now()" })) continue;
 			ctx.parts.push(`${ctx.resolveField(field)} = time::now()`);
 		}
 	},

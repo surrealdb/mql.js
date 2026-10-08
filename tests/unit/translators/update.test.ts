@@ -22,6 +22,20 @@ const range = (
 	return `((${guarded(target)}) OR (type::is_array(${target}) AND array::any(${target}, |$__mql_element| (${guarded("$__mql_element")}))))`;
 };
 
+/**
+ * A positional update to `array` is a rewrite of it, one element at a time (see
+ * `positional.ts`), and these are the parts of it that never change: the guard on
+ * the array being one, the closure, and what an element that is not a document
+ * is refused with. `body` is what each element becomes. `update-positional.test.ts`
+ * pins every operator's body literally.
+ */
+const rewrite = (array: string, body: string) =>
+	`SET ${array} = IF type::is_array(${array}) THEN array::map(${array}, |$__mql_item0| ${body}) ELSE ${array} END`;
+
+/** The message a path that goes inside an element is refused with when it is not one. */
+const notADocument = (path: string) =>
+	`Cannot create a field in an array element that is not a document, for the path '${path}'`;
+
 describe("translateUpdate", () => {
 	// -----------------------------------------------------------------
 	// $set
@@ -509,24 +523,50 @@ describe("translateUpdate", () => {
 		const { clause, bindings } = translateUpdate({
 			$set: { "grades.$[].score": 100 },
 		});
-		expect(clause).toBe("SET `grades`[*].`score` = $p0");
-		expect(bindings).toEqual({ p0: 100 });
+		expect(clause).toBe(
+			rewrite(
+				"`grades`",
+				"IF type::is_object($__mql_item0) THEN object::extend($__mql_item0, {`score`: $p0}) ELSE { THROW $p1 } END",
+			),
+		);
+		expect(bindings).toEqual({
+			p0: 100,
+			p1: notADocument("grades.$[].score"),
+		});
 	});
 
+	// `$inc` was `scores[*].value += $p0`, which reads `scores[*].value` as the list
+	// of every element's `value` and appends to it.
 	test("$inc with $[] increments all elements", () => {
 		const { clause, bindings } = translateUpdate({
 			$inc: { "scores.$[].value": 5 },
 		});
-		expect(clause).toBe("SET `scores`[*].`value` += $p0");
-		expect(bindings).toEqual({ p0: 5 });
+		expect(clause).toBe(
+			rewrite(
+				"`scores`",
+				"IF type::is_object($__mql_item0) THEN object::extend($__mql_item0, {`value`: IF $__mql_item0.`value` IS NONE THEN $p0 ELSE $__mql_item0.`value` + $p0 END}) ELSE { THROW $p1 } END",
+			),
+		);
+		expect(bindings).toEqual({
+			p0: 5,
+			p1: notADocument("scores.$[].value"),
+		});
 	});
 
 	test("$unset with $[] removes field from all elements", () => {
 		const { clause, bindings } = translateUpdate({
 			$unset: { "items.$[].oldField": "" },
 		});
-		expect(clause).toBe("SET `items`[*].`oldField` = NONE");
-		expect(bindings).toEqual({});
+		expect(clause).toBe(
+			rewrite(
+				"`items`",
+				"IF type::is_object($__mql_item0) THEN object::remove($__mql_item0, [$p1]) ELSE { THROW $p0 } END",
+			),
+		);
+		expect(bindings).toEqual({
+			p0: notADocument("items.$[].oldField"),
+			p1: "oldField",
+		});
 	});
 
 	// -----------------------------------------------------------------
@@ -538,8 +578,17 @@ describe("translateUpdate", () => {
 			0,
 			{ arrayFilters: [{ "elem.grade": "A" }] },
 		);
-		expect(clause).toBe("SET `grades`[WHERE `grade` = $p0].`score` = $p1");
-		expect(bindings).toEqual({ p0: "A", p1: 100 });
+		expect(clause).toBe(
+			rewrite(
+				"`grades`",
+				"IF $__mql_item0.`grade` = $p2 THEN IF type::is_object($__mql_item0) THEN object::extend($__mql_item0, {`score`: $p0}) ELSE { THROW $p1 } END ELSE $__mql_item0 END",
+			),
+		);
+		expect(bindings).toEqual({
+			p0: 100,
+			p1: notADocument("grades.$[elem].score"),
+			p2: "A",
+		});
 	});
 
 	test("$set with $[identifier] and operator arrayFilter", () => {
@@ -549,9 +598,16 @@ describe("translateUpdate", () => {
 			{ arrayFilters: [{ "high.value": { $gte: 90 } }] },
 		);
 		expect(clause).toBe(
-			`SET \`scores\`[WHERE ${range("`value`", ">=", "p0")}].\`passed\` = $p1`,
+			rewrite(
+				"`scores`",
+				`IF ${range("$__mql_item0.`value`", ">=", "p2")} THEN IF type::is_object($__mql_item0) THEN object::extend($__mql_item0, {\`passed\`: $p0}) ELSE { THROW $p1 } END ELSE $__mql_item0 END`,
+			),
 		);
-		expect(bindings).toEqual({ p0: 90, p1: true });
+		expect(bindings).toEqual({
+			p0: true,
+			p1: notADocument("scores.$[high].passed"),
+			p2: 90,
+		});
 	});
 
 	test("$inc with $[identifier] and multiple conditions", () => {
@@ -563,9 +619,17 @@ describe("translateUpdate", () => {
 			},
 		);
 		expect(clause).toBe(
-			`SET \`items\`[WHERE \`status\` = $p0 AND ${range("`qty`", "<", "p1")}].\`qty\` += $p2`,
+			rewrite(
+				"`items`",
+				`IF $__mql_item0.\`status\` = $p2 AND ${range("$__mql_item0.`qty`", "<", "p3")} THEN IF type::is_object($__mql_item0) THEN object::extend($__mql_item0, {\`qty\`: IF $__mql_item0.\`qty\` IS NONE THEN $p0 ELSE $__mql_item0.\`qty\` + $p0 END}) ELSE { THROW $p1 } END ELSE $__mql_item0 END`,
+			),
 		);
-		expect(bindings).toEqual({ p0: "active", p1: 100, p2: 1 });
+		expect(bindings).toEqual({
+			p0: 1,
+			p1: notADocument("items.$[item].qty"),
+			p2: "active",
+			p3: 100,
+		});
 	});
 
 	test("$[identifier] throws without arrayFilters", () => {
