@@ -140,7 +140,11 @@ for (const [kind, make] of KINDS) {
 			await expect(cursor.next()).rejects.toBe(reason);
 			await expect(cursor.hasNext()).rejects.toBe(reason);
 			await expect(cursor.toArray()).rejects.toBe(reason);
-			await expect(cursor.forEach(() => undefined)).rejects.toBe(reason);
+			await expect(
+				cursor.forEach(() => {
+					/* never called: the signal has aborted */
+				}),
+			).rejects.toBe(reason);
 			await expect(
 				(async () => {
 					for await (const _ of cursor) break;
