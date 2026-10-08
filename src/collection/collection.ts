@@ -9,13 +9,18 @@
  */
 
 import { AggregationCursor } from "../cursor/aggregation-cursor.ts";
-import type { FindCursorState, FindRunner } from "../cursor/find-cursor.ts";
+import type {
+	FindCursorState,
+	FindRunner,
+	FindStreamer,
+} from "../cursor/find-cursor.ts";
 import { FindCursor } from "../cursor/find-cursor.ts";
 import { ListIndexesCursor } from "../cursor/list-indexes-cursor.ts";
 import { listTableNames } from "../db/database-operations.ts";
 import type { Db } from "../db/db.ts";
 import { MongoAPIError } from "../errors.ts";
 import { sessionExecutor } from "../session/client-session.ts";
+import { deferredRows } from "../surreal/row-stream.ts";
 import { escapeIdentifier } from "../surreal/sql/escape.ts";
 import {
 	resolveDialect,
@@ -78,7 +83,7 @@ import { IndexRegistry } from "./index-registry.ts";
 import type { OperationContext } from "./operation-context.ts";
 import type { AnyOperationOptions } from "./operation-options.ts";
 import { assertSupportedOptions } from "./operation-options.ts";
-import { executeAggregate } from "./operations/aggregate.ts";
+import { executeAggregate, streamAggregate } from "./operations/aggregate.ts";
 import { bulkWrite as bulkWriteOp } from "./operations/bulk-write.ts";
 import {
 	countDocuments as countDocumentsOp,
@@ -92,6 +97,7 @@ import { distinct as distinctOp } from "./operations/distinct.ts";
 import {
 	executeFind as executeFindOp,
 	findOne as findOneOp,
+	streamFind as streamFindOp,
 } from "./operations/find.ts";
 import {
 	findOneAndDelete as findOneAndDeleteOp,
@@ -231,10 +237,30 @@ export class Collection<TSchema extends Document = Document> {
 				},
 				options,
 			);
+		// Read a document at a time, the same query, resolved the same way — and just
+		// as lazily, so nothing is looked up until the first document is asked for.
+		const streamer: FindStreamer<TSchema> = (state: FindCursorState) =>
+			deferredRows(async () =>
+				streamFindOp<TSchema>(
+					await this.context(options),
+					state.filter,
+					{
+						sort: state.sort,
+						limit: state.limit,
+						skip: state.skip,
+						projectionColumns: state.projectionColumns,
+						projectionExcludeFields: state.projectionExcludeFields,
+						projectionIncludeId: state.projectionIncludeId,
+					},
+					options,
+				),
+			);
 		return new FindCursor<TSchema>(
 			runner as FindRunner<Document>,
 			filter as Document,
 			options,
+			undefined,
+			streamer as FindStreamer<Document>,
 		);
 	}
 
@@ -582,8 +608,13 @@ export class Collection<TSchema extends Document = Document> {
 		options?: AggregateOptions,
 	): AggregationCursor<T> {
 		assertSupportedOptions(options);
-		return new AggregationCursor<T>(async () =>
-			executeAggregate<T>(await this.context(options), pipeline, options),
+		return new AggregationCursor<T>(
+			async () =>
+				executeAggregate<T>(await this.context(options), pipeline, options),
+			() =>
+				deferredRows(async () =>
+					streamAggregate<T>(await this.context(options), pipeline, options),
+				),
 		);
 	}
 

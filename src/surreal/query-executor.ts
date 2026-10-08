@@ -87,6 +87,29 @@ export interface QueryExecutor {
 	): Promise<readonly StatementOutcome[]>;
 
 	/**
+	 * The rows of the caller's first statement, one at a time as they arrive.
+	 *
+	 * `query` hands back everything at once, which is what nearly every operation
+	 * wants. A cursor that is read a row at a time wants the first rows while the
+	 * rest are still being produced, and wants to be able to stop: `return()` on
+	 * the iterator stops the statement on the server, so a consumer that has read
+	 * what it needs does not leave rows being produced for nobody.
+	 *
+	 * Nothing is sent until the first `next()`. A failure — the statement's own, or
+	 * a connection lost partway — is thrown from `next()` and can follow rows the
+	 * caller has already been given, as a MongoDB `getMore` can.
+	 *
+	 * Only a statement that answers with a list belongs here; for anything else use
+	 * `query`. Inside a transaction the rows are read whole and handed out from
+	 * memory, because a transaction is serialised and a half-read stream would hold
+	 * everything behind it.
+	 */
+	queryRows<T = unknown>(
+		sql: string,
+		bindings?: Record<string, unknown>,
+	): AsyncIterableIterator<T>;
+
+	/**
 	 * The version reported by the connected SurrealDB server, if known.
 	 */
 	readonly serverVersion: string | undefined;

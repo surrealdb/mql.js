@@ -62,6 +62,13 @@ type Dispatch = (
 	bindings?: Record<string, unknown>,
 ) => Promise<readonly unknown[]>;
 
+/** Send a statement and stream the rows of the statement at `frame`. */
+type DispatchRows = (
+	sql: string,
+	bindings: Record<string, unknown> | undefined,
+	frame: number,
+) => AsyncIterableIterator<unknown>;
+
 /** Send a statement and return what each of its statements did. */
 type DispatchEach = (
 	sql: string,
@@ -102,6 +109,19 @@ export abstract class ScopedExecutor implements QueryExecutor {
 		bindings?: Record<string, unknown>,
 	): Promise<readonly StatementOutcome[]>;
 
+	/**
+	 * Send `sql` as given and stream the rows of the statement at `frame`.
+	 *
+	 * Handed the frame rather than left to guess it, for the reason `query` reads
+	 * one frame and not the first: a database prefix is a statement of its own, and
+	 * a streamed reply labels every row with the statement it came from.
+	 */
+	protected abstract dispatchRows(
+		sql: string,
+		bindings: Record<string, unknown> | undefined,
+		frame: number,
+	): AsyncIterableIterator<unknown>;
+
 	async query<T = unknown>(
 		sql: string,
 		bindings?: Record<string, unknown>,
@@ -109,6 +129,18 @@ export abstract class ScopedExecutor implements QueryExecutor {
 		const scoped = scopeStatement(sql, this.database);
 		const frames = await this.dispatch(scoped.sql, bindings);
 		return frames[scoped.frame] as T;
+	}
+
+	queryRows<T = unknown>(
+		sql: string,
+		bindings?: Record<string, unknown>,
+	): AsyncIterableIterator<T> {
+		const scoped = scopeStatement(sql, this.database);
+		return this.dispatchRows(
+			scoped.sql,
+			bindings,
+			scoped.frame,
+		) as AsyncIterableIterator<T>;
 	}
 
 	async queryLast<T = unknown>(
@@ -155,6 +187,7 @@ export abstract class ScopedExecutor implements QueryExecutor {
 			this,
 			(sql, bindings) => this.dispatch(sql, bindings),
 			(sql, bindings) => this.dispatchEach(sql, bindings),
+			(sql, bindings, frame) => this.dispatchRows(sql, bindings, frame),
 			database,
 		);
 	}
@@ -173,17 +206,20 @@ class ScopedView extends ScopedExecutor {
 	private readonly root: QueryExecutor;
 	private readonly send: Dispatch;
 	private readonly sendEach: DispatchEach;
+	private readonly sendRows: DispatchRows;
 
 	constructor(
 		root: QueryExecutor,
 		send: Dispatch,
 		sendEach: DispatchEach,
+		sendRows: DispatchRows,
 		database: string | undefined,
 	) {
 		super(database);
 		this.root = root;
 		this.send = send;
 		this.sendEach = sendEach;
+		this.sendRows = sendRows;
 	}
 
 	get serverVersion(): string | undefined {
@@ -204,6 +240,14 @@ class ScopedView extends ScopedExecutor {
 		bindings?: Record<string, unknown>,
 	): Promise<readonly StatementOutcome[]> {
 		return this.sendEach(sql, bindings);
+	}
+
+	protected dispatchRows(
+		sql: string,
+		bindings: Record<string, unknown> | undefined,
+		frame: number,
+	): AsyncIterableIterator<unknown> {
+		return this.sendRows(sql, bindings, frame);
 	}
 
 	async close(): Promise<void> {

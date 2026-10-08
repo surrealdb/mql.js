@@ -20,6 +20,13 @@
 
 import { MongoCompatibilityError } from "../../errors.ts";
 import { reviveBsonValues } from "../../surreal/bson-codec.ts";
+import { isMissingTableError } from "../../surreal/error-mapper.ts";
+import {
+	bufferedRows,
+	deferredRows,
+	mapRows,
+	rowsOrNoneWhen,
+} from "../../surreal/row-stream.ts";
 import { escapeIdentifier } from "../../surreal/sql/escape.ts";
 import { statement } from "../../surreal/sql/statement.ts";
 import { translatePipeline } from "../../translators/aggregate/index.ts";
@@ -55,6 +62,65 @@ export async function executeAggregate<TSchema extends Document>(
 		return [];
 	}
 
+	return runPlanned<TSchema>(ctx, await planAggregate(ctx, pipeline, options));
+}
+
+/**
+ * The same pipeline as `executeAggregate`, read a document at a time as the
+ * server produces them.
+ *
+ * What cannot be read that way is read whole and handed out from memory, so a
+ * cursor never has to know which it got: a batch (a `$lookup` binds variables
+ * first and reads the last statement, and the frames before it are working, not
+ * results) and a pipeline that writes (`$out`/`$merge` answer with nothing).
+ *
+ * Nothing is translated or sent until the first read, so a refusal surfaces
+ * from the first read exactly where `executeAggregate`'s would have.
+ */
+export function streamAggregate<TSchema extends Document>(
+	ctx: OperationContext,
+	pipeline: readonly Document[],
+	options?: AggregateOptions,
+): AsyncIterableIterator<TSchema> {
+	return deferredRows<TSchema>(async () => {
+		if (terminalWrite(pipeline)) {
+			return bufferedRows(() =>
+				executeAggregate<TSchema>(ctx, pipeline, options),
+			);
+		}
+
+		const planned = await planAggregate(ctx, pipeline, options);
+		if (planned.isBatch) {
+			return bufferedRows(() => runPlanned<TSchema>(ctx, planned));
+		}
+
+		const rows = ctx.executor.queryRows<Record<string, unknown>>(
+			planned.sql,
+			planned.bindings,
+		);
+		return mapRows(
+			// A collection that was never written to reads as empty.
+			rowsOrNoneWhen(rows, (err) =>
+				isMissingTableError(err, ctx.collectionName),
+			),
+			(row) => decodeAggregated<TSchema>(row, planned.identityIsPlainField),
+		);
+	});
+}
+
+/** A pipeline translated, with its time limit applied, ready to send. */
+interface PlannedAggregate {
+	readonly sql: string;
+	readonly bindings: Record<string, unknown>;
+	readonly isBatch: boolean;
+	readonly identityIsPlainField: boolean;
+}
+
+async function planAggregate(
+	ctx: OperationContext,
+	pipeline: readonly Document[],
+	options?: AggregateOptions,
+): Promise<PlannedAggregate> {
 	const plan = await resolveOperationPlan(ctx, options);
 	const filterOptions = await filterOptionsFor(ctx, undefined);
 
@@ -68,20 +134,42 @@ export async function executeAggregate<TSchema extends Document>(
 		},
 	);
 
+	return {
+		sql: statement(sql, plan.timeout),
+		bindings,
+		isBatch,
+		identityIsPlainField,
+	};
+}
+
+async function runPlanned<TSchema extends Document>(
+	ctx: OperationContext,
+	planned: PlannedAggregate,
+): Promise<TSchema[]> {
 	// A `$lookup` binds its outer and joined rows ahead of the statement that reads
 	// them, so the answer is the last frame rather than the first.
-	const rows = await selectRows(ctx, statement(sql, plan.timeout), bindings, {
-		lastFrame: isBatch,
+	const rows = await selectRows(ctx, planned.sql, planned.bindings, {
+		lastFrame: planned.isBatch,
 	});
 
-	// A pipeline of only row-preserving stages ($match/$sort/$limit/$skip/$unwind,
-	// or an exclusion $project/$unset) still yields stored records, and those
-	// carry their identity in `id`.
-	if (!identityIsPlainField) {
-		return rows.map((row) => recordToDocument<TSchema>(row));
-	}
+	return rows.map((row) =>
+		decodeAggregated<TSchema>(row, planned.identityIsPlainField),
+	);
+}
 
-	return rows.map((row) => reviveAggregated(row) as TSchema);
+/**
+ * One row, decoded.
+ *
+ * A pipeline of only row-preserving stages ($match/$sort/$limit/$skip/$unwind,
+ * or an exclusion $project/$unset) still yields stored records, and those
+ * carry their identity in `id`.
+ */
+function decodeAggregated<TSchema extends Document>(
+	row: Record<string, unknown>,
+	identityIsPlainField: boolean,
+): TSchema {
+	if (!identityIsPlainField) return recordToDocument<TSchema>(row);
+	return reviveAggregated(row) as TSchema;
 }
 
 /**

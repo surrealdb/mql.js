@@ -18,6 +18,7 @@ import type {
 	QueryExecutor,
 	StatementOutcome,
 } from "../../../src/surreal/query-executor.ts";
+import { bufferedRows } from "../../../src/surreal/row-stream.ts";
 
 /** An executor whose dispatch records what it was sent and replies per frame. */
 class RecordingExecutor extends ScopedExecutor {
@@ -43,6 +44,19 @@ class RecordingExecutor extends ScopedExecutor {
 	): Promise<readonly StatementOutcome[]> {
 		this.sent.push(sql);
 		return this.outcomes;
+	}
+
+	protected dispatchRows(
+		sql: string,
+		_bindings: Record<string, unknown> | undefined,
+		frame: number,
+	): AsyncIterableIterator<unknown> {
+		// Recorded when first read, not when built: that is when a real executor
+		// sends it, and what "nothing is sent until the first read" asserts.
+		return bufferedRows(async () => {
+			this.sent.push(sql);
+			return (this.frames[frame] as unknown[]) ?? [];
+		});
 	}
 
 	async close(): Promise<void> {
@@ -115,6 +129,54 @@ describe("reading the caller's own result", () => {
 		expect(await executor.query<string>("DEFINE TABLE t; SELECT 1")).toBe(
 			"first",
 		);
+	});
+});
+
+async function collectRows<T>(rows: AsyncIterableIterator<T>): Promise<T[]> {
+	const out: T[] = [];
+	for await (const row of rows) out.push(row);
+	return out;
+}
+
+describe("streaming the caller's own rows", () => {
+	test("an unprefixed statement streams from the first frame", async () => {
+		const executor = new RecordingExecutor(undefined);
+		executor.frames = [["a", "b"], ["later"]];
+
+		expect(await collectRows(executor.queryRows("SELECT 1"))).toEqual([
+			"a",
+			"b",
+		]);
+		expect(executor.sent).toEqual(["SELECT 1"]);
+	});
+
+	test("a prefixed statement streams the frame after the prefix, never the prefix's own answer", async () => {
+		// The `USE DB` answers with an object. Streaming from the start would hand
+		// it to the caller as their first document.
+		const executor = new RecordingExecutor("other");
+		executor.frames = [{ database: "other", namespace: "ns" }, ["a", "b"]];
+
+		expect(await collectRows(executor.queryRows("SELECT 1"))).toEqual([
+			"a",
+			"b",
+		]);
+		expect(executor.sent).toEqual(["USE DB `other`; SELECT 1"]);
+	});
+
+	test("a view streams through the executor it came from, addressed at its own database", async () => {
+		const executor = new RecordingExecutor(undefined);
+		executor.frames = [{ database: "other" }, ["mine"]];
+		const view = executor.forDatabase("other");
+
+		expect(await collectRows(view.queryRows("SELECT 1"))).toEqual(["mine"]);
+		expect(executor.sent).toEqual(["USE DB `other`; SELECT 1"]);
+	});
+
+	test("nothing is sent until the first read", async () => {
+		const executor = new RecordingExecutor(undefined);
+		executor.frames = [["a"]];
+		executor.queryRows("SELECT 1");
+		expect(executor.sent).toEqual([]);
 	});
 });
 
