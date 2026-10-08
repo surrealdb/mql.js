@@ -28,7 +28,12 @@ export class ClientExecutor implements QueryExecutor {
 	constructor(
 		private readonly inner: QueryExecutor,
 		private readonly gate: ConnectionGate,
+		private readonly signal: AbortSignal | undefined = undefined,
 	) {}
+
+	withSignal(signal: AbortSignal): QueryExecutor {
+		return new ClientExecutor(this.inner.withSignal(signal), this.gate, signal);
+	}
 
 	get serverVersion(): string | undefined {
 		return this.inner.serverVersion;
@@ -72,6 +77,9 @@ export class ClientExecutor implements QueryExecutor {
 
 	/** The precondition both ways in are subject to. */
 	private async assertUsable(): Promise<void> {
+		// Before anything is looked at, and before a connection is made for it: an
+		// operation whose signal has already aborted does nothing at all.
+		this.signal?.throwIfAborted();
 		if (this.gate.isClosed()) {
 			throw new MongoNotConnectedError(
 				"Client must be connected before running operations",

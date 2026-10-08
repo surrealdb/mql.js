@@ -50,10 +50,16 @@ export class SurrealdbExecutor extends ScopedExecutor {
 	protected async dispatch(
 		sql: string,
 		bindings?: Record<string, unknown>,
+		signal?: AbortSignal,
 	): Promise<readonly unknown[]> {
+		// A signal that has already aborted sends nothing, and says why.
+		signal?.throwIfAborted();
 		try {
-			return await this.surreal.query(sql, bindings);
+			const query = this.surreal.query(sql, bindings);
+			return await (signal ? query.signal(signal) : query);
 		} catch (err) {
+			// The signal's own reason is the answer, whatever the SDK made of it.
+			signal?.throwIfAborted();
 			throw mapQueryError(err);
 		}
 	}
@@ -61,12 +67,16 @@ export class SurrealdbExecutor extends ScopedExecutor {
 	protected async dispatchEach(
 		sql: string,
 		bindings?: Record<string, unknown>,
+		signal?: AbortSignal,
 	): Promise<readonly StatementOutcome[]> {
+		signal?.throwIfAborted();
 		try {
+			const query = this.surreal.query(sql, bindings);
 			return responseOutcomes(
-				await this.surreal.query(sql, bindings).responses(),
+				await (signal ? query.signal(signal) : query).responses(),
 			);
 		} catch (err) {
+			signal?.throwIfAborted();
 			// A failure here is the dispatch itself failing — a dropped connection, a
 			// parse error in the whole query — rather than one statement of it, and
 			// the caller cannot attribute that to a document.
@@ -90,13 +100,19 @@ export class SurrealdbExecutor extends ScopedExecutor {
 		sql: string,
 		bindings: Record<string, unknown> | undefined,
 		frame: number,
+		signal?: AbortSignal,
 	): AsyncIterableIterator<unknown> {
 		return streamRows(
-			(signal) =>
-				this.surreal
-					.query(sql, bindings)
-					.signal(signal)
-					.stream() as AsyncIterable<StreamedFrame>,
+			(own) => {
+				// The stream's own signal is what a consumer leaving aborts. The
+				// caller's is added beside it rather than combined with it: the SDK
+				// applies every signal it is given, which is `AbortSignal.any` without
+				// needing a runtime that has it.
+				const query = this.surreal.query(sql, bindings).signal(own);
+				return (
+					signal ? query.signal(signal) : query
+				).stream() as AsyncIterable<StreamedFrame>;
+			},
 			frame,
 			{
 				// MongoDB has no limit on open cursors and the server has one on open
@@ -105,10 +121,11 @@ export class SurrealdbExecutor extends ScopedExecutor {
 				when: isStreamCapRefusal,
 				rows: () =>
 					bufferedRows(async () => {
-						const frames = await this.dispatch(sql, bindings);
+						const frames = await this.dispatch(sql, bindings, signal);
 						return (frames[frame] as unknown[] | undefined) ?? [];
 					}),
 			},
+			signal,
 		);
 	}
 

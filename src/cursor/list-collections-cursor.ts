@@ -17,6 +17,7 @@
 
 import { MongoCursorExhaustedError } from "../errors.ts";
 import type { CollectionInfo } from "../types.ts";
+import { CursorSignal } from "./cursor-rows.ts";
 
 /** Hook the cursor uses to fetch the listing, injected by the `Db`. */
 export type ListCollectionsRunner = () => Promise<CollectionInfo[]>;
@@ -27,10 +28,17 @@ export class ListCollectionsCursor {
 	private _closed = false;
 
 	private readonly _runner: ListCollectionsRunner;
+	private readonly _signal: CursorSignal;
+	private readonly _abort: AbortSignal | undefined;
 
 	/** @internal */
-	constructor(runner: ListCollectionsRunner) {
+	constructor(runner: ListCollectionsRunner, signal?: AbortSignal) {
 		this._runner = runner;
+		this._abort = signal;
+		this._signal = new CursorSignal(
+			signal,
+			() => void this.close().catch(() => undefined),
+		);
 	}
 
 	get closed(): boolean {
@@ -38,12 +46,14 @@ export class ListCollectionsCursor {
 	}
 
 	async toArray(): Promise<CollectionInfo[]> {
+		this._signal.throwIfAborted();
 		this._throwIfClosed();
 		await this._execute();
 		return this._results!.slice();
 	}
 
 	async next(): Promise<CollectionInfo | null> {
+		this._signal.throwIfAborted();
 		this._throwIfClosed();
 		await this._execute();
 		if (this._index >= this._results!.length) return null;
@@ -51,6 +61,7 @@ export class ListCollectionsCursor {
 	}
 
 	async hasNext(): Promise<boolean> {
+		this._signal.throwIfAborted();
 		this._throwIfClosed();
 		await this._execute();
 		return this._index < this._results!.length;
@@ -60,9 +71,11 @@ export class ListCollectionsCursor {
 		// biome-ignore lint/suspicious/noConfusingVoidType: matches MongoDB driver's forEach signature
 		iterator: (info: CollectionInfo) => boolean | void,
 	): Promise<void> {
+		this._signal.throwIfAborted();
 		this._throwIfClosed();
 		await this._execute();
 		for (const info of this._results ?? []) {
+			this._signal.throwIfAborted();
 			if (iterator(info) === false) break;
 		}
 	}
@@ -70,6 +83,7 @@ export class ListCollectionsCursor {
 	async close(): Promise<void> {
 		this._closed = true;
 		this._results = null;
+		this._signal.release();
 	}
 
 	/** Rewind to the start, discarding the materialised listing. */
@@ -77,17 +91,22 @@ export class ListCollectionsCursor {
 		this._index = 0;
 		this._results = null;
 		this._closed = false;
+		this._signal.watch();
 		return this;
 	}
 
 	clone(): ListCollectionsCursor {
-		return new ListCollectionsCursor(this._runner);
+		return new ListCollectionsCursor(this._runner, this._abort);
 	}
 
 	async *[Symbol.asyncIterator](): AsyncGenerator<CollectionInfo> {
+		this._signal.throwIfAborted();
 		this._throwIfClosed();
 		await this._execute();
-		for (const info of this._results ?? []) yield info;
+		for (const info of this._results ?? []) {
+			yield info;
+			this._signal.throwIfAborted();
+		}
 	}
 
 	private async _execute(): Promise<void> {

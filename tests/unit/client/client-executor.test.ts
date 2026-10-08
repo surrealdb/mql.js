@@ -51,3 +51,42 @@ describe("ClientExecutor – streaming rows", () => {
 		expect(inner.queries).toEqual([]);
 	});
 });
+
+describe("ClientExecutor – a caller's signal", () => {
+	test("an aborted signal rejects with its reason before a connection is made", async () => {
+		const inner = new FakeQueryExecutor();
+		const { gate: g, calls } = gate();
+		const controller = new AbortController();
+		const reason = new Error("stop");
+		controller.abort(reason);
+		const executor = new ClientExecutor(inner, g).withSignal(controller.signal);
+
+		await expect(executor.query("SELECT 1")).rejects.toBe(reason);
+		await expect(executor.queryRows("SELECT 1").next()).rejects.toBe(reason);
+		expect(calls.ensured).toBe(0);
+		expect(inner.queries).toEqual([]);
+	});
+
+	test("scopes what it wraps to the signal, and stays a gate", async () => {
+		const inner = new FakeQueryExecutor();
+		inner.enqueue("answer");
+		const { gate: g, calls } = gate();
+		const controller = new AbortController();
+		const executor = new ClientExecutor(inner, g).withSignal(controller.signal);
+
+		expect(await executor.query<string>("SELECT 1")).toBe("answer");
+		expect(inner.signals).toEqual([controller.signal]);
+		expect(calls.ensured).toBe(1);
+	});
+
+	test("a closed client still refuses with the error the official driver raises", async () => {
+		const inner = new FakeQueryExecutor();
+		const { gate: g } = gate({ closed: true });
+		const executor = new ClientExecutor(inner, g).withSignal(
+			new AbortController().signal,
+		);
+		await expect(executor.query("SELECT 1")).rejects.toThrow(
+			MongoNotConnectedError,
+		);
+	});
+});

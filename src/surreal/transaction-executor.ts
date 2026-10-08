@@ -20,7 +20,7 @@
  *     lifecycle mistake, so the spent handle is never dialled again.
  */
 
-import { MongoTransactionError } from "../errors.ts";
+import { MongoCompatibilityError, MongoTransactionError } from "../errors.ts";
 import { ScopedExecutor } from "./database-scope.ts";
 import { mapQueryError } from "./error-mapper.ts";
 import type { QueryExecutor, StatementOutcome } from "./query-executor.ts";
@@ -123,6 +123,21 @@ export class TransactionExecutor
 				throw mapQueryError(err);
 			}
 		});
+	}
+
+	/**
+	 * A transaction's statements cannot be stopped by a signal, so it is refused.
+	 *
+	 * The caller would stop waiting and the statement would carry on inside the
+	 * transaction — still queued ahead of the commit, still applying — leaving
+	 * them with an abort error and a transaction in a state they have no way to
+	 * read. MongoDB's own answer to an abandoned operation in a transaction is to
+	 * abort the transaction, which is the caller's to do.
+	 */
+	withSignal(_signal: AbortSignal): QueryExecutor {
+		throw new MongoCompatibilityError(
+			"The 'signal' option is not supported inside a transaction: a statement already sent to a transaction cannot be stopped, so the caller would be told it was aborted while it went on to run. Abort the transaction instead.",
+		);
 	}
 
 	/**

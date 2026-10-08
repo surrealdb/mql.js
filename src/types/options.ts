@@ -190,10 +190,29 @@ export interface AbstractCursorOptions {
 	noCursorTimeout?: boolean;
 }
 
+/**
+ * The `signal` MongoDB's driver takes on a handful of operations, and on the
+ * cursors some of them return.
+ *
+ * Honoured: an already-aborted signal sends nothing and rejects with its reason,
+ * and one that aborts mid-operation rejects with its reason too — untouched, so
+ * an `AbortSignal.timeout()` reads as its `TimeoutError`. A cursor is closed when
+ * its signal aborts, and refuses to be read afterwards with the same reason.
+ *
+ * What it stops depends on the server. From SurrealDB 3.3.0 over a WebSocket the
+ * statement is cancelled there too; anywhere else the caller stops waiting and the
+ * statement runs to its end. Refused inside a transaction, where a statement that
+ * has been sent cannot be stopped.
+ */
+export interface Abortable {
+	signal?: AbortSignal;
+}
+
 /** Options for `Collection.find` and `Collection.findOne`. */
 export interface FindOptions
 	extends Omit<CommandOperationOptions, "writeConcern">,
-		AbstractCursorOptions {
+		AbstractCursorOptions,
+		Abortable {
 	/** Fields to return. Honoured. */
 	projection?: Projection;
 	/** Result order. Honoured. */
@@ -353,7 +372,9 @@ export interface BulkWriteOptions extends CommandOperationOptions {
  * Extends the aggregate surface, as MongoDB's own `CountDocumentsOptions`
  * (mongodb.d.ts:3653) does — the count runs as an aggregation there.
  */
-export interface CountDocumentsOptions extends CommandOperationOptions {
+export interface CountDocumentsOptions
+	extends CommandOperationOptions,
+		Abortable {
 	/** Documents to skip before counting. Honoured. */
 	skip?: number;
 	/** Maximum documents to count. Honoured. */
@@ -482,7 +503,9 @@ export interface ReconnectSettings {
 export interface CollectionOptions extends CommandOperationOptions {}
 
 /** Options for `Db.listCollections`. */
-export interface ListCollectionsOptions extends CommandOperationOptions {
+export interface ListCollectionsOptions
+	extends CommandOperationOptions,
+		Abortable {
 	/** Return only the collection names. Accepted, no effect on the shape. */
 	nameOnly?: boolean;
 	/** Documents per server response. Accepted, no effect. */
@@ -541,7 +564,7 @@ export interface DropDatabaseOptions extends CommandOperationOptions {}
  * inherits nothing from the client: only a session, a read preference and a
  * timeout are read.
  */
-export interface RunCommandOptions extends BSONSerializeOptions {
+export interface RunCommandOptions extends BSONSerializeOptions, Abortable {
 	/** Session the command runs in. Honoured for the commands that write. */
 	session?: ClientSession;
 	/** Which replica-set member to read from. Accepted, no effect — one node. */

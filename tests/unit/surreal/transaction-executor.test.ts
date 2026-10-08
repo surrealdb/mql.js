@@ -7,7 +7,10 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { MongoTransactionError } from "../../../src/errors.ts";
+import {
+	MongoCompatibilityError,
+	MongoTransactionError,
+} from "../../../src/errors.ts";
 import type { TransactionHandle } from "../../../src/surreal/transaction-executor.ts";
 import { TransactionExecutor } from "../../../src/surreal/transaction-executor.ts";
 
@@ -331,6 +334,16 @@ describe("streaming rows inside a transaction", () => {
 
 		await expect(executor.queryRows("SELECT 1").next()).rejects.toThrow(
 			MongoTransactionError,
+		);
+	});
+});
+
+describe("a signal inside a transaction", () => {
+	test("is refused, because a statement already sent to a transaction cannot be taken back", () => {
+		const { handle } = immediateHandle();
+		const executor = new TransactionExecutor(handle, "3.2.4");
+		expect(() => executor.withSignal(new AbortController().signal)).toThrow(
+			MongoCompatibilityError,
 		);
 	});
 });
