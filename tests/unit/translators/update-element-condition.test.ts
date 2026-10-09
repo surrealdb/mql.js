@@ -14,10 +14,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import {
-	MongoCompatibilityError,
-	MongoInvalidArgumentError,
-} from "../../../src/errors.ts";
+import { MongoInvalidArgumentError } from "../../../src/errors.ts";
 import { translateUpdate } from "../../../src/translators/update.ts";
 
 /** MongoDB equality against `target`, spelled out. */
@@ -185,19 +182,182 @@ describe("arrayFilters on a field of the element", () => {
 	});
 });
 
-describe("what a condition cannot say is still refused", () => {
-	// MongoDB takes any query operator here — `$regex`, `$exists`, `$type`, `$mod`,
-	// `$size`, `$all` and `$elemMatch` among them — but not `$not`, which it reads
-	// as a top-level operator and refuses. Taking the whole filter vocabulary is a
-	// change of its own, each operator to be measured as the value of a field.
+describe("the operators of a field, as the value of a field", () => {
+	const ELEMENT_PARAMETER = "$__mql_element";
+	/** `test` of the target, or of any element when it is an array. */
+	const anyElement = (target: string, test: (t: string) => string) =>
+		`((${test(target)}) OR (type::is_array(${target}) AND array::any(${target}, |${ELEMENT_PARAMETER}| (${test(ELEMENT_PARAMETER)}))))`;
+	const matches = (t: string) =>
+		`type::is_string(${t}) AND string::matches(${t}, $p0)`;
+
+	test("$regex matches an element that is a matching string, or an array holding one", () => {
+		const { clause, bindings } = pulled({ $regex: "^a" });
+		expect(clause).toBe(
+			`SET \`v\` = \`v\`[WHERE !(${anyElement(ELEMENT, matches)})]`,
+		);
+		expect(bindings).toEqual({ p0: "^a" });
+	});
+
+	test("$regex takes its $options as a filter does", () => {
+		const { clause, bindings } = pulled({ $regex: "^a", $options: "i" });
+		expect(clause).toContain(anyElement(ELEMENT, matches));
+		expect(bindings).toEqual({ p0: "(?i)^a" });
+	});
+
+	test("$options without a $regex is refused, as a filter refuses it", () => {
+		expect(() => pulled({ $options: "i" })).toThrow("$options needs a $regex");
+	});
+
+	test("a bare regular expression is a $regex", () => {
+		const { clause, bindings } = translateUpdate({ $pull: { v: /^a/i } });
+		expect(clause).toBe(
+			`SET \`v\` = \`v\`[WHERE !(${anyElement(ELEMENT, matches)})]`,
+		);
+		expect(bindings).toEqual({ p0: "(?i)^a" });
+	});
+
+	test("$exists tests the value, and does not look inside it", () => {
+		expect(pulled({ $exists: true }).clause).toBe(
+			"SET `v` = `v`[WHERE !(($this) IS NOT NONE)]",
+		);
+		expect(
+			translateUpdate({ $pull: { items: { s: { $exists: false } } } }).clause,
+		).toBe("SET `items` = `items`[WHERE !($this.`s` IS NONE)]");
+	});
+
+	test("$type matches an array holding the type, except for array", () => {
+		expect(pulled({ $type: "string" }).clause).toBe(
+			`SET \`v\` = \`v\`[WHERE !(${anyElement(ELEMENT, (t) => `type::is_string(${t})`)})]`,
+		);
+		expect(pulled({ $type: "array" }).clause).toBe(
+			"SET `v` = `v`[WHERE !(type::is_array(($this)))]",
+		);
+	});
+
+	test("$mod takes a whole number, only of a number", () => {
+		const { clause, bindings } = pulled({ $mod: [2, 1] });
+		expect(clause).toContain(
+			"type::is_number(($this)) AND (IF ($this) >= 0 THEN math::floor(($this)) ELSE math::ceil(($this)) END) % $p0 = $p1",
+		);
+		expect(bindings).toEqual({ p0: 2, p1: 1 });
+	});
+
+	test("$size matches an array of that size, and nothing else", () => {
+		expect(pulled({ $size: 1 }).clause).toBe(
+			"SET `v` = `v`[WHERE !((type::is_array(($this)) AND array::len(($this)) = $p0))]",
+		);
+	});
+
+	test("$all is an equality per value", () => {
+		const { clause, bindings } = pulled({ $all: ["a", "b"] });
+		expect(clause).toBe(
+			`SET \`v\` = \`v\`[WHERE !((${eq(ELEMENT, "p0")} AND ${eq(ELEMENT, "p1")}))]`,
+		);
+		expect(bindings).toEqual({ p0: "a", p1: "b" });
+	});
+
+	test("$elemMatch tests the elements of an element, each as a value", () => {
+		const { clause } = pulled({ $elemMatch: { $gt: 5 } });
+		expect(clause).toContain(
+			"(type::is_array(($this)) AND array::len(($this)[WHERE type::is_number($this) AND $this <= math::inf AND $this > $p0]) > 0)",
+		);
+	});
+
+	test("several operators are each built, and ANDed", () => {
+		// The comparisons are built first, then the operators the filter builds, so
+		// the `$gt` is `$p0` and the pattern `$p1`.
+		const { clause, bindings } = pulled({ $regex: "^a", $gt: 1 });
+		expect(clause).toContain(
+			"type::is_number(($this)) AND ($this) <= math::inf",
+		);
+		expect(clause).toContain("string::matches(($this), $p1)");
+		expect(bindings).toEqual({ p0: 1, p1: "^a" });
+	});
+
+	test("on a field of each sub-document", () => {
+		const { clause } = translateUpdate({
+			$pull: { items: { s: { $regex: "^a" } } },
+		});
+		expect(clause).toBe(
+			`SET \`items\` = \`items\`[WHERE !(${anyElement("$this.`s`", matches)})]`,
+		);
+	});
+
+	test("a bare regular expression on a field of each sub-document", () => {
+		const { clause } = translateUpdate({ $pull: { items: { sku: /^ab/ } } });
+		expect(clause).toContain(
+			"type::is_string($this.`sku`) AND string::matches($this.`sku`, $p0)",
+		);
+	});
+
+	test("through a positional path", () => {
+		const { clause } = translateUpdate({
+			$pull: { "v.$[].t": { $regex: "^a" } },
+		});
+		expect(clause).toContain(
+			`THEN $__mql_item0.\`t\`[WHERE !(${anyElement(ELEMENT, matches)})]`,
+		);
+	});
+});
+
+describe("arrayFilters with the operators of a field", () => {
+	const ITEM = "$__mql_item0";
+	const selecting = (condition: unknown) =>
+		translateUpdate({ $set: { "v.$[e].f": 1 } }, 0, {
+			arrayFilters: [{ "e.s": condition }],
+		}).clause;
+
+	test("$regex sees into an array-valued field", () => {
+		expect(selecting({ $regex: "^a" })).toContain(
+			`IF ((type::is_string(${ITEM}.\`s\`) AND string::matches(${ITEM}.\`s\`, $p2)) OR (type::is_array(${ITEM}.\`s\`) AND array::any(${ITEM}.\`s\`, |$__mql_element| (`,
+		);
+	});
+
+	test("a bare regular expression is a $regex", () => {
+		expect(selecting(/^a/)).toContain(`string::matches(${ITEM}.\`s\`, $p2)`);
+	});
+
+	test("$exists", () => {
+		expect(selecting({ $exists: false })).toContain(
+			`IF ${ITEM}.\`s\` IS NONE THEN `,
+		);
+	});
+
+	test("$size, $all and $type", () => {
+		expect(selecting({ $size: 1 })).toContain(
+			`IF (type::is_array(${ITEM}.\`s\`) AND array::len(${ITEM}.\`s\`) = $p2) THEN `,
+		);
+		expect(selecting({ $all: ["x"] })).toContain(
+			`IF ${eq(`${ITEM}.\`s\``, "p2")} THEN `,
+		);
+		expect(selecting({ $type: "string" })).toContain(
+			`type::is_string(${ITEM}.\`s\`)`,
+		);
+	});
+});
+
+describe("what MongoDB refuses in a condition is refused", () => {
+	// MongoDB takes the operators above and refuses the rest at the top of a
+	// `$pull` condition: `$not` ("unknown top level operator"), `$and`, `$or`,
+	// `$nor` and `$comment` (whose sub-conditions would need field names), and
+	// `$expr`, `$where`, `$text`, `$jsonSchema` and `$near` ("not allowed in this
+	// context"). `$bitsAllSet`, `$geoWithin` and their kin it takes, and this
+	// driver's filters do not translate.
 	test.each([
-		"$regex",
-		"$exists",
-		"$type",
-		"$mod",
-		"$size",
-		"$all",
 		"$not",
+		"$and",
+		"$or",
+		"$nor",
+		"$comment",
+		"$expr",
+		"$where",
+		"$text",
+		"$jsonSchema",
+		"$near",
+		"$nearSphere",
+		"$geoWithin",
+		"$bitsAllSet",
+		"$unknown",
 	])("$pull with %s", (operator) => {
 		expect(() => pulled({ [operator]: 1 })).toThrow(MongoInvalidArgumentError);
 		expect(() => pulled({ [operator]: 1 })).toThrow(
@@ -205,43 +365,21 @@ describe("what a condition cannot say is still refused", () => {
 		);
 	});
 
-	// In MongoDB a bare pattern is a `$regex`. Compared as a value, as equality
-	// would have it, it matches nothing, and `{$pull: {tags: /^a/}}` removed no
-	// tag and said nothing; it is refused until `$regex` is.
-	test("a regular expression as the condition on the element", () => {
-		expect(() => translateUpdate({ $pull: { v: /^a/ } })).toThrow(
-			MongoCompatibilityError,
-		);
-		expect(() => translateUpdate({ $pull: { v: /^a/ } })).toThrow(
-			"A regular expression is not supported as a condition on an array element",
-		);
-	});
-
-	test("a regular expression as the condition on a field of the element", () => {
-		expect(() =>
-			translateUpdate({ $pull: { items: { sku: /^ab/i } } }),
-		).toThrow(MongoCompatibilityError);
-	});
-
-	test("a regular expression in an arrayFilters entry", () => {
+	test("arrayFilters with $not", () => {
 		expect(() =>
 			translateUpdate({ $set: { "v.$[e].f": 1 } }, 0, {
-				arrayFilters: [{ "e.s": /^a/ }],
+				arrayFilters: [{ "e.p": { $not: { $eq: 1 } } }],
 			}),
-		).toThrow(MongoCompatibilityError);
+		).toThrow("Unsupported operator in arrayFilter: $not");
 	});
 
-	test("a regular expression inside a value to match whole is not a condition", () => {
-		// `$pullAll` and an array operand are whole-value equality, and a pattern in
-		// the list is a value like any other.
-		expect(() => translateUpdate({ $pullAll: { v: [/^a/] } })).not.toThrow();
-	});
-
-	test("arrayFilters with $exists", () => {
+	test("$near inside an $elemMatch has no result set to order", () => {
 		expect(() =>
-			translateUpdate({ $set: { "v.$[e].f": 1 } }, 0, {
-				arrayFilters: [{ "e.p": { $exists: true } }],
+			pulled({
+				$elemMatch: {
+					$near: { $geometry: { type: "Point", coordinates: [0, 0] } },
+				},
 			}),
-		).toThrow("Unsupported operator in arrayFilter: $exists");
+		).toThrow();
 	});
 });

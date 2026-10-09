@@ -8,11 +8,7 @@ import {
 	arrayTypeCheckFn,
 	ELEMENT_FIELD,
 } from "../../filter/operators/comparison.ts";
-import {
-	bareCondition,
-	elementCondition,
-	refuseRegExp,
-} from "../element-condition.ts";
+import { bareCondition, elementConditions } from "../element-condition.ts";
 import type { UpdateOperator } from "../operator-registry.ts";
 import type { UpdateContext } from "../update-context.ts";
 
@@ -170,18 +166,7 @@ function pullOperatorConditions(
 	ctx: UpdateContext,
 ): string[] {
 	const field = target === ELEMENT_FIELD ? PULLED_ELEMENT : target;
-
-	const conditions: string[] = [];
-	for (const [op, operand] of Object.entries(spec)) {
-		const condition = elementCondition(op, field, operand, ctx);
-		if (condition === undefined) {
-			throw new MongoInvalidArgumentError(
-				`Unsupported operator in $pull condition: ${op}`,
-			);
-		}
-		conditions.push(condition);
-	}
-	return conditions;
+	return elementConditions(field, spec, ctx, "$pull condition");
 }
 
 /**
@@ -201,7 +186,10 @@ function pullOperatorConditions(
  * with a predicate a silent no-op.
  */
 function pullConditions(value: unknown, ctx: UpdateContext): string[] | null {
-	refuseRegExp(value);
+	// A regular expression is a `$regex`, as it is in a filter.
+	if (value instanceof RegExp) {
+		return pullOperatorConditions(ELEMENT_FIELD, { $regex: value }, ctx);
+	}
 	if (!isPlainObject(value)) return null;
 
 	const keys = Object.keys(value);

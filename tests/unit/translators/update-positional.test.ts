@@ -392,8 +392,8 @@ describe("what this driver does not support is refused", () => {
 	test("an arrayFilters operator with no translation", () => {
 		expect(() =>
 			translateUpdate({ $inc: { "v.$[e].n": 1 } }, 0, {
-				arrayFilters: [{ "e.s": { $exists: true } }],
+				arrayFilters: [{ "e.s": { $not: { $eq: 1 } } }],
 			}),
-		).toThrow("Unsupported operator in arrayFilter: $exists");
+		).toThrow("Unsupported operator in arrayFilter: $not");
 	});
 });

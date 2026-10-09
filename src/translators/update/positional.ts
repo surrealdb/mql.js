@@ -61,7 +61,7 @@ import {
 } from "../../errors.ts";
 import { escapeFieldPath, escapeIdentifier } from "../../surreal/sql/escape.ts";
 import { arrayTypeCheckFn } from "../filter/operators/comparison.ts";
-import { bareCondition, elementCondition } from "./element-condition.ts";
+import { bareCondition, elementConditions } from "./element-condition.ts";
 import type { UpdateContext } from "./update-context.ts";
 
 /**
@@ -108,22 +108,19 @@ function translateArrayFilterEntry(
 	const target = `${item}.${escapeFieldPath(subField)}`;
 
 	if (isOperatorObject(value)) {
-		for (const [op, opVal] of Object.entries(
-			value as Record<string, unknown>,
-		)) {
-			// Each is the predicate the same operator is in a filter, array-valued
-			// fields included: an arrayFilters entry is a query on each element, so
-			// `{"e.score": {$gte: 90}}` matches an element whose `score` is `[95, 10]`
-			// and not one whose `score` is the string "90" or is missing, and
-			// `{"e.tags": "a"}` one whose `tags` is `["a", "b"]`.
-			const condition = elementCondition(op, target, opVal, ctx);
-			if (condition === undefined) {
-				throw new MongoInvalidArgumentError(
-					`Unsupported operator in arrayFilter: ${op}`,
-				);
-			}
-			conditions.push(condition);
-		}
+		// Each is the predicate the same operator is in a filter, array-valued
+		// fields included: an arrayFilters entry is a query on each element, so
+		// `{"e.score": {$gte: 90}}` matches an element whose `score` is `[95, 10]`
+		// and not one whose `score` is the string "90" or is missing, and
+		// `{"e.tags": {$regex: "^a"}}` one whose `tags` is `["abc", "x"]`.
+		conditions.push(
+			...elementConditions(
+				target,
+				value as Record<string, unknown>,
+				ctx,
+				"arrayFilter",
+			),
+		);
 	} else {
 		conditions.push(bareCondition(target, value, ctx));
 	}
