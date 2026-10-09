@@ -48,7 +48,7 @@ A drop-in MongoDB driver replacement powered by SurrealDB. Use the MongoDB API y
 - **Admin commands** - db.command and db.admin() answer ping, buildInfo, listDatabases, dbStats, collStats and the create/drop/index commands, reporting only what SurrealDB can actually tell you
 - **TypeScript generics** - Typed collections with full type inference
 - **MongoDB connection strings** - Use `mongodb://` connection strings that map to SurrealDB
-- **Aggregation pipelines** - `$match`, `$group`, `$project`, `$sort`, `$skip`, `$limit`, `$count` and `$unwind`, with an expression language for computed fields — see [Aggregation](#aggregation)
+- **Aggregation pipelines** - `$match`, `$group`, `$project`, `$sort`, `$lookup`, `$facet`, `$graphLookup`, `$bucket`, `$out`, `$merge` and more, with an expression language for computed fields — see [Aggregation](#aggregation)
 - **A documented edge** - every MongoDB method this driver does not implement is still there, and says what it cannot do and where to go instead — see [What is not implemented](#what-is-not-implemented)
 
 ## Installation
@@ -290,7 +290,7 @@ Two divergences worth knowing:
 
 `mongoose.connect()` works through `mongoose.setDriver()` — see
 [Mongoose](#mongoose). What the emitter fixes there is that mongoose's wiring
-calls `client.on(...)` unconditionally, which used to be a `TypeError`.
+calls `client.on(...)` unconditionally, which an emitter-less client cannot answer.
 
 ### Connection behaviour that differs from MongoDB
 
@@ -475,6 +475,23 @@ const replaced = await users.findOneAndReplace(
   { returnDocument: "after" },
 );
 ```
+
+### Bulk writes
+
+`bulkWrite()` takes the same models MongoDB's does — `insertOne`, `updateOne`, `updateMany`, `replaceOne`, `deleteOne` and `deleteMany` — and answers with MongoDB's `BulkWriteResult`: the counts, and the ids that were inserted and upserted.
+
+```typescript
+const result = await users.bulkWrite([
+  { insertOne: { document: { name: "Dana", age: 41 } } },
+  { updateOne: { filter: { name: "Alice" }, update: { $inc: { age: 1 } } } },
+  { deleteMany: { filter: { age: { $lt: 18 } } } },
+]);
+result.insertedCount; // 1
+```
+
+`ordered` works as it does for `insertMany`: the default stops at the first model that fails and keeps everything before it, and `ordered: false` attempts every model and reports all the failures together, as a `MongoBulkWriteError`. An empty batch is refused, as MongoDB refuses it.
+
+**It is not one round trip.** MongoDB sends a batch as one message; this driver runs each model through the operation that already implements it, in order, so a batch costs one statement per model. The counts, ids and failure semantics are MongoDB's, and the saving in network round trips is not. The batch is not atomic either, unless you pass a session — inside a transaction the counts still describe what the models did, and whether they survive is the transaction's business.
 
 ### Per-operation options
 
@@ -1748,11 +1765,7 @@ Two more surfaces raise the `MongoServerError` `59` a real mongod raises, becaus
 | `Admin.serverStatus()`, `removeUser()`, `validateCollection()` | `MongoServerError` `59` | Each is a thin wrapper over the command of the same name, so it inherits the command surface's `CommandNotFound`. For users, `REMOVE USER` through the SurrealDB client |
 | `db.command({ <anything else> })` | `MongoServerError` `59` | See below |
 
-The reasons are in the table above rather than repeated here. They were in both
-places until one of them went stale — the prose still called Atlas Search "an
-Atlas service with no SurrealDB counterpart" after the error message had been
-corrected to say what actually blocks it — and one copy cannot disagree with
-itself.
+The reasons are in the table above rather than repeated here.
 
 ### Deliberate divergences
 
@@ -1808,25 +1821,9 @@ itself.
 
 ### `BulkWriteResult`
 
-`BulkWriteResult` is exported and nothing produces one yet, because `bulkWrite` is
-out of scope for 1.0.0. It is **kept** rather than removed: removing an export is
-a breaking change, and it would have to be undone the day `bulkWrite` lands. What
-was settled instead is its *shape*, against MongoDB's own class — the counts and
-id maps it exposes, and no `acknowledged`, which a real `BulkWriteResult` has never
-carried. Getting that wrong would mean changing the type on the day it becomes
-producible, which is the breaking change worth avoiding. It is now the declared
-return type of `Collection.bulkWrite()`, so it is reachable from a signature
-rather than floating unreferenced.
+`BulkWriteResult` is what `Collection.bulkWrite()` resolves to, with MongoDB's own shape: the counts and id maps, and no `acknowledged`, which a real `BulkWriteResult` has never carried. Its counts are the ones SurrealDB can report truthfully; see [Bulk writes](#bulk-writes).
 
-The types that appear only in the signatures of unimplemented methods —
-`AggregationCursor`, `ChangeStream`, `OrderedBulkOperation`,
-`AnyBulkWriteOperation` and the rest — are deliberately **not** exported. A public
-export is a name frozen at 1.0.0 that has to be kept afterwards, and a caller can
-do nothing with an `AggregationCursor` this driver never returns. Each stub's
-signature is nonetheless the final one — the same parameters and return type the
-method will have once it is real, checked against `mongodb`'s own by the parity
-probes in `tests/unit/types-parity.test.ts` — so filling one in is additive rather
-than breaking.
+The types that appear only in the signatures of unimplemented methods — `ChangeStream`, `OrderedBulkOperation` and the rest — are deliberately **not** exported. A public export is a name frozen at 1.0.0 that has to be kept afterwards, and a caller can do nothing with a `ChangeStream` this driver never returns. Each stub's signature is nonetheless the final one — the same parameters and return type the method will have once it is real, checked against `mongodb`'s own by the parity probes in `tests/unit/types-parity.test.ts` — so filling one in is additive rather than breaking.
 
 ## Mongoose
 
@@ -1855,7 +1852,7 @@ instance whose `setDriver` you are about to call. It imports nothing from mongoo
 itself, so there is no private path to break and nothing for a bundler to follow.
 
 What does not work is what does not work anywhere else in this driver: mongoose
-calls that need `aggregate()`, `bulkWrite()` or change streams reach the same
+calls that need change streams reach the same
 named errors as a direct call would — see [What is not
 implemented](#what-is-not-implemented).
 
