@@ -6,6 +6,7 @@ import type { FilterOperator } from "../operator-registry.ts";
 import {
 	arrayTypeCheckFn,
 	isIdentityField,
+	isWholeValue,
 	type PredicateContext,
 } from "./comparison.ts";
 
@@ -30,6 +31,10 @@ export function membershipPredicate(
 	ctx: PredicateContext,
 ): string {
 	const p = ctx.bind(value);
+
+	// An `$elemMatch` element is a value, with no elements to intersect with: the
+	// list is a list of values it may be.
+	if (isWholeValue(field)) return `(${field} IN $${p})`;
 
 	const arms = [
 		`${field} IN $${p}`,

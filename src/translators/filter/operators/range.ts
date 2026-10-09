@@ -89,6 +89,7 @@ import type { FilterOperator } from "../operator-registry.ts";
 import {
 	arrayTypeCheckFn,
 	ELEMENT_FIELD,
+	ELEMENT_PARAMETER,
 	equalityPredicate,
 	nullEqualityPredicate,
 	type PredicateContext,
@@ -100,12 +101,6 @@ export type RangeOperator = "$gt" | "$gte" | "$lt" | "$lte";
 export function isRangeOperator(name: string): name is RangeOperator {
 	return Object.hasOwn(SQL_OPERATORS, name);
 }
-
-/**
- * The closure parameter each array element is tested under: the convention, and
- * the reason for the name, of `geospatial.ts`.
- */
-const ELEMENT = "$__mql_element";
 
 const SQL_OPERATORS: Readonly<Record<RangeOperator, string>> = {
 	$gt: ">",
@@ -321,7 +316,7 @@ export function rangePredicate(
 	if (field === ELEMENT_FIELD) return compare(field);
 
 	const scalar = `(${compare(field)})`;
-	const elements = `(${arrayTypeCheckFn(ctx)}(${field}) AND array::any(${field}, |${ELEMENT}| (${compare(ELEMENT)})))`;
+	const elements = `(${arrayTypeCheckFn(ctx)}(${field}) AND array::any(${field}, |${ELEMENT_PARAMETER}| (${compare(ELEMENT_PARAMETER)})))`;
 	const exact = `(${scalar} OR ${elements})`;
 
 	if (!bracket.belowArrays || options.leadingRange === false) return exact;

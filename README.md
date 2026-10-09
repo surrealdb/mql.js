@@ -854,6 +854,8 @@ Equality with `null` â€” `{ nickname: null }` or `{ nickname: { $eq: null } }` â
 
 Supported `$type` values: `"double"`, `"string"`, `"object"`, `"array"`, `"bool"`, `"date"`, `"null"`, `"int"`, `"long"`, `"decimal"`, `"number"` (any numeric), and their BSON numeric codes.
 
+`$regex`, `$mod` and `$type` read an array field as MongoDB does, **any of its elements**: `{ tags: { $regex: "^a" } }` matches `["abc", "x"]` as it matches `"abc"`, `{ qty: { $mod: [2, 1] } }` matches `[2, 3]`, and `{ v: { $type: "string" } }` matches `["a"]`. An array inside an array is not searched, and `$type: "array"` asks whether the field *is* an array and never looks at its elements. A value of the wrong type is skipped and not an error: `$mod` takes a number (whole, so `5.7` is `5` and `-3.7` is `-3`, and the remainder keeps the dividend's sign), and a string in the field matches nothing instead of failing the query. A malformed `$mod` (`5`, `[1]`, `[0, 0]`) is refused in MongoDB's words.
+
 ### Array
 
 ```typescript
@@ -861,6 +863,8 @@ Supported `$type` values: `"double"`, `"string"`, `"object"`, `"array"`, `"bool"
 { tags: { $size: 3 } }              // array has exactly 3 elements
 { results: { $elemMatch: { score: { $gt: 80 }, grade: "A" } } } // element matches
 ```
+
+`$all` is MongoDB's `{ $and: [{ tags: "a" }, { tags: "b" }] }`, each value an equality, so `{ n: { $all: [5] } }` matches a scalar `5` as well as `[5, 6]`, `null` means a null or an absent field, and an empty list matches nothing; a regular expression or an `$elemMatch` among the values is refused. `$size` matches an array of that size and nothing else, and a non-array in the field is skipped. Inside `$elemMatch` the element is the value being matched, so `{ v: { $elemMatch: { $eq: "abc" } } }` does not match `[["abc"]]`, whose one element is an array.
 
 ### Geospatial
 

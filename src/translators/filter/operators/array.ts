@@ -2,6 +2,10 @@
  * Array operators: $all, $size, $elemMatch.
  */
 
+import {
+	MongoCompatibilityError,
+	MongoInvalidArgumentError,
+} from "../../../errors.ts";
 import { escapeFieldPath } from "../../../surreal/sql/escape.ts";
 import type { Document } from "../../../types.ts";
 import type { FilterOperator } from "../operator-registry.ts";
@@ -102,20 +106,95 @@ function collectConditions(
 	}
 }
 
+/**
+ * `$all`: the field matches every listed value, each read as an equality.
+ *
+ * MongoDB defines `{f: {$all: [a, b]}}` as `{$and: [{f: a}, {f: b}]}`, so it is
+ * not a test of an array against a list: a *scalar* `5` matches `{$all: [5]}`, a
+ * list of one value is an `$eq`, `null` means a null or an absent field, and an
+ * empty list matches nothing. `CONTAINSALL` was none of those — it missed the
+ * scalar and the absent field, and `$all: []` matched every document.
+ *
+ * A regular expression and an `$elemMatch` among the values are `$all`'s own
+ * forms in MongoDB, with meanings of their own, and are refused: compared as
+ * values, as equality would have it, they match nothing.
+ */
+function allPredicate(
+	field: string,
+	value: unknown,
+	ctx: TranslateContext,
+): string {
+	if (!Array.isArray(value)) {
+		throw new MongoInvalidArgumentError("$all needs an array");
+	}
+	if (value.length === 0) return "false";
+
+	for (const listed of value) {
+		if (listed instanceof RegExp) {
+			throw new MongoCompatibilityError(
+				"$all with a regular expression is not supported: it is a pattern to match each element against, and compared as a value it would match nothing.",
+			);
+		}
+		if (
+			typeof listed === "object" &&
+			listed !== null &&
+			"$elemMatch" in listed
+		) {
+			throw new MongoCompatibilityError(
+				"$all with $elemMatch is not supported: it asks for a single element satisfying every condition, which a list of equalities cannot say.",
+			);
+		}
+	}
+
+	const equalities = value.map((listed) =>
+		equalityPredicate(field, listed, ctx),
+	);
+	return equalities.length === 1
+		? (equalities[0] as string)
+		: `(${equalities.join(" AND ")})`;
+}
+
+/**
+ * `$size`: the field is an array of exactly that many elements.
+ *
+ * `array::len()` is typed on arrays and *errors* on anything else, which
+ * aborted the whole query the moment one document held a string or a number in
+ * the field; MongoDB matches an array of that size and nothing else. The guard
+ * is the same one `$elemMatch` needs, and `AND` short-circuits.
+ */
+function sizePredicate(
+	field: string,
+	value: unknown,
+	ctx: TranslateContext,
+): string {
+	if (typeof value !== "number") {
+		throw new MongoInvalidArgumentError(
+			`Failed to parse $size. Expected a number in: $size: ${JSON.stringify(value)}`,
+		);
+	}
+	if (!Number.isInteger(value)) {
+		throw new MongoInvalidArgumentError(
+			`Failed to parse $size. Expected an integer: $size: ${value}`,
+		);
+	}
+	if (value < 0) {
+		throw new MongoInvalidArgumentError(
+			`Failed to parse $size. Expected a non-negative number in: $size: ${value}`,
+		);
+	}
+
+	const p = ctx.bind(value);
+	return `(${arrayTypeCheckFn(ctx)}(${field}) AND array::len(${field}) = $${p})`;
+}
+
 export const arrayOperators: FilterOperator[] = [
 	{
 		name: "$all",
-		translate(field, value, ctx) {
-			const p = ctx.bind(value);
-			return `${field} CONTAINSALL $${p}`;
-		},
+		translate: allPredicate,
 	},
 	{
 		name: "$size",
-		translate(field, value, ctx) {
-			const p = ctx.bind(value);
-			return `array::len(${field}) = $${p}`;
-		},
+		translate: sizePredicate,
 	},
 	{
 		name: "$elemMatch",
