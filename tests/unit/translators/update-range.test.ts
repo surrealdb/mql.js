@@ -100,21 +100,6 @@ describe("$pull: a condition on the element itself", () => {
 		expect(bindings).toEqual({ p0: 2, p1: 10 });
 	});
 
-	test("$eq, $ne, $in and $nin are unchanged", () => {
-		expect(translateUpdate({ $pull: { v: { $eq: 5 } } }).clause).toBe(
-			"SET `v` = `v`[WHERE !($this = $p0)]",
-		);
-		expect(translateUpdate({ $pull: { v: { $ne: 5 } } }).clause).toBe(
-			"SET `v` = `v`[WHERE !($this != $p0)]",
-		);
-		expect(translateUpdate({ $pull: { v: { $in: [1] } } }).clause).toBe(
-			"SET `v` = `v`[WHERE !($this IN $p0)]",
-		);
-		expect(translateUpdate({ $pull: { v: { $nin: [1] } } }).clause).toBe(
-			"SET `v` = `v`[WHERE !($this NOT IN $p0)]",
-		);
-	});
-
 	test("the type predicates come from the dialect", () => {
 		class Renamed extends V3Dialect {
 			override typeCheckFn(bson: string | number): string | undefined {
@@ -186,11 +171,13 @@ describe("$pull: a condition on a field of each element", () => {
 		);
 	});
 
-	test("conditions on several fields are ANDed with an equality", () => {
+	test("conditions on several fields are ANDed with an equality, read as a field's", () => {
 		const { clause, bindings } = translateUpdate({
 			$pull: { items: { price: { $gte: 8 }, name: "B" } },
 		});
-		expect(clause).toContain("$this.`name` = $p1)]");
+		expect(clause).toContain(
+			"($this.`name` = $p1 OR (type::is_array($this.`name`) AND $this.`name` CONTAINS $p1)))]",
+		);
 		expect(bindings).toEqual({ p0: 8, p1: "B" });
 	});
 });
@@ -251,25 +238,16 @@ describe("arrayFilters: a condition on a field of the element", () => {
 		);
 	});
 
-	test("conditions are ANDed with the equality ones", () => {
+	test("conditions are ANDed with the equality ones, read as a field's", () => {
 		const { clause, bindings } = translateUpdate(
 			{ $inc: { "items.$[item].qty": 1 } },
 			0,
 			{ arrayFilters: [{ "item.status": "active", "item.qty": { $lt: 100 } }] },
 		);
 		expect(clause).toContain(
-			`IF ${ITEM}.\`status\` = $p2 AND ((type::is_number(${ITEM}.\`qty\`)`,
+			`IF (${ITEM}.\`status\` = $p2 OR (type::is_array(${ITEM}.\`status\`) AND ${ITEM}.\`status\` CONTAINS $p2)) AND ((type::is_number(${ITEM}.\`qty\`)`,
 		);
 		expect(bindings).toMatchObject({ p0: 1, p2: "active", p3: 100 });
-	});
-
-	test("$eq, $ne, $in and $nin are unchanged", () => {
-		expect(selecting({ $eq: 1 })).toContain(`IF ${ITEM}.\`s\` = $p2 THEN `);
-		expect(selecting({ $ne: 1 })).toContain(`IF ${ITEM}.\`s\` != $p2 THEN `);
-		expect(selecting({ $in: [1] })).toContain(`IF ${ITEM}.\`s\` IN $p2 THEN `);
-		expect(selecting({ $nin: [1] })).toContain(
-			`IF ${ITEM}.\`s\` NOT IN $p2 THEN `,
-		);
 	});
 
 	test("the type predicates come from the dialect", () => {

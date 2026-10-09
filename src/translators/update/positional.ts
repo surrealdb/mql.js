@@ -61,7 +61,7 @@ import {
 } from "../../errors.ts";
 import { escapeFieldPath, escapeIdentifier } from "../../surreal/sql/escape.ts";
 import { arrayTypeCheckFn } from "../filter/operators/comparison.ts";
-import { isRangeOperator, rangePredicate } from "../filter/operators/range.ts";
+import { bareCondition, elementCondition } from "./element-condition.ts";
 import type { UpdateContext } from "./update-context.ts";
 
 /**
@@ -79,17 +79,6 @@ export const REMOVE: PositionalUpdate = { remove: true };
 // ---------------------------------------------------------------------------
 // arrayFilters
 // ---------------------------------------------------------------------------
-
-const COMPARISON_OPS: Record<string, string> = {
-	$eq: "=",
-	$ne: "!=",
-	$gt: ">",
-	$gte: ">=",
-	$lt: "<",
-	$lte: "<=",
-	$in: "IN",
-	$nin: "NOT IN",
-};
 
 function isOperatorObject(value: unknown): boolean {
 	if (value === null || value === undefined || typeof value !== "object") {
@@ -122,30 +111,21 @@ function translateArrayFilterEntry(
 		for (const [op, opVal] of Object.entries(
 			value as Record<string, unknown>,
 		)) {
-			// The ordering operators are the type-bracketed comparison the filter
-			// translator builds for a field, array-valued ones included: an
-			// arrayFilters entry is a query on each element, so `{"e.score":
-			// {$gte: 90}}` matches an element whose `score` is `[95, 10]`, and not
-			// one whose `score` is the string "90" or is missing. The leading range
-			// is for a table scan's planner, which a closure over an array is not.
-			if (isRangeOperator(op)) {
-				conditions.push(
-					rangePredicate(target, op, opVal, ctx, { leadingRange: false }),
-				);
-				continue;
-			}
-
-			const sqlOp = COMPARISON_OPS[op];
-			if (!sqlOp)
+			// Each is the predicate the same operator is in a filter, array-valued
+			// fields included: an arrayFilters entry is a query on each element, so
+			// `{"e.score": {$gte: 90}}` matches an element whose `score` is `[95, 10]`
+			// and not one whose `score` is the string "90" or is missing, and
+			// `{"e.tags": "a"}` one whose `tags` is `["a", "b"]`.
+			const condition = elementCondition(op, target, opVal, ctx);
+			if (condition === undefined) {
 				throw new MongoInvalidArgumentError(
 					`Unsupported operator in arrayFilter: ${op}`,
 				);
-			const p = ctx.bind(opVal);
-			conditions.push(`${target} ${sqlOp} $${p}`);
+			}
+			conditions.push(condition);
 		}
 	} else {
-		const p = ctx.bind(value);
-		conditions.push(`${target} = $${p}`);
+		conditions.push(bareCondition(target, value, ctx));
 	}
 }
 

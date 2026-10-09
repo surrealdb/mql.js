@@ -9,9 +9,10 @@ import {
 	ELEMENT_FIELD,
 } from "../../filter/operators/comparison.ts";
 import {
-	isRangeOperator,
-	rangePredicate,
-} from "../../filter/operators/range.ts";
+	bareCondition,
+	elementCondition,
+	refuseRegExp,
+} from "../element-condition.ts";
 import type { UpdateOperator } from "../operator-registry.ts";
 import type { UpdateContext } from "../update-context.ts";
 
@@ -131,33 +132,15 @@ export const pushOperator: UpdateOperator = {
 };
 
 /**
- * Comparison operators accepted inside a `$pull` condition, mapped to their
- * SurrealQL equivalents. Deliberately the same set the arrayFilters translator
- * supports, so `$pull` and `$[identifier]` accept the same vocabulary. The four
- * ordering operators are listed for that reason alone: they are not translated
- * from this table but by `rangePredicate`, which brackets them by type.
- */
-const PULL_COMPARISON_OPS: Record<string, string> = {
-	$eq: "=",
-	$ne: "!=",
-	$gt: ">",
-	$gte: ">=",
-	$lt: "<",
-	$lte: "<=",
-	$in: "IN",
-	$nin: "NOT IN",
-};
-
-/**
  * How a `$pull` condition names the element it is testing, when the condition
  * is about the element itself (`{$pull: {n: {$gt: 3}}}`).
  *
  * MongoDB applies a `$pull` condition to each element "as if it were a document
  * in a collection": the element is the *value of a field*, so an element that is
  * itself an array matches when any of its elements does — `{$pull: {v: {$gt: 5}}}`
- * over `[[7, 8], [1], 6]` leaves `[[1]]`. That is a field's reading, and not an
- * `$elemMatch`'s, where `{$elemMatch: {$gt: 5}}` compares each element as a plain
- * value. The filter translator keys the second reading on the field being
+ * over `[[7, 8], [1], 6]` leaves `[[1]]`, and `{$pull: {v: {$eq: 7}}}` over
+ * `[[7, 8], 7]` leaves `[]`. That is a field's reading, and not an `$elemMatch`'s,
+ * where `{$elemMatch: {$gt: 5}}` compares each element as a plain value. The filter translator keys the second reading on the field being
  * `ELEMENT_FIELD` (`$this`), so the element is named here by the same variable
  * under a spelling that is not that string: a parenthesised expression, which
  * SurrealQL treats as the value it wraps.
@@ -175,39 +158,28 @@ function isOperatorSpec(value: unknown): value is Record<string, unknown> {
  * Translate one operator object (`{$gte: 3, $lt: 10}`) into conditions on
  * `target`, which is either `$this` (the array element itself) or a path
  * inside it.
+ *
+ * Each is the predicate the same operator is in a filter — see
+ * `element-condition.ts` — so a condition on the element itself addresses it as
+ * `PULLED_ELEMENT`, the value of a field, and not as the `$this` of an
+ * `$elemMatch`.
  */
 function pullOperatorConditions(
 	target: string,
 	spec: Record<string, unknown>,
 	ctx: UpdateContext,
 ): string[] {
+	const field = target === ELEMENT_FIELD ? PULLED_ELEMENT : target;
+
 	const conditions: string[] = [];
 	for (const [op, operand] of Object.entries(spec)) {
-		// The ordering operators are MongoDB's type-bracketed comparison, which is
-		// what the filter translator builds for a field: a bare `>` here would match
-		// across types, and remove a string for `{$gt: 5}`.
-		if (isRangeOperator(op)) {
-			conditions.push(
-				rangePredicate(
-					target === ELEMENT_FIELD ? PULLED_ELEMENT : target,
-					op,
-					operand,
-					ctx,
-					// A filtered array path is not a table scan, so there is no
-					// planner for the leading range to serve.
-					{ leadingRange: false },
-				),
-			);
-			continue;
-		}
-
-		const sqlOp = PULL_COMPARISON_OPS[op];
-		if (!sqlOp) {
+		const condition = elementCondition(op, field, operand, ctx);
+		if (condition === undefined) {
 			throw new MongoInvalidArgumentError(
 				`Unsupported operator in $pull condition: ${op}`,
 			);
 		}
-		conditions.push(`${target} ${sqlOp} $${ctx.bind(operand)}`);
+		conditions.push(condition);
 	}
 	return conditions;
 }
@@ -229,6 +201,7 @@ function pullOperatorConditions(
  * with a predicate a silent no-op.
  */
 function pullConditions(value: unknown, ctx: UpdateContext): string[] | null {
+	refuseRegExp(value);
 	if (!isPlainObject(value)) return null;
 
 	const keys = Object.keys(value);
@@ -254,7 +227,10 @@ function pullConditions(value: unknown, ctx: UpdateContext): string[] | null {
 		if (isOperatorSpec(sub)) {
 			conditions.push(...pullOperatorConditions(target, sub, ctx));
 		} else {
-			conditions.push(`${target} = $${ctx.bind(sub)}`);
+			// A field of the element, tested as a field is: `{items: {tags: "a"}}`
+			// matches an item whose `tags` is `["a", "b"]`, and `{items: {p: null}}`
+			// one with no `p` at all.
+			conditions.push(bareCondition(target, sub, ctx));
 		}
 	}
 	return conditions;

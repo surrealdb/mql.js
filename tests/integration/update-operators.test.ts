@@ -1034,14 +1034,27 @@ describe("positional updates compute each element's new value from its own", () 
 		}
 	});
 
-	test("$currentDate sets the same date on every element", async () => {
+	// MongoDB reads the clock as it reaches each element, and so does this driver:
+	// over 3,000 elements a real `mongod` wrote two different dates, a millisecond
+	// apart. So what is asserted is a date on every element and that they are all
+	// the same moment to within a second, and not that they are equal.
+	test("$currentDate sets the current date on every element", async () => {
+		const before = Date.now();
 		const { doc } = await run(
-			{ v: [{ n: 1 }, { n: 2 }] },
+			{ v: Array.from({ length: 200 }, (_, n) => ({ n })) },
 			{ $currentDate: { "v.$[].at": true } },
 		);
-		const [first, second] = doc?.v as { at: unknown }[];
-		expect(first.at).toBeInstanceOf(Date);
-		expect(second.at).toEqual(first.at);
+		const after = Date.now();
+
+		const dates = (doc?.v as { at: unknown }[]).map((element) => element.at);
+		for (const date of dates) expect(date).toBeInstanceOf(Date);
+
+		const times = (dates as Date[]).map((date) => date.getTime());
+		expect(Math.max(...times) - Math.min(...times)).toBeLessThan(1000);
+		// The server's clock and this one are the same on any machine these run on,
+		// to well within a minute.
+		expect(Math.abs(times[0] - before)).toBeLessThan(60_000);
+		expect(Math.abs(times[0] - after)).toBeLessThan(60_000);
 	});
 
 	test("the plain fields beside it are updated as usual", async () => {
@@ -1205,6 +1218,978 @@ describe("positional updates compute each element's new value from its own", () 
 			expect(created?.seen).toBe(true);
 			expect(created?.v).toBeUndefined();
 		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// EQUALITY OPERATORS IN $pull AND arrayFilters
+// ---------------------------------------------------------------------------
+
+describe("equality in $pull and arrayFilters reads a value as a field's", () => {
+	// A `$pull` condition and an `arrayFilters` entry are query predicates applied
+	// to a value the update finds in an array, so equality sees into an array,
+	// `null` is a null, a missing field or an array holding one, and `$ne` and
+	// `$nin` are exact negations. As a bare `=` and `IN` they compared the value
+	// whole: `{$pull: {v: {$eq: 7}}}` over `[[7, 8], 7]` left `[[7, 8]]` where
+	// MongoDB leaves `[]`. What a real `mongod` leaves in the array is what each
+	// case below expects, and `tests/e2e/scenarios/crud-scenarios.ts` checks them
+	// against one. A bare `{$pull: {v: 7}}` and `$pullAll` are whole-value equality
+	// in MongoDB and are in the table to show they stayed that way.
+
+	interface ArrayDoc {
+		[key: string]: unknown;
+		_id?: ObjectId | string | number;
+		k: string;
+		v?: unknown;
+	}
+
+	let docs: Collection<ArrayDoc>;
+
+	beforeEach(async () => {
+		docs = ctx.db.collection<ArrayDoc>("array_equality");
+		try {
+			await docs.deleteMany({});
+		} catch {
+			// ignore
+		}
+	});
+
+	const run = async (
+		doc: Record<string, unknown>,
+		update: Record<string, unknown>,
+		options?: Record<string, unknown> | null,
+	) => {
+		await docs.deleteMany({});
+		await docs.insertOne({ k: "a", ...doc });
+		await docs.updateOne(
+			{ k: "a" },
+			update as never,
+			(options ?? undefined) as never,
+		);
+		return (await docs.findOne({ k: "a" }))?.v;
+	};
+
+	const CASES: [
+		string,
+		Record<string, unknown>,
+		Record<string, unknown>,
+		Record<string, unknown> | null,
+		unknown,
+	][] = [
+		[
+			"pull $eq 7",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $eq: 7 } } },
+			null,
+			[5, "7", [5], null, [null], { a: 7 }],
+		],
+		[
+			"pull $ne 7",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $ne: 7 } } },
+			null,
+			[[7, 8], 7, [7]],
+		],
+		[
+			"pull $in [7]",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $in: [7] } } },
+			null,
+			[5, "7", [5], null, [null], { a: 7 }],
+		],
+		[
+			"pull $nin [7]",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $nin: [7] } } },
+			null,
+			[[7, 8], 7, [7]],
+		],
+		[
+			"pull $in [7,5]",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $in: [7, 5] } } },
+			null,
+			["7", null, [null], { a: 7 }],
+		],
+		[
+			"pull $nin [7,5]",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $nin: [7, 5] } } },
+			null,
+			[[7, 8], 7, 5, [5], [7]],
+		],
+		[
+			'pull $in [7,"7"]',
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $in: [7, "7"] } } },
+			null,
+			[5, [5], null, [null], { a: 7 }],
+		],
+		[
+			'pull $eq "7"',
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $eq: "7" } } },
+			null,
+			[[7, 8], 7, 5, [5], null, [null], { a: 7 }, [7]],
+		],
+		[
+			"pull $eq [7,8]",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $eq: [7, 8] } } },
+			null,
+			[7, 5, "7", [5], null, [null], { a: 7 }, [7]],
+		],
+		[
+			"pull $ne [7,8]",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $ne: [7, 8] } } },
+			null,
+			[[7, 8]],
+		],
+		[
+			"pull $in [[7,8]]",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $in: [[7, 8]] } } },
+			null,
+			[7, 5, "7", [5], null, [null], { a: 7 }, [7]],
+		],
+		[
+			"pull $nin [[7,8]]",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $nin: [[7, 8]] } } },
+			null,
+			[[7, 8]],
+		],
+		[
+			"pull $eq [5]",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $eq: [5] } } },
+			null,
+			[[7, 8], 7, 5, "7", null, [null], { a: 7 }, [7]],
+		],
+		[
+			"pull $in [[5]]",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $in: [[5]] } } },
+			null,
+			[[7, 8], 7, 5, "7", null, [null], { a: 7 }, [7]],
+		],
+		[
+			"pull $eq null",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $eq: null } } },
+			null,
+			[[7, 8], 7, 5, "7", [5], { a: 7 }, [7]],
+		],
+		[
+			"pull $ne null",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $ne: null } } },
+			null,
+			[null, [null]],
+		],
+		[
+			"pull $in [null]",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $in: [null] } } },
+			null,
+			[[7, 8], 7, 5, "7", [5], { a: 7 }, [7]],
+		],
+		[
+			"pull $nin [null]",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $nin: [null] } } },
+			null,
+			[null, [null]],
+		],
+		[
+			"pull $eq {a:7}",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $eq: { a: 7 } } } },
+			null,
+			[[7, 8], 7, 5, "7", [5], null, [null], [7]],
+		],
+		[
+			"pull $in [{a:7}]",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $in: [{ a: 7 }] } } },
+			null,
+			[[7, 8], 7, 5, "7", [5], null, [null], [7]],
+		],
+		[
+			"pull $eq 7 + $ne 5",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $eq: 7, $ne: 5 } } },
+			null,
+			[5, "7", [5], null, [null], { a: 7 }],
+		],
+		[
+			"pull $gt 4 + $ne 7",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $gt: 4, $ne: 7 } } },
+			null,
+			[[7, 8], 7, "7", null, [null], { a: 7 }, [7]],
+		],
+		[
+			"pull $in [7,5] + $nin [5]",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $in: [7, 5], $nin: [5] } } },
+			null,
+			[5, "7", [5], null, [null], { a: 7 }],
+		],
+		[
+			"pull $ne 7 + $ne? ($nin [5])",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, [7]] },
+			{ $pull: { v: { $ne: 7, $nin: [5] } } },
+			null,
+			[[7, 8], 7, 5, [5], [7]],
+		],
+		[
+			"pull strings $eq 'a'",
+			{ v: ["abc", "a", ["abc", "x"], ["a"], "ab"] },
+			{ $pull: { v: { $eq: "a" } } },
+			null,
+			["abc", ["abc", "x"], "ab"],
+		],
+		[
+			"pull strings $ne 'a'",
+			{ v: ["abc", "a", ["abc", "x"], ["a"], "ab"] },
+			{ $pull: { v: { $ne: "a" } } },
+			null,
+			["a", ["a"]],
+		],
+		[
+			"pull strings $in ['a']",
+			{ v: ["abc", "a", ["abc", "x"], ["a"], "ab"] },
+			{ $pull: { v: { $in: ["a"] } } },
+			null,
+			["abc", ["abc", "x"], "ab"],
+		],
+		[
+			"pull strings $nin ['a']",
+			{ v: ["abc", "a", ["abc", "x"], ["a"], "ab"] },
+			{ $pull: { v: { $nin: ["a"] } } },
+			null,
+			["a", ["a"]],
+		],
+		[
+			"pull sub a: 1",
+			{
+				v: [
+					{ a: [1, 2] },
+					{ a: 1 },
+					{ a: 2 },
+					{ a: [3] },
+					{ b: 1 },
+					{ a: null },
+					{ a: [null] },
+					{ a: "1" },
+				],
+			},
+			{ $pull: { v: { a: 1 } } },
+			null,
+			[{ a: 2 }, { a: [3] }, { b: 1 }, { a: null }, { a: [null] }, { a: "1" }],
+		],
+		[
+			"pull sub a $eq 1",
+			{
+				v: [
+					{ a: [1, 2] },
+					{ a: 1 },
+					{ a: 2 },
+					{ a: [3] },
+					{ b: 1 },
+					{ a: null },
+					{ a: [null] },
+					{ a: "1" },
+				],
+			},
+			{ $pull: { v: { a: { $eq: 1 } } } },
+			null,
+			[{ a: 2 }, { a: [3] }, { b: 1 }, { a: null }, { a: [null] }, { a: "1" }],
+		],
+		[
+			"pull sub a $ne 1",
+			{
+				v: [
+					{ a: [1, 2] },
+					{ a: 1 },
+					{ a: 2 },
+					{ a: [3] },
+					{ b: 1 },
+					{ a: null },
+					{ a: [null] },
+					{ a: "1" },
+				],
+			},
+			{ $pull: { v: { a: { $ne: 1 } } } },
+			null,
+			[{ a: [1, 2] }, { a: 1 }],
+		],
+		[
+			"pull sub a $in [1]",
+			{
+				v: [
+					{ a: [1, 2] },
+					{ a: 1 },
+					{ a: 2 },
+					{ a: [3] },
+					{ b: 1 },
+					{ a: null },
+					{ a: [null] },
+					{ a: "1" },
+				],
+			},
+			{ $pull: { v: { a: { $in: [1] } } } },
+			null,
+			[{ a: 2 }, { a: [3] }, { b: 1 }, { a: null }, { a: [null] }, { a: "1" }],
+		],
+		[
+			"pull sub a $nin [1]",
+			{
+				v: [
+					{ a: [1, 2] },
+					{ a: 1 },
+					{ a: 2 },
+					{ a: [3] },
+					{ b: 1 },
+					{ a: null },
+					{ a: [null] },
+					{ a: "1" },
+				],
+			},
+			{ $pull: { v: { a: { $nin: [1] } } } },
+			null,
+			[{ a: [1, 2] }, { a: 1 }],
+		],
+		[
+			"pull sub a: [1,2]",
+			{
+				v: [
+					{ a: [1, 2] },
+					{ a: 1 },
+					{ a: 2 },
+					{ a: [3] },
+					{ b: 1 },
+					{ a: null },
+					{ a: [null] },
+					{ a: "1" },
+				],
+			},
+			{ $pull: { v: { a: [1, 2] } } },
+			null,
+			[
+				{ a: 1 },
+				{ a: 2 },
+				{ a: [3] },
+				{ b: 1 },
+				{ a: null },
+				{ a: [null] },
+				{ a: "1" },
+			],
+		],
+		[
+			"pull sub a $eq [1,2]",
+			{
+				v: [
+					{ a: [1, 2] },
+					{ a: 1 },
+					{ a: 2 },
+					{ a: [3] },
+					{ b: 1 },
+					{ a: null },
+					{ a: [null] },
+					{ a: "1" },
+				],
+			},
+			{ $pull: { v: { a: { $eq: [1, 2] } } } },
+			null,
+			[
+				{ a: 1 },
+				{ a: 2 },
+				{ a: [3] },
+				{ b: 1 },
+				{ a: null },
+				{ a: [null] },
+				{ a: "1" },
+			],
+		],
+		[
+			"pull sub a: null",
+			{
+				v: [
+					{ a: [1, 2] },
+					{ a: 1 },
+					{ a: 2 },
+					{ a: [3] },
+					{ b: 1 },
+					{ a: null },
+					{ a: [null] },
+					{ a: "1" },
+				],
+			},
+			{ $pull: { v: { a: null } } },
+			null,
+			[{ a: [1, 2] }, { a: 1 }, { a: 2 }, { a: [3] }, { a: "1" }],
+		],
+		[
+			"pull sub a $ne null",
+			{
+				v: [
+					{ a: [1, 2] },
+					{ a: 1 },
+					{ a: 2 },
+					{ a: [3] },
+					{ b: 1 },
+					{ a: null },
+					{ a: [null] },
+					{ a: "1" },
+				],
+			},
+			{ $pull: { v: { a: { $ne: null } } } },
+			null,
+			[{ b: 1 }, { a: null }, { a: [null] }],
+		],
+		[
+			"pull sub a $in [1,3]",
+			{
+				v: [
+					{ a: [1, 2] },
+					{ a: 1 },
+					{ a: 2 },
+					{ a: [3] },
+					{ b: 1 },
+					{ a: null },
+					{ a: [null] },
+					{ a: "1" },
+				],
+			},
+			{ $pull: { v: { a: { $in: [1, 3] } } } },
+			null,
+			[{ a: 2 }, { b: 1 }, { a: null }, { a: [null] }, { a: "1" }],
+		],
+		[
+			"pull sub a: 1, b: 1 (both)",
+			{
+				v: [
+					{ a: [1, 2] },
+					{ a: 1 },
+					{ a: 2 },
+					{ a: [3] },
+					{ b: 1 },
+					{ a: null },
+					{ a: [null] },
+					{ a: "1" },
+				],
+			},
+			{ $pull: { v: { a: 1, b: 1 } } },
+			null,
+			[
+				{ a: [1, 2] },
+				{ a: 1 },
+				{ a: 2 },
+				{ a: [3] },
+				{ b: 1 },
+				{ a: null },
+				{ a: [null] },
+				{ a: "1" },
+			],
+		],
+		[
+			"arrayFilters p: 9",
+			{
+				v: [
+					{ p: 9 },
+					{ p: [1, 9] },
+					{ p: 5 },
+					{ x: 1 },
+					{ p: null },
+					{ p: [null] },
+					{ p: "9" },
+					{ p: [[1, 9]] },
+				],
+			},
+			{ $set: { "v.$[e].flag": true } },
+			{ arrayFilters: [{ "e.p": 9 }] },
+			[
+				{ flag: true, p: 9 },
+				{ flag: true, p: [1, 9] },
+				{ p: 5 },
+				{ x: 1 },
+				{ p: null },
+				{ p: [null] },
+				{ p: "9" },
+				{ p: [[1, 9]] },
+			],
+		],
+		[
+			"arrayFilters p $eq 9",
+			{
+				v: [
+					{ p: 9 },
+					{ p: [1, 9] },
+					{ p: 5 },
+					{ x: 1 },
+					{ p: null },
+					{ p: [null] },
+					{ p: "9" },
+					{ p: [[1, 9]] },
+				],
+			},
+			{ $set: { "v.$[e].flag": true } },
+			{ arrayFilters: [{ "e.p": { $eq: 9 } }] },
+			[
+				{ flag: true, p: 9 },
+				{ flag: true, p: [1, 9] },
+				{ p: 5 },
+				{ x: 1 },
+				{ p: null },
+				{ p: [null] },
+				{ p: "9" },
+				{ p: [[1, 9]] },
+			],
+		],
+		[
+			"arrayFilters p $ne 9",
+			{
+				v: [
+					{ p: 9 },
+					{ p: [1, 9] },
+					{ p: 5 },
+					{ x: 1 },
+					{ p: null },
+					{ p: [null] },
+					{ p: "9" },
+					{ p: [[1, 9]] },
+				],
+			},
+			{ $set: { "v.$[e].flag": true } },
+			{ arrayFilters: [{ "e.p": { $ne: 9 } }] },
+			[
+				{ p: 9 },
+				{ p: [1, 9] },
+				{ flag: true, p: 5 },
+				{ flag: true, x: 1 },
+				{ flag: true, p: null },
+				{ flag: true, p: [null] },
+				{ flag: true, p: "9" },
+				{ flag: true, p: [[1, 9]] },
+			],
+		],
+		[
+			"arrayFilters p $in [9]",
+			{
+				v: [
+					{ p: 9 },
+					{ p: [1, 9] },
+					{ p: 5 },
+					{ x: 1 },
+					{ p: null },
+					{ p: [null] },
+					{ p: "9" },
+					{ p: [[1, 9]] },
+				],
+			},
+			{ $set: { "v.$[e].flag": true } },
+			{ arrayFilters: [{ "e.p": { $in: [9] } }] },
+			[
+				{ flag: true, p: 9 },
+				{ flag: true, p: [1, 9] },
+				{ p: 5 },
+				{ x: 1 },
+				{ p: null },
+				{ p: [null] },
+				{ p: "9" },
+				{ p: [[1, 9]] },
+			],
+		],
+		[
+			"arrayFilters p $nin [9]",
+			{
+				v: [
+					{ p: 9 },
+					{ p: [1, 9] },
+					{ p: 5 },
+					{ x: 1 },
+					{ p: null },
+					{ p: [null] },
+					{ p: "9" },
+					{ p: [[1, 9]] },
+				],
+			},
+			{ $set: { "v.$[e].flag": true } },
+			{ arrayFilters: [{ "e.p": { $nin: [9] } }] },
+			[
+				{ p: 9 },
+				{ p: [1, 9] },
+				{ flag: true, p: 5 },
+				{ flag: true, x: 1 },
+				{ flag: true, p: null },
+				{ flag: true, p: [null] },
+				{ flag: true, p: "9" },
+				{ flag: true, p: [[1, 9]] },
+			],
+		],
+		[
+			"arrayFilters p $in [9, 5]",
+			{
+				v: [
+					{ p: 9 },
+					{ p: [1, 9] },
+					{ p: 5 },
+					{ x: 1 },
+					{ p: null },
+					{ p: [null] },
+					{ p: "9" },
+					{ p: [[1, 9]] },
+				],
+			},
+			{ $set: { "v.$[e].flag": true } },
+			{ arrayFilters: [{ "e.p": { $in: [9, 5] } }] },
+			[
+				{ flag: true, p: 9 },
+				{ flag: true, p: [1, 9] },
+				{ flag: true, p: 5 },
+				{ x: 1 },
+				{ p: null },
+				{ p: [null] },
+				{ p: "9" },
+				{ p: [[1, 9]] },
+			],
+		],
+		[
+			"arrayFilters p: null",
+			{
+				v: [
+					{ p: 9 },
+					{ p: [1, 9] },
+					{ p: 5 },
+					{ x: 1 },
+					{ p: null },
+					{ p: [null] },
+					{ p: "9" },
+					{ p: [[1, 9]] },
+				],
+			},
+			{ $set: { "v.$[e].flag": true } },
+			{ arrayFilters: [{ "e.p": null }] },
+			[
+				{ p: 9 },
+				{ p: [1, 9] },
+				{ p: 5 },
+				{ flag: true, x: 1 },
+				{ flag: true, p: null },
+				{ flag: true, p: [null] },
+				{ p: "9" },
+				{ p: [[1, 9]] },
+			],
+		],
+		[
+			"arrayFilters p $ne null",
+			{
+				v: [
+					{ p: 9 },
+					{ p: [1, 9] },
+					{ p: 5 },
+					{ x: 1 },
+					{ p: null },
+					{ p: [null] },
+					{ p: "9" },
+					{ p: [[1, 9]] },
+				],
+			},
+			{ $set: { "v.$[e].flag": true } },
+			{ arrayFilters: [{ "e.p": { $ne: null } }] },
+			[
+				{ flag: true, p: 9 },
+				{ flag: true, p: [1, 9] },
+				{ flag: true, p: 5 },
+				{ x: 1 },
+				{ p: null },
+				{ p: [null] },
+				{ flag: true, p: "9" },
+				{ flag: true, p: [[1, 9]] },
+			],
+		],
+		[
+			"arrayFilters p $in [null]",
+			{
+				v: [
+					{ p: 9 },
+					{ p: [1, 9] },
+					{ p: 5 },
+					{ x: 1 },
+					{ p: null },
+					{ p: [null] },
+					{ p: "9" },
+					{ p: [[1, 9]] },
+				],
+			},
+			{ $set: { "v.$[e].flag": true } },
+			{ arrayFilters: [{ "e.p": { $in: [null] } }] },
+			[
+				{ p: 9 },
+				{ p: [1, 9] },
+				{ p: 5 },
+				{ flag: true, x: 1 },
+				{ flag: true, p: null },
+				{ flag: true, p: [null] },
+				{ p: "9" },
+				{ p: [[1, 9]] },
+			],
+		],
+		[
+			"arrayFilters p: [1,9]",
+			{
+				v: [
+					{ p: 9 },
+					{ p: [1, 9] },
+					{ p: 5 },
+					{ x: 1 },
+					{ p: null },
+					{ p: [null] },
+					{ p: "9" },
+					{ p: [[1, 9]] },
+				],
+			},
+			{ $set: { "v.$[e].flag": true } },
+			{ arrayFilters: [{ "e.p": [1, 9] }] },
+			[
+				{ p: 9 },
+				{ flag: true, p: [1, 9] },
+				{ p: 5 },
+				{ x: 1 },
+				{ p: null },
+				{ p: [null] },
+				{ p: "9" },
+				{ flag: true, p: [[1, 9]] },
+			],
+		],
+		[
+			"arrayFilters p $eq [1,9]",
+			{
+				v: [
+					{ p: 9 },
+					{ p: [1, 9] },
+					{ p: 5 },
+					{ x: 1 },
+					{ p: null },
+					{ p: [null] },
+					{ p: "9" },
+					{ p: [[1, 9]] },
+				],
+			},
+			{ $set: { "v.$[e].flag": true } },
+			{ arrayFilters: [{ "e.p": { $eq: [1, 9] } }] },
+			[
+				{ p: 9 },
+				{ flag: true, p: [1, 9] },
+				{ p: 5 },
+				{ x: 1 },
+				{ p: null },
+				{ p: [null] },
+				{ p: "9" },
+				{ flag: true, p: [[1, 9]] },
+			],
+		],
+		[
+			"arrayFilters p $in [[1,9]]",
+			{
+				v: [
+					{ p: 9 },
+					{ p: [1, 9] },
+					{ p: 5 },
+					{ x: 1 },
+					{ p: null },
+					{ p: [null] },
+					{ p: "9" },
+					{ p: [[1, 9]] },
+				],
+			},
+			{ $set: { "v.$[e].flag": true } },
+			{ arrayFilters: [{ "e.p": { $in: [[1, 9]] } }] },
+			[
+				{ p: 9 },
+				{ flag: true, p: [1, 9] },
+				{ p: 5 },
+				{ x: 1 },
+				{ p: null },
+				{ p: [null] },
+				{ p: "9" },
+				{ flag: true, p: [[1, 9]] },
+			],
+		],
+		[
+			"arrayFilters p: '9'",
+			{
+				v: [
+					{ p: 9 },
+					{ p: [1, 9] },
+					{ p: 5 },
+					{ x: 1 },
+					{ p: null },
+					{ p: [null] },
+					{ p: "9" },
+					{ p: [[1, 9]] },
+				],
+			},
+			{ $set: { "v.$[e].flag": true } },
+			{ arrayFilters: [{ "e.p": "9" }] },
+			[
+				{ p: 9 },
+				{ p: [1, 9] },
+				{ p: 5 },
+				{ x: 1 },
+				{ p: null },
+				{ p: [null] },
+				{ flag: true, p: "9" },
+				{ p: [[1, 9]] },
+			],
+		],
+		[
+			"pullAll [7]",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, "abc", ["abc"]] },
+			{ $pullAll: { v: [7] } },
+			null,
+			[[7, 8], 5, "7", [5], null, [null], { a: 7 }, "abc", ["abc"]],
+		],
+		[
+			"pullAll [[7,8]]",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, "abc", ["abc"]] },
+			{ $pullAll: { v: [[7, 8]] } },
+			null,
+			[7, 5, "7", [5], null, [null], { a: 7 }, "abc", ["abc"]],
+		],
+		[
+			"pullAll [null]",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, "abc", ["abc"]] },
+			{ $pullAll: { v: [null] } },
+			null,
+			[[7, 8], 7, 5, "7", [5], [null], { a: 7 }, "abc", ["abc"]],
+		],
+		[
+			"pullAll ['abc']",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, "abc", ["abc"]] },
+			{ $pullAll: { v: ["abc"] } },
+			null,
+			[[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, ["abc"]],
+		],
+		[
+			"pull bare 7",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, "abc", ["abc"]] },
+			{ $pull: { v: 7 } },
+			null,
+			[[7, 8], 5, "7", [5], null, [null], { a: 7 }, "abc", ["abc"]],
+		],
+		[
+			"pull bare 'abc'",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, "abc", ["abc"]] },
+			{ $pull: { v: "abc" } },
+			null,
+			[[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, ["abc"]],
+		],
+		[
+			"pull bare null",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, "abc", ["abc"]] },
+			{ $pull: { v: null } },
+			null,
+			[[7, 8], 7, 5, "7", [5], [null], { a: 7 }, "abc", ["abc"]],
+		],
+		[
+			"pull bare [7,8]",
+			{ v: [[7, 8], 7, 5, "7", [5], null, [null], { a: 7 }, "abc", ["abc"]] },
+			{ $pull: { v: [7, 8] } },
+			null,
+			[7, 5, "7", [5], null, [null], { a: 7 }, "abc", ["abc"]],
+		],
+		[
+			"positional $pull $eq 7",
+			{ v: [{ t: [[7, 8], 7, 5, null, [null]] }, { t: [7] }, {}] },
+			{ $pull: { "v.$[].t": { $eq: 7 } } },
+			null,
+			[{ t: [5, null, [null]] }, { t: [] }, {}],
+		],
+		[
+			"positional $pull $ne 7",
+			{ v: [{ t: [[7, 8], 7, 5, null, [null]] }, { t: [7] }, {}] },
+			{ $pull: { "v.$[].t": { $ne: 7 } } },
+			null,
+			[{ t: [[7, 8], 7] }, { t: [7] }, {}],
+		],
+		[
+			"positional $pull $in [7]",
+			{ v: [{ t: [[7, 8], 7, 5, null, [null]] }, { t: [7] }, {}] },
+			{ $pull: { "v.$[].t": { $in: [7] } } },
+			null,
+			[{ t: [5, null, [null]] }, { t: [] }, {}],
+		],
+		[
+			"positional $pull $nin [7]",
+			{ v: [{ t: [[7, 8], 7, 5, null, [null]] }, { t: [7] }, {}] },
+			{ $pull: { "v.$[].t": { $nin: [7] } } },
+			null,
+			[{ t: [[7, 8], 7] }, { t: [7] }, {}],
+		],
+		[
+			"positional $pull $eq null",
+			{ v: [{ t: [[7, 8], 7, 5, null, [null]] }, { t: [7] }, {}] },
+			{ $pull: { "v.$[].t": { $eq: null } } },
+			null,
+			[{ t: [[7, 8], 7, 5] }, { t: [7] }, {}],
+		],
+		[
+			"positional $pull sub-doc",
+			{ v: [{ t: [{ a: [1, 2] }, { a: 1 }, { a: 3 }] }] },
+			{ $pull: { "v.$[].t": { a: 1 } } },
+			null,
+			[{ t: [{ a: 3 }] }],
+		],
+	];
+
+	for (const [label, doc, update, options, expected] of CASES) {
+		test(label, async () => {
+			expect(await run(doc, update, options)).toEqual(expected);
+		});
+	}
+
+	test("it reaches every way of running an update", async () => {
+		await docs.insertMany([
+			{ k: "a", v: [[7, 8], 7, 5] },
+			{ k: "b", v: [7, [5]] },
+		]);
+		const result = await docs.updateMany({}, {
+			$pull: { v: { $eq: 7 } },
+		} as never);
+		expect(result.modifiedCount).toBe(2);
+		expect((await docs.findOne({ k: "a" }))?.v).toEqual([5]);
+		expect((await docs.findOne({ k: "b" }))?.v).toEqual([[5]]);
+
+		const updated = await docs.findOneAndUpdate(
+			{ k: "b" },
+			{ $pull: { v: { $ne: 5 } } } as never,
+			{ returnDocument: "after" },
+		);
+		expect(updated?.v).toEqual([[5]]);
+	});
+
+	test("a regular expression as the condition is refused, not matched against nothing", async () => {
+		await docs.insertOne({ k: "a", v: ["abc", "xyz"] });
+		await expect(
+			(async () =>
+				docs.updateOne({ k: "a" }, { $pull: { v: /^a/ } } as never))(),
+		).rejects.toThrow(MongoCompatibilityError);
+		expect((await docs.findOne({ k: "a" }))?.v).toEqual(["abc", "xyz"]);
+	});
+
+	test("an operator it has no translation for is refused, and nothing is changed", async () => {
+		await docs.insertOne({ k: "a", v: ["abc", "xyz"] });
+		await expect(
+			(async () =>
+				docs.updateOne({ k: "a" }, {
+					$pull: { v: { $regex: "^a" } },
+				} as never))(),
+		).rejects.toThrow("Unsupported operator in $pull condition: $regex");
+		expect((await docs.findOne({ k: "a" }))?.v).toEqual(["abc", "xyz"]);
 	});
 });
 

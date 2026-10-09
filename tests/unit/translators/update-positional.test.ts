@@ -227,7 +227,7 @@ describe("positional updates to one array are one rewrite", () => {
 			{ arrayFilters: [{ "a.s": 1 }, { "b.s": { $gte: 2 } }] },
 		);
 		expect(clause).toStartWith(
-			"SET `v` = IF type::is_array(`v`) THEN array::map(array::map(`v`, |$__mql_item0| IF $__mql_item0.`s` = ",
+			"SET `v` = IF type::is_array(`v`) THEN array::map(array::map(`v`, |$__mql_item0| IF ($__mql_item0.`s` = ",
 		);
 	});
 
