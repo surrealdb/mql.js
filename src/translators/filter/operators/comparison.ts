@@ -102,8 +102,45 @@ function nullElementArm(field: string, ctx: PredicateContext): string {
  * inside: the document identity, which is one RecordId, and an `$elemMatch`
  * element, which is the value being matched.
  */
-function isWholeValue(field: string): boolean {
+export function isWholeValue(field: string): boolean {
 	return isIdentityField(field) || field === ELEMENT_FIELD;
+}
+
+/**
+ * The closure parameter each array element is tested under, wherever a
+ * predicate has to test the elements of the field it is handed.
+ *
+ * Named for this driver so it cannot shadow anything a caller's field path or
+ * bound parameter is called.
+ */
+export const ELEMENT_PARAMETER = "$__mql_element";
+
+/**
+ * `test` of the field, or, when the field is an array, of any of its elements.
+ *
+ * MongoDB reads every field comparison that way: `{tags: {$regex: "^a"}}`
+ * matches `["abc", "x"]` as well as `"abc"`, `{n: {$mod: [2, 1]}}` matches
+ * `[2, 3]`, and `{v: {$type: "string"}}` matches `["a"]`. SurrealQL's functions
+ * take one value, so the element arm has to be spelled out, and it is written
+ * once, here, with `test` called twice — once for the field and once for the
+ * closure parameter — so a guard cannot be remembered in one arm and forgotten
+ * in the other.
+ *
+ * The array guard is load-bearing, as it is for `equalityPredicate`'s `CONTAINS`:
+ * `array::any` is typed on arrays, and `AND` short-circuits. It is not recursive,
+ * as in MongoDB: `[["abc"]]` has one element, and it is an array.
+ *
+ * A whole value — the identity, an `$elemMatch` element — has no elements to
+ * look at.
+ */
+export function fieldOrAnyElement(
+	field: string,
+	test: (target: string) => string,
+	ctx: PredicateContext,
+): string {
+	if (isWholeValue(field)) return test(field);
+
+	return `((${test(field)}) OR (${arrayTypeCheckFn(ctx)}(${field}) AND array::any(${field}, |${ELEMENT_PARAMETER}| (${test(ELEMENT_PARAMETER)}))))`;
 }
 
 /**
@@ -145,6 +182,11 @@ export function nullEqualityPredicate(
  * is a key test (true). Without the guard `{t: "a"}` would wrongly match
  * `{t: "abc"}`. `AND` short-circuits, so the guard also keeps the arm from
  * being evaluated for absent fields.
+ *
+ * A whole value has no elements to look at, so it is compared as one: the
+ * identity, which is a single RecordId, and the element an `$elemMatch` is
+ * testing — `{v: {$elemMatch: {$eq: "abc"}}}` does not match `[["abc"]]`, whose one
+ * element is an array, as it did when the element got the array arm too.
  */
 export function equalityPredicate(
 	field: string,
@@ -154,7 +196,7 @@ export function equalityPredicate(
 	if (value === null) return nullEqualityPredicate(field, ctx);
 
 	const p = ctx.bind(value);
-	if (isIdentityField(field)) return `${field} = $${p}`;
+	if (isWholeValue(field)) return `${field} = $${p}`;
 
 	return `(${field} = $${p} OR (${arrayTypeCheckFn(ctx)}(${field}) AND ${field} CONTAINS $${p}))`;
 }
@@ -179,7 +221,7 @@ export function inequalityPredicate(
 	}
 
 	const p = ctx.bind(value);
-	if (isIdentityField(field)) return `${field} != $${p}`;
+	if (isWholeValue(field)) return `${field} != $${p}`;
 
 	return `!(${field} = $${p} OR (${arrayTypeCheckFn(ctx)}(${field}) AND ${field} CONTAINS $${p}))`;
 }

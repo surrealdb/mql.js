@@ -339,6 +339,60 @@ function translateOperators(
 	return parts.join(" AND ");
 }
 
+/**
+ * What a caller outside the filter translator lends it to translate operators:
+ * the dialect, and a binder that numbers parameters in the caller's own
+ * statement.
+ */
+export type OperatorHost = Pick<
+	TranslateContext,
+	"dialect" | "bind" | "nextParam" | "bindings"
+>;
+
+/**
+ * Translate an operator object (`{$regex: "^a", $options: "i"}`) for one field,
+ * on behalf of a caller that has no filter of its own.
+ *
+ * The update translator's `$pull` conditions and `arrayFilters` entries are
+ * MongoDB query predicates applied to an element of an array, so they are built
+ * with the operators a filter is built with — this is how, rather than a second
+ * set. The context it translates in has no collection and no text index, so an
+ * operator that needs either has nothing to read; and no result set to order, so
+ * a `$near`, which orders one, is refused where a filter would be allowed it.
+ *
+ * Which operators the caller lets through is the caller's to decide: the registry
+ * answers for all of them.
+ */
+export function translateFieldOperators(
+	field: string,
+	operators: Document,
+	host: OperatorHost,
+	options?: { registry?: FilterOperatorRegistry },
+): string {
+	const registry = options?.registry ?? DEFAULT_FILTER_REGISTRY;
+
+	const ctx: TranslateContext = {
+		dialect: host.dialect,
+		textFields: undefined,
+		collection: undefined,
+		bindings: host.bindings,
+		nextParam: host.nextParam,
+		bind: host.bind,
+		setNearOrder() {
+			throw new MongoInvalidArgumentError(
+				"geo $near is not allowed in this context, as it orders a whole result set and there is none to order.",
+			);
+		},
+		withoutNearOrder: (translate) => translate(),
+		translateOperators: (nested, ops) =>
+			translateOperators(nested, ops, ctx, registry),
+		translateFieldCondition: (nested, value) =>
+			translateFieldCondition(nested, value, ctx, registry),
+	};
+
+	return translateOperators(field, operators, ctx, registry);
+}
+
 /** The operand an operator is translated with, its companions folded in. */
 function operandFor(op: string, value: unknown, operators: Document): unknown {
 	if (op === "$regex") {

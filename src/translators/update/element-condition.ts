@@ -26,9 +26,24 @@
  *
  * What a *bare* value means is not this module's: `{$pull: {v: 7}}` is whole-value
  * equality in MongoDB, and does not remove `[7, 8]`.
+ *
+ * ## Which operators
+ *
+ * MongoDB takes a query operator in a `$pull` condition when it is one a field
+ * can have: the comparisons above, and `$regex` (with `$options`), `$exists`,
+ * `$type`, `$mod`, `$size`, `$all` and `$elemMatch`. It refuses the rest — `$not`
+ * ("unknown top level operator"), `$and`/`$or`/`$nor` and `$comment` (whose
+ * sub-conditions would need field names), `$expr`, `$where`, `$text`,
+ * `$jsonSchema` and `$near` ("not allowed in this context") — and so does this
+ * module, by naming what it takes and nothing else. The seven are built by the
+ * filter translator's operators, through `translateFieldOperators`, and each was
+ * measured against a real `mongod` as the value of a field before being let
+ * through. `$bitsAllSet` and its kin and `$geoWithin` are taken by MongoDB too
+ * and not by this driver's filters, so there is nothing to build them from.
  */
 
-import { MongoCompatibilityError } from "../../errors.ts";
+import { MongoInvalidArgumentError } from "../../errors.ts";
+import { translateFieldOperators } from "../filter/index.ts";
 import {
 	equalityPredicate,
 	inequalityPredicate,
@@ -39,18 +54,33 @@ import {
 	nonMembershipPredicate,
 } from "../filter/operators/membership.ts";
 import { isRangeOperator, rangePredicate } from "../filter/operators/range.ts";
+import type { UpdateContext } from "./update-context.ts";
+
+/**
+ * The operators the filter translator builds for an element condition, with
+ * `$options`, which is not an operator but qualifies `$regex`.
+ */
+const FILTER_OPERATORS = new Set([
+	"$regex",
+	"$options",
+	"$exists",
+	"$type",
+	"$mod",
+	"$size",
+	"$all",
+	"$elemMatch",
+]);
 
 /**
  * The condition `operator` with `operand` puts on `field`, or `undefined` when
- * the operator is not one an element condition takes, so the caller can refuse
- * it in its own words.
+ * the operator is not one of the comparisons built directly here.
  *
  * `field` is SurrealQL reading the value being tested, and has to be one a
  * *field* is read through: for the element itself that is not the `$this` the
  * filter translator reads as an `$elemMatch` element, a plain value — see
  * `PULLED_ELEMENT` in `operators/array.ts`.
  */
-export function elementCondition(
+function comparisonCondition(
 	operator: string,
 	field: string,
 	operand: unknown,
@@ -79,27 +109,52 @@ export function elementCondition(
 }
 
 /**
+ * The conditions an operator object puts on `field`, ANDed by the caller.
+ *
+ * `refusedIn` names the caller in the refusal of an operator MongoDB does not
+ * take there, as `Unsupported operator in $pull condition: $not`.
+ */
+export function elementConditions(
+	field: string,
+	spec: Record<string, unknown>,
+	ctx: UpdateContext,
+	refusedIn: string,
+): string[] {
+	const conditions: string[] = [];
+	const fromFilter: Record<string, unknown> = {};
+
+	for (const [operator, operand] of Object.entries(spec)) {
+		const condition = comparisonCondition(operator, field, operand, ctx);
+		if (condition !== undefined) {
+			conditions.push(condition);
+		} else if (FILTER_OPERATORS.has(operator)) {
+			fromFilter[operator] = operand;
+		} else {
+			throw new MongoInvalidArgumentError(
+				`Unsupported operator in ${refusedIn}: ${operator}`,
+			);
+		}
+	}
+
+	if (Object.keys(fromFilter).length > 0) {
+		conditions.push(translateFieldOperators(field, fromFilter, ctx));
+	}
+	return conditions;
+}
+
+/**
  * The condition a bare value puts on `field`: MongoDB equality, read as a
  * filter's `{field: value}` is — see the top of the file.
  *
- * A regular expression is refused. In MongoDB it is `{$regex: …}`, and `$regex`
- * is not an operator an element condition takes here; compared as a *value*, as
- * equality would have it, it matches nothing, so `{$pull: {tags: /^a/}}` removed
- * no tag and said nothing.
+ * A regular expression is a `$regex`, as it is in a filter.
  */
 export function bareCondition(
 	field: string,
 	value: unknown,
-	ctx: PredicateContext,
+	ctx: UpdateContext,
 ): string {
-	refuseRegExp(value);
+	if (value instanceof RegExp) {
+		return translateFieldOperators(field, { $regex: value }, ctx);
+	}
 	return equalityPredicate(field, value, ctx);
-}
-
-/** Refuse a regular expression as the condition on an element: see `bareCondition`. */
-export function refuseRegExp(value: unknown): void {
-	if (!(value instanceof RegExp)) return;
-	throw new MongoCompatibilityError(
-		"A regular expression is not supported as a condition on an array element in $pull or arrayFilters: it is a $regex, which these conditions do not take, and compared as a value it would match nothing.",
-	);
 }

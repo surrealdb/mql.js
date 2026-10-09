@@ -222,9 +222,9 @@ describe("translateUpdate", () => {
 	});
 
 	test("$pull throws on an unsupported predicate operator", () => {
-		expect(() => translateUpdate({ $pull: { n: { $size: 1 } } })).toThrow(
-			"Unsupported operator in $pull condition: $size",
-		);
+		expect(() =>
+			translateUpdate({ $pull: { n: { $not: { $eq: 1 } } } }),
+		).toThrow("Unsupported operator in $pull condition: $not");
 	});
 
 	test("$pull throws when operators and field names are mixed", () => {

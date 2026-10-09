@@ -750,6 +750,473 @@ describe("null equality sees the elements of an array", () => {
 });
 
 // ---------------------------------------------------------------------------
+// $regex, $type, $mod, $size AND $all READ AN ARRAY AS ANY OF ITS ELEMENTS
+// ---------------------------------------------------------------------------
+
+describe("field comparisons read an array field as any of its elements", () => {
+	// MongoDB reads every field comparison as "the field, or any element of it": a
+	// pattern matches `["abc", "x"]` as it matches `"abc"`, `{$type: "string"}`
+	// matches `["a"]`, `{$mod: [2, 1]}` matches `[2, 3]`, and `{$all: [5]}` matches a
+	// scalar `5`. These were SQL on the field alone, and `$mod` and `$size` raised on
+	// the first document holding a string, aborting the whole query. What a real
+	// `mongod` returns is what each case below expects, and
+	// `tests/e2e/scenarios/crud-scenarios.ts` checks them against one.
+
+	interface MixedDoc {
+		[key: string]: unknown;
+		_id?: ObjectId | string | number;
+		k: string;
+		v?: unknown;
+	}
+
+	let docs: Collection<MixedDoc>;
+
+	const keys = async (filter: Record<string, unknown>) =>
+		(await docs.find(filter).toArray()).map((doc) => doc.k).sort();
+
+	beforeEach(async () => {
+		docs = ctx.db.collection<MixedDoc>("array_comparisons");
+		try {
+			await docs.deleteMany({});
+		} catch {
+			// ignore
+		}
+	});
+
+	const FIXTURES: {
+		name: string;
+		docs: MixedDoc[];
+		cases: [string, Record<string, unknown>, string[]][];
+	}[] = [
+		{
+			name: "strings, numbers, nulls, arrays and documents",
+			docs: [
+				{ k: "abc", v: "abc" },
+				{ k: "ABC", v: "ABC" },
+				{ k: "xyz", v: "xyz" },
+				{ k: "arrAbc", v: ["abc"] },
+				{ k: "arrMix", v: ["abc", "x"] },
+				{ k: "arrXyz", v: ["xyz", "q"] },
+				{ k: "num5", v: 5 },
+				{ k: "num6", v: 6 },
+				{ k: "arrNum", v: [5, 6] },
+				{ k: "arrOdd", v: [1] },
+				{ k: "null", v: null },
+				{ k: "missing" },
+				{ k: "obj", v: { a: 1 } },
+				{ k: "arrObj", v: [{ a: 1 }] },
+				{ k: "arrObjB", v: [{ a: 2 }, { a: 1 }] },
+				{ k: "empty", v: [] },
+				{ k: "nested", v: [["abc"]] },
+				{ k: "nested1", v: [[1]] },
+				{ k: "bool", v: true },
+				{ k: "date", v: new Date(5000) },
+				{ k: "arrNull", v: [null] },
+				{ k: "size2", v: ["a", "b"] },
+			],
+			cases: [
+				[
+					"$regex ^a",
+					{ v: { $regex: "^a" } },
+					["abc", "arrAbc", "arrMix", "size2"],
+				],
+				[
+					"$regex /^a/i",
+					{ v: /^a/i },
+					["ABC", "abc", "arrAbc", "arrMix", "size2"],
+				],
+				[
+					"$regex A $options i",
+					{ v: { $regex: "A", $options: "i" } },
+					["ABC", "abc", "arrAbc", "arrMix", "size2"],
+				],
+				["$regex ^x", { v: { $regex: "^x" } }, ["arrMix", "arrXyz", "xyz"]],
+				[
+					"$exists true",
+					{ v: { $exists: true } },
+					[
+						"ABC",
+						"abc",
+						"arrAbc",
+						"arrMix",
+						"arrNull",
+						"arrNum",
+						"arrObj",
+						"arrObjB",
+						"arrOdd",
+						"arrXyz",
+						"bool",
+						"date",
+						"empty",
+						"nested",
+						"nested1",
+						"null",
+						"num5",
+						"num6",
+						"obj",
+						"size2",
+						"xyz",
+					],
+				],
+				["$exists false", { v: { $exists: false } }, ["missing"]],
+				[
+					"$type string",
+					{ v: { $type: "string" } },
+					["ABC", "abc", "arrAbc", "arrMix", "arrXyz", "size2", "xyz"],
+				],
+				[
+					"$type array",
+					{ v: { $type: "array" } },
+					[
+						"arrAbc",
+						"arrMix",
+						"arrNull",
+						"arrNum",
+						"arrObj",
+						"arrObjB",
+						"arrOdd",
+						"arrXyz",
+						"empty",
+						"nested",
+						"nested1",
+						"size2",
+					],
+				],
+				[
+					"$type number",
+					{ v: { $type: "number" } },
+					["arrNum", "arrOdd", "num5", "num6"],
+				],
+				[
+					"$type object",
+					{ v: { $type: "object" } },
+					["arrObj", "arrObjB", "obj"],
+				],
+				["$type null", { v: { $type: "null" } }, ["arrNull", "null"]],
+				["$type bool", { v: { $type: "bool" } }, ["bool"]],
+				["$type date", { v: { $type: "date" } }, ["date"]],
+				[
+					"$type 2",
+					{ v: { $type: 2 } },
+					["ABC", "abc", "arrAbc", "arrMix", "arrXyz", "size2", "xyz"],
+				],
+				["$mod [2,1]", { v: { $mod: [2, 1] } }, ["arrNum", "arrOdd", "num5"]],
+				["$mod [5,0]", { v: { $mod: [5, 0] } }, ["arrNum", "num5"]],
+				[
+					"$size 1",
+					{ v: { $size: 1 } },
+					["arrAbc", "arrNull", "arrObj", "arrOdd", "nested", "nested1"],
+				],
+				["$size 0", { v: { $size: 0 } }, ["empty"]],
+				[
+					"$size 2",
+					{ v: { $size: 2 } },
+					["arrMix", "arrNum", "arrObjB", "arrXyz", "size2"],
+				],
+				["$all ['abc']", { v: { $all: ["abc"] } }, ["abc", "arrAbc", "arrMix"]],
+				["$all ['abc','x']", { v: { $all: ["abc", "x"] } }, ["arrMix"]],
+				["$all [5]", { v: { $all: [5] } }, ["arrNum", "num5"]],
+				["$all []", { v: { $all: [] } }, []],
+				[
+					"$elemMatch $eq abc",
+					{ v: { $elemMatch: { $eq: "abc" } } },
+					["arrAbc", "arrMix"],
+				],
+				["$elemMatch $gt 5", { v: { $elemMatch: { $gt: 5 } } }, ["arrNum"]],
+				[
+					"$elemMatch a:1",
+					{ v: { $elemMatch: { a: 1 } } },
+					["arrObj", "arrObjB"],
+				],
+				[
+					"$elemMatch $regex ^a",
+					{ v: { $elemMatch: { $regex: "^a" } } },
+					["arrAbc", "arrMix", "size2"],
+				],
+			],
+		},
+		{
+			name: "numbers with fractions and signs, and arrays in arrays",
+			docs: [
+				{ k: "f57", v: 5.7 },
+				{ k: "neg3", v: -3 },
+				{ k: "str5", v: "5" },
+				{ k: "six0", v: 6 },
+				{ k: "int7", v: 7 },
+				{ k: "arrF", v: [5.7, 2] },
+				{ k: "abc", v: "abc" },
+				{ k: "arrAbc", v: ["abc"] },
+				{ k: "arrAbcAbc", v: ["abc", "abc"] },
+				{ k: "nested", v: [["abc"]] },
+				{ k: "nestedNum", v: [[1, 2]] },
+				{ k: "num5", v: 5 },
+				{ k: "arrNum", v: [5, 6] },
+				{ k: "arr12", v: [1, 2] },
+				{ k: "null", v: null },
+				{ k: "missing" },
+				{ k: "arrNull", v: [null] },
+				{ k: "obj", v: { a: [1, 2] } },
+				{ k: "arrObj", v: [{ a: 1 }, { a: [1, 2] }] },
+			],
+			cases: [
+				[
+					"$mod [2,1]",
+					{ v: { $mod: [2, 1] } },
+					["arr12", "arrF", "arrNum", "f57", "int7", "num5"],
+				],
+				[
+					"$mod [2,0]",
+					{ v: { $mod: [2, 0] } },
+					["arr12", "arrF", "arrNum", "six0"],
+				],
+				["$mod [3,-0]", { v: { $mod: [3, 0] } }, ["arrNum", "neg3", "six0"]],
+				["$mod [2,-1]", { v: { $mod: [2, -1] } }, ["neg3"]],
+				[
+					"$mod [2.5, 1]",
+					{ v: { $mod: [2.5, 1] } },
+					["arr12", "arrF", "arrNum", "f57", "int7", "num5"],
+				],
+				["$all [5]", { v: { $all: [5] } }, ["arrNum", "num5"]],
+				["$all [5,6]", { v: { $all: [5, 6] } }, ["arrNum"]],
+				[
+					"$all [null]",
+					{ v: { $all: [null] } },
+					["arrNull", "missing", "null"],
+				],
+				["$all [[1,2]]", { v: { $all: [[1, 2]] } }, ["arr12", "nestedNum"]],
+				[
+					"$all ['abc','abc']",
+					{ v: { $all: ["abc", "abc"] } },
+					["abc", "arrAbc", "arrAbcAbc"],
+				],
+				["$all []", { v: { $all: [] } }, []],
+				["$all [{a:1}]", { v: { $all: [{ a: 1 }] } }, ["arrObj"]],
+				[
+					"$elemMatch $eq abc",
+					{ v: { $elemMatch: { $eq: "abc" } } },
+					["arrAbc", "arrAbcAbc"],
+				],
+				[
+					"$elemMatch $in [abc]",
+					{ v: { $elemMatch: { $in: ["abc"] } } },
+					["arrAbc", "arrAbcAbc"],
+				],
+				[
+					"$elemMatch $ne abc",
+					{ v: { $elemMatch: { $ne: "abc" } } },
+					[
+						"arr12",
+						"arrF",
+						"arrNull",
+						"arrNum",
+						"arrObj",
+						"nested",
+						"nestedNum",
+					],
+				],
+				[
+					"$elemMatch $nin [abc]",
+					{ v: { $elemMatch: { $nin: ["abc"] } } },
+					[
+						"arr12",
+						"arrF",
+						"arrNull",
+						"arrNum",
+						"arrObj",
+						"nested",
+						"nestedNum",
+					],
+				],
+				["$elemMatch $eq 1", { v: { $elemMatch: { $eq: 1 } } }, ["arr12"]],
+				[
+					"$elemMatch $eq [1,2]",
+					{ v: { $elemMatch: { $eq: [1, 2] } } },
+					["nestedNum"],
+				],
+				[
+					"$elemMatch $eq null",
+					{ v: { $elemMatch: { $eq: null } } },
+					["arrNull"],
+				],
+				["$elemMatch $size 1", { v: { $elemMatch: { $size: 1 } } }, ["nested"]],
+				[
+					"$elemMatch $type array",
+					{ v: { $elemMatch: { $type: "array" } } },
+					["nested", "nestedNum"],
+				],
+				[
+					"$elemMatch $type string",
+					{ v: { $elemMatch: { $type: "string" } } },
+					["arrAbc", "arrAbcAbc"],
+				],
+				[
+					"$elemMatch $mod [2,1]",
+					{ v: { $elemMatch: { $mod: [2, 1] } } },
+					["arr12", "arrF", "arrNum"],
+				],
+				[
+					"$size 2",
+					{ v: { $size: 2 } },
+					["arr12", "arrAbcAbc", "arrF", "arrNum", "arrObj"],
+				],
+				[
+					"$regex ^a (nested arrays)",
+					{ v: { $regex: "^a" } },
+					["abc", "arrAbc", "arrAbcAbc"],
+				],
+				[
+					"$type string",
+					{ v: { $type: "string" } },
+					["abc", "arrAbc", "arrAbcAbc", "str5"],
+				],
+				[
+					"$type array",
+					{ v: { $type: "array" } },
+					[
+						"arr12",
+						"arrAbc",
+						"arrAbcAbc",
+						"arrF",
+						"arrNull",
+						"arrNum",
+						"arrObj",
+						"nested",
+						"nestedNum",
+					],
+				],
+				[
+					"$type 4",
+					{ v: { $type: 4 } },
+					[
+						"arr12",
+						"arrAbc",
+						"arrAbcAbc",
+						"arrF",
+						"arrNull",
+						"arrNum",
+						"arrObj",
+						"nested",
+						"nestedNum",
+					],
+				],
+				["$type double", { v: { $type: "double" } }, ["arrF", "f57"]],
+				[
+					"$type int",
+					{ v: { $type: "int" } },
+					["arr12", "arrF", "arrNum", "int7", "neg3", "num5", "six0"],
+				],
+				[
+					"$type number",
+					{ v: { $type: "number" } },
+					["arr12", "arrF", "arrNum", "f57", "int7", "neg3", "num5", "six0"],
+				],
+				["$type null", { v: { $type: "null" } }, ["arrNull", "null"]],
+				["$type object", { v: { $type: "object" } }, ["arrObj", "obj"]],
+			],
+		},
+	];
+
+	for (const fixture of FIXTURES) {
+		describe(fixture.name, () => {
+			beforeEach(async () => {
+				await docs.insertMany(fixture.docs);
+			});
+
+			for (const [label, filter, expected] of fixture.cases) {
+				test(label, async () => {
+					expect(await keys(filter)).toEqual(expected);
+				});
+			}
+		});
+	}
+
+	test("the same through count, distinct, update and delete", async () => {
+		await docs.insertMany([
+			{ k: "arr", v: ["abc", "x"] },
+			{ k: "str", v: "abc" },
+			{ k: "num", v: 5 },
+			{ k: "other", v: ["q"] },
+		]);
+		expect(await docs.countDocuments({ v: { $regex: "^a" } })).toBe(2);
+		expect(
+			(await docs.distinct("k", { v: { $type: "string" } })).sort(),
+		).toEqual(["arr", "other", "str"]);
+		const updated = await docs.updateMany({ v: { $mod: [5, 0] } }, {
+			$set: { hit: true },
+		} as never);
+		expect(updated.matchedCount).toBe(1);
+		const deleted = await docs.deleteMany({ v: { $size: 2 } });
+		expect(deleted.deletedCount).toBe(1);
+	});
+
+	test("an aggregation $match reads them the same way", async () => {
+		await docs.insertMany([
+			{ k: "arr", v: ["abc", "x"] },
+			{ k: "num", v: 5 },
+		]);
+		const matched = await docs
+			.aggregate<MixedDoc>([{ $match: { v: { $regex: "^a" } } }])
+			.toArray();
+		expect(matched.map((doc) => doc.k)).toEqual(["arr"]);
+	});
+
+	describe("a value of the wrong type is not an error", () => {
+		test("$mod over a collection with strings in the field", async () => {
+			await docs.insertMany([
+				{ k: "str", v: "abc" },
+				{ k: "num", v: 5 },
+				{ k: "missing" },
+			]);
+			expect(await keys({ v: { $mod: [2, 1] } })).toEqual(["num"]);
+		});
+
+		test("$size over a collection with strings in the field", async () => {
+			await docs.insertMany([
+				{ k: "str", v: "abc" },
+				{ k: "arr", v: [1] },
+				{ k: "missing" },
+			]);
+			expect(await keys({ v: { $size: 1 } })).toEqual(["arr"]);
+		});
+	});
+
+	describe("what is malformed is refused, as MongoDB refuses it", () => {
+		const find = (filter: Record<string, unknown>) =>
+			(async () => docs.find(filter).toArray())();
+
+		test("$mod", async () => {
+			await expect(find({ v: { $mod: 5 } })).rejects.toThrow(
+				"malformed mod, needs to be an array",
+			);
+			await expect(find({ v: { $mod: [0.5, 0] } })).rejects.toThrow(
+				"divisor cannot be 0",
+			);
+		});
+
+		test("$size", async () => {
+			await expect(find({ v: { $size: 1.5 } })).rejects.toThrow(
+				"Failed to parse $size. Expected an integer",
+			);
+		});
+
+		test("$all", async () => {
+			await expect(find({ v: { $all: 5 } })).rejects.toThrow(
+				"$all needs an array",
+			);
+		});
+
+		test("$all with a regular expression or an $elemMatch, which this driver has no translation for", async () => {
+			await expect(find({ v: { $all: [/^a/] } })).rejects.toThrow(
+				MongoCompatibilityError,
+			);
+			await expect(
+				find({ v: { $all: [{ $elemMatch: { $gt: 1 } }] } }),
+			).rejects.toThrow(MongoCompatibilityError);
+		});
+	});
+});
+
+// ---------------------------------------------------------------------------
 // MEMBERSHIP OPERATORS
 // ---------------------------------------------------------------------------
 
